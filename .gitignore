@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.spec
+*.egg
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# PyInstaller
+*.manifest
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data (large point cloud files)
+*.pcd
+*.ply
+*.las
+*.laz
+
+# Output
+output/
+*.json
+!package.json

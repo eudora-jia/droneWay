@@ -1,0 +1,19 @@
+stages:
+  - build
+
+build_windows:
+  stage: build
+  image: python:3.11-windowsservercore
+  tags:
+    - windows
+  script:
+    - pip install -r requirements.txt
+    - pip install pyinstaller
+    - pyinstaller --onefile --windowed --name BridgeRoutePlanner main.py
+  artifacts:
+    paths:
+      - dist/BridgeRoutePlanner.exe
+    expire_in: 30 days
+  only:
+    - tags
+    - web
