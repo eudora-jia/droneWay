@@ -126,6 +126,71 @@ def parse_pcd(filepath):
     return np.empty((0, 3), dtype=np.float64)
 
 
+# ─── 法向量估算（PCA）──────────────────────────────────────
+def estimate_normals(points, k=30):
+    """
+    用 PCA 估算点云法向量
+    points: (N, 3) 数组
+    k: 每个点取 k 个最近邻做法向量估算
+    返回: normals (N, 3) 单位法向量
+    """
+    from scipy.spatial import cKDTree
+    n = len(points)
+    normals = np.zeros((n, 3))
+
+    tree = cKDTree(points)
+    dists, indices = tree.query(points, k=k)
+
+    for i in range(n):
+        neighbors = points[indices[i]]
+        centroid = neighbors.mean(axis=0)
+        cov = np.cov((neighbors - centroid).T)
+        eigenvalues, eigenvectors = np.linalg.eigh(cov)
+        # 最小特征值对应的特征向量就是法向量
+        normals[i] = eigenvectors[:, 0]
+
+    # 统一法向量朝向（确保都朝同一侧，这里强制朝下，因为桥底面法向量朝下）
+    # 通过检查法向量 Z 分量来统一
+    for i in range(n):
+        if normals[i, 2] > 0:
+            normals[i] = -normals[i]  # 翻转朝下
+
+    return normals
+
+
+def nearest_neighbor_path(points):
+    """
+    贪心最近邻排序：将散乱点排成一条连续路径
+    points: (N, 3) 数组
+    返回: 排序后的索引数组
+    """
+    from scipy.spatial import cKDTree
+    n = len(points)
+    if n <= 1:
+        return np.arange(n)
+
+    tree = cKDTree(points)
+    visited = np.zeros(n, dtype=bool)
+    order = []
+
+    # 从左下角点开始
+    start = np.argmin(points[:, 0] + points[:, 1])
+    order.append(start)
+    visited[start] = True
+
+    for _ in range(n - 1):
+        current = order[-1]
+        # 找最近的未访问点
+        dists, indices = tree.query(points[current], k=n)
+        for idx in indices:
+            if not visited[idx]:
+                order.append(idx)
+                visited[idx] = True
+                break
+
+    return np.array(order)
+
+
 # ─── 四元数工具 ──────────────────────────────────────────────
 def rotation_matrix_from_vectors(forward, up):
     """从前进方向和上方向构建旋转矩阵 (3x3)，右手坐标系"""
@@ -240,7 +305,7 @@ class VTKViewer(QWidget):
         self._cloud_actor = None
 
     def add_point_cloud(self, points):
-        """显示点云"""
+        """显示点云（按高度着色）"""
         if not VTK_AVAILABLE or len(points) == 0:
             return
         self.clear_actors()
@@ -254,6 +319,33 @@ class VTKViewer(QWidget):
         polydata = vtkPolyData()
         polydata.SetPoints(vtk_points)
 
+        # ─── 高度着色：低处蓝色 → 中间绿色 → 高处红色 ───
+        z_vals = points[:, 2]
+        z_min, z_max = z_vals.min(), z_vals.max()
+        z_range = z_max - z_min if z_max > z_min else 1.0
+
+        colors = vtk.vtkUnsignedCharArray()
+        colors.SetNumberOfComponents(3)
+        colors.SetName('Colors')
+
+        for z in z_vals:
+            t = (z - z_min) / z_range  # 0=最低, 1=最高
+            if t < 0.25:
+                # 蓝 → 青
+                r, g, b = 0, int(t * 4 * 255), 255
+            elif t < 0.5:
+                # 青 → 绿
+                r, g, b = 0, 255, int((0.5 - t) * 4 * 255)
+            elif t < 0.75:
+                # 绿 → 黄
+                r, g, b = int((t - 0.5) * 4 * 255), 255, 0
+            else:
+                # 黄 → 红
+                r, g, b = 255, int((1.0 - t) * 4 * 255), 0
+            colors.InsertNextTuple3(r, g, b)
+
+        polydata.GetPointData().SetScalars(colors)
+
         glyph = vtkVertexGlyphFilter()
         glyph.SetInputData(polydata)
         glyph.Update()
@@ -265,10 +357,11 @@ class VTKViewer(QWidget):
 
         mapper = vtkPolyDataMapper()
         mapper.SetInputConnection(glyph.GetOutputPort())
+        mapper.ScalarVisibilityOn()
+        mapper.SetScalarModeToDefault()
 
         actor = vtkActor()
         actor.SetMapper(mapper)
-        actor.GetProperty().SetColor(0.7, 0.85, 1.0)
         actor.GetProperty().SetPointSize(2)
 
         self.renderer.AddActor(actor)
@@ -393,17 +486,20 @@ class VTKViewer(QWidget):
             self.exit_pick_mode()
 
     def _add_pick_marker(self, pos):
-        """在选中位置添加黄色球标记"""
+        """在选中位置添加高亮标记（大号亮黄球 + 红色十字）"""
+        # 大号黄色半透明球
         sphere = vtkSphereSource()
         sphere.SetCenter(pos.tolist())
-        sphere.SetRadius(0.3)
+        sphere.SetRadius(0.5)
         sphere.Update()
 
         m = vtkPolyDataMapper()
         m.SetInputConnection(sphere.GetOutputPort())
         a = vtkActor()
         a.SetMapper(m)
-        a.GetProperty().SetColor(1.0, 1.0, 0.0)  # 黄色
+        a.GetProperty().SetColor(1.0, 1.0, 0.0)  # 亮黄色
+        a.GetProperty().SetOpacity(0.7)
+        a.GetProperty().SetPointSize(5)
         self.renderer.AddActor(a)
         self.pick_markers.append(a)
         self._actors.append(a)
@@ -476,6 +572,48 @@ class VTKViewer(QWidget):
         cam.Azimuth(-45)
         self.vtk_widget.GetRenderWindow().Render()
 
+    def _on_global_key_press(self, obj, event):
+        """全局快捷键：视角切换"""
+        key = self.interactor.GetKeyCode()
+        cam = self.renderer.GetActiveCamera()
+
+        if key == '1':
+            # 俯视图 (Top View)
+            cam.SetPosition(0, 0, 100)
+            cam.SetFocalPoint(0, 0, 0)
+            cam.SetViewUp(0, 1, 0)
+            self.renderer.ResetCamera()
+            print("[View] Top View")
+        elif key == '2':
+            # 正视图 (Front View) - 从 Y 负方向看
+            cam.SetPosition(0, -100, 0)
+            cam.SetFocalPoint(0, 0, 0)
+            cam.SetViewUp(0, 0, 1)
+            self.renderer.ResetCamera()
+            print("[View] Front View")
+        elif key == '3':
+            # 侧视图 (Side View) - 从 X 正方向看
+            cam.SetPosition(100, 0, 0)
+            cam.SetFocalPoint(0, 0, 0)
+            cam.SetViewUp(0, 0, 1)
+            self.renderer.ResetCamera()
+            print("[View] Side View")
+        elif key == '4':
+            # 透视图 (Perspective) - 默认
+            self.renderer.ResetCamera()
+            cam.Elevation(30)
+            cam.Azimuth(-45)
+            print("[View] Perspective")
+        elif key == '5':
+            # 仰视图 (Bottom View) - 从下往上看桥底面
+            cam.SetPosition(0, 0, -100)
+            cam.SetFocalPoint(0, 0, 0)
+            cam.SetViewUp(0, 1, 0)
+            self.renderer.ResetCamera()
+            print("[View] Bottom View (looking up)")
+
+        self.vtk_widget.GetRenderWindow().Render()
+
     def setup_scene(self):
         """初始化场景（坐标轴 + 网格）"""
         if not VTK_AVAILABLE:
@@ -539,6 +677,9 @@ class VTKViewer(QWidget):
         self._update_view()
         self.interactor.Initialize()
 
+        # 绑定全局快捷键（视角切换）
+        self.interactor.AddObserver("KeyPressEvent", self._on_global_key_press)
+
 
 # ─── 主窗口 ──────────────────────────────────────────────────
 class MainWindow(QMainWindow):
@@ -551,6 +692,7 @@ class MainWindow(QMainWindow):
 
         self.points = None
         self.waypoints = []
+        self._surface_bounds = None
 
         self._init_ui()
         self._apply_style()
@@ -624,6 +766,34 @@ class MainWindow(QMainWindow):
         fl.addWidget(self.btn_flat)
         ctrl_layout.addWidget(grp_flat)
 
+        # -- 等距面扫描（沿表面等距飞行）--
+        grp_surface = QGroupBox("Surface Scan (Equidistant)")
+        sl = QVBoxLayout(grp_surface)
+
+        self.btn_select_surface = QPushButton("Select Surface Area (Click 2 Points)")
+        self.btn_select_surface.setStyleSheet("QPushButton { background: #2a4a2a; } QPushButton:hover { background: #3a5a3a; }")
+        sl.addWidget(self.btn_select_surface)
+
+        h = QHBoxLayout()
+        h.addWidget(QLabel("Standoff Dist:"))
+        self.edt_standoff = QLineEdit("2.0"); h.addWidget(self.edt_standoff)
+        h.addWidget(QLabel("Speed:"))
+        self.edt_surface_speed = QLineEdit("2.0"); h.addWidget(self.edt_surface_speed)
+        sl.addLayout(h)
+
+        h = QHBoxLayout()
+        h.addWidget(QLabel("K Neighbors:"))
+        self.edt_k_neighbors = QLineEdit("30"); h.addWidget(self.edt_k_neighbors)
+        h.addWidget(QLabel("Normal Dir:"))
+        self.cbo_normal_dir = QComboBox()
+        self.cbo_normal_dir.addItems(["Down", "Up", "Auto"])
+        h.addWidget(self.cbo_normal_dir)
+        sl.addLayout(h)
+
+        self.btn_surface = QPushButton("Generate Surface Route")
+        sl.addWidget(self.btn_surface)
+        ctrl_layout.addWidget(grp_surface)
+
         # -- 立方体航线（桥柱环绕扫描）--
         grp_cube = QGroupBox("Cube Route (Pillar Surround Scan)")
         cl = QVBoxLayout(grp_cube)
@@ -682,6 +852,12 @@ class MainWindow(QMainWindow):
         rl.addWidget(self.btn_load_route)
         ctrl_layout.addWidget(grp_route)
 
+        # -- 快捷键提示 --
+        lbl_help = QLabel("Shortcuts: 1=Top 2=Front 3=Side 4=Perspective 5=Bottom(Up)  Esc=Cancel Pick")
+        lbl_help.setStyleSheet("color: #666; font-size: 10px; padding: 4px;")
+        lbl_help.setWordWrap(True)
+        ctrl_layout.addWidget(lbl_help)
+
         ctrl_layout.addStretch()
         splitter.addWidget(ctrl)
         splitter.setStretchFactor(0, 1)
@@ -692,7 +868,9 @@ class MainWindow(QMainWindow):
         self.btn_load.clicked.connect(self.load_point_cloud)
         self.btn_select_flat.clicked.connect(lambda: self.viewer.enter_pick_mode("flat"))
         self.btn_select_cube.clicked.connect(lambda: self.viewer.enter_pick_mode("cube"))
+        self.btn_select_surface.clicked.connect(lambda: self.viewer.enter_pick_mode("surface"))
         self.btn_flat.clicked.connect(self.generate_flat_route)
+        self.btn_surface.clicked.connect(self.generate_surface_route)
         self.btn_cube.clicked.connect(self.generate_cube_route)
         self.btn_clear.clicked.connect(self.clear_route)
         self.btn_save.clicked.connect(self.save_route)
@@ -758,6 +936,12 @@ class MainWindow(QMainWindow):
             self.edt_dy.setText(f"{size[1]:.1f}")
             self.edt_dz.setText(f"{size[2]:.1f}")
             print(f"[Pick] Cube: center=({center[0]:.1f},{center[1]:.1f},{mn[2]:.1f}) size=({size[0]:.1f},{size[1]:.1f},{size[2]:.1f})")
+
+        elif mode == "surface":
+            # 等距面扫描：存储选区范围，自动生成
+            self._surface_bounds = (mn, mx)
+            print(f"[Pick] Surface area: X[{mn[0]:.1f}, {mx[0]:.1f}] Y[{mn[1]:.1f}, {mx[1]:.1f}] Z[{mn[2]:.1f}, {mx[2]:.1f}]")
+            self.generate_surface_route()
 
     # ─── 加载点云 ───
     def load_point_cloud(self):
@@ -855,6 +1039,89 @@ class MainWindow(QMainWindow):
             )
 
         self._display_route()
+
+    # ─── 生成等距面扫描航线 ───
+    def generate_surface_route(self):
+        """沿点云表面等距飞行的航线生成"""
+        if self.points is None or len(self.points) == 0:
+            QMessageBox.warning(self, "Warning", "No point cloud loaded")
+            return
+
+        # 获取选区范围（如果没有画框，用整个点云）
+        if hasattr(self, '_surface_bounds') and self._surface_bounds:
+            mn, mx = self._surface_bounds
+        else:
+            mn = self.points.min(axis=0)
+            mx = self.points.max(axis=0)
+
+        try:
+            standoff = float(self.edt_standoff.text())
+            speed = float(self.edt_surface_speed.text())
+            k = int(self.edt_k_neighbors.text())
+        except ValueError:
+            QMessageBox.warning(self, "Invalid Input", "Please enter valid numbers")
+            return
+
+        normal_dir = self.cbo_normal_dir.currentText()  # "Down" / "Up" / "Auto"
+
+        # 提取选区内的点云
+        mask = np.all((self.points >= mn) & (self.points <= mx), axis=1)
+        surface_pts = self.points[mask]
+
+        if len(surface_pts) < 10:
+            QMessageBox.warning(self, "Warning", "Too few points in selected area")
+            return
+
+        print(f"[Surface] Processing {len(surface_pts)} points, k={k}, standoff={standoff}m")
+
+        try:
+            # 估算表面法向量
+            normals = estimate_normals(surface_pts, k=k)
+
+            # 根据用户选择统一法向量方向
+            if normal_dir == "Down":
+                # 强制朝下（Z 负方向）
+                for i in range(len(normals)):
+                    if normals[i, 2] > 0:
+                        normals[i] = -normals[i]
+            elif normal_dir == "Up":
+                # 强制朝上（Z 正方向）
+                for i in range(len(normals)):
+                    if normals[i, 2] < 0:
+                        normals[i] = -normals[i]
+            # "Auto" 保持 estimate_normals 的默认朝下
+
+            # 沿法向量偏移生成航点
+            offset_pts = surface_pts + normals * standoff
+
+            # 用最近邻排序形成连续路径
+            order = nearest_neighbor_path(offset_pts)
+            ordered_pts = offset_pts[order]
+            ordered_normals = normals[order]
+
+            # 生成航点（朝向表面）
+            self.waypoints = []
+            for i in range(len(ordered_pts)):
+                pos = ordered_pts[i]
+                # 朝向表面（法向量方向 = 指向表面）
+                surface_point = pos - ordered_normals[i] * standoff
+                quat = look_at_quaternion(surface_point, pos)
+
+                self.waypoints.append({
+                    'pos': pos,
+                    'quat': quat,
+                    'speed': speed,
+                    'action': 'scan'
+                })
+
+            self._display_route()
+            print(f"[Surface] Generated {len(self.waypoints)} waypoints")
+
+        except ImportError:
+            QMessageBox.critical(self, "Error",
+                                 "scipy is required for surface scan.\nRun: pip install scipy")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Surface scan failed:\n{str(e)}")
 
     # ─── 生成立方体航线 ───
     def generate_cube_route(self):
