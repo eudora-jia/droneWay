@@ -19,7 +19,7 @@ import numpy as np
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QLabel, QLineEdit, QPushButton, QComboBox,
-    QFileDialog, QMessageBox, QSplitter, QSizePolicy
+    QFileDialog, QMessageBox, QSplitter, QSizePolicy, QMenu
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont
@@ -256,8 +256,8 @@ def look_at_quaternion(target, position):
 class VTKViewer(QWidget):
     """嵌入 PyQt5 的 VTK 3D 点云/航线可视化组件，支持交互式画框选点"""
 
-    # 选框完成信号：(mode, [point1, point2])
-    pick_finished = pyqtSignal(str, list)
+    # 选框完成信号：[[min_x,min_y,min_z], [max_x,max_y,max_z]]
+    box_selected = pyqtSignal(list)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -284,10 +284,11 @@ class VTKViewer(QWidget):
         self._cloud_actor = None  # 点云 actor 引用
 
         # ─── 选框模式状态 ───
-        self.pick_mode = None       # None / "flat" / "cube"
-        self.picked_points = []     # 已选中的 3D 坐标
-        self.pick_markers = []      # 临时标记 actor（黄色球）
+        self.pick_mode = False      # 是否处于画框模式
+        self._dragging = False      # 是否正在拖拽
+        self._drag_start = None     # 拖拽起点 (3D)
         self.box_actors = []        # 选框线框 actor
+        self._observers = []        # 事件观察者 ID
 
         # ─── 点拾取器 ───
         self.picker = vtk.vtkPointPicker() if VTK_AVAILABLE else None
@@ -377,10 +378,10 @@ class VTKViewer(QWidget):
         if not VTK_AVAILABLE or len(waypoints) == 0:
             return
 
-        # 清除旧的航线 actor（保留点云和选框标记）
+        # 清除旧的航线 actor（保留点云和选框）
         to_remove = []
         for i, actor in enumerate(self._actors):
-            if actor != self._cloud_actor and actor not in self.pick_markers and actor not in self.box_actors:
+            if actor != self._cloud_actor and actor not in self.box_actors:
                 to_remove.append(i)
         for i in reversed(to_remove):
             self.renderer.RemoveActor(self._actors[i])
@@ -432,86 +433,132 @@ class VTKViewer(QWidget):
         self._update_view()
         print(f"[VTK] Route displayed: {n} waypoints")
 
-    # ─── 选框模式控制 ────────────────────────────────────────
-    def enter_pick_mode(self, mode):
-        """进入选框模式 mode: 'flat' 或 'cube'"""
-        self.pick_mode = mode
-        self.picked_points = []
-        self._clear_pick_markers()
+    # ─── 拖拽画框模式 ─────────────────────────────────────────
+    def enter_pick_mode(self):
+        """进入拖拽画框模式，自动切到俯视/仰视视角"""
+        if self.points is None or len(self.points) == 0:
+            print("[Pick] No point cloud loaded")
+            return
+
+        self.pick_mode = True
+        self._dragging = False
+        self._drag_start = None
         self._clear_box()
-        # 绑定鼠标左键点击事件
-        self.interactor.AddObserver("LeftButtonPressEvent", self._on_left_click)
-        # 绑定 Esc 键退出
-        self.interactor.AddObserver("KeyPressEvent", self._on_key_press)
-        print(f"[Pick] Entered {mode} pick mode. Click 2 points on the point cloud. Press Esc to cancel.")
+
+        # 自动切到俯视图（从上往下看，方便画框）
+        cam = self.renderer.GetActiveCamera()
+        cam.SetPosition(0, 0, 100)
+        cam.SetFocalPoint(0, 0, 0)
+        cam.SetViewUp(0, 1, 0)
+        self.renderer.ResetCamera()
+        self.vtk_widget.GetRenderWindow().Render()
+
+        # 绑定鼠标事件
+        self._observers = [
+            self.interactor.AddObserver("LeftButtonPressEvent", self._on_mouse_down),
+            self.interactor.AddObserver("MouseMoveEvent", self._on_mouse_move),
+            self.interactor.AddObserver("LeftButtonReleaseEvent", self._on_mouse_up),
+            self.interactor.AddObserver("KeyPressEvent", self._on_pick_key),
+        ]
+        print("[Pick] Drag to draw box. Esc to cancel.")
 
     def exit_pick_mode(self):
-        """退出选框模式"""
-        self.pick_mode = None
-        self.picked_points = []
+        """退出画框模式，解绑事件"""
+        self.pick_mode = False
+        self._dragging = False
+        self._drag_start = None
+        # 解绑事件
+        if hasattr(self, '_observers'):
+            for obs_id in self._observers:
+                self.interactor.RemoveObserver(obs_id)
+            self._observers = []
         print("[Pick] Pick mode exited.")
 
-    def _on_left_click(self, obj, event):
-        """鼠标左键点击回调：拾取点云上最近的点"""
-        if not self.pick_mode or not self.picker:
+    def _pick_3d(self, screen_x, screen_y):
+        """从屏幕坐标拾取 3D 点"""
+        if not self.picker:
+            return None
+        self.picker.Pick(screen_x, screen_y, 0, self.renderer)
+        pos = self.picker.GetPickPosition()
+        if pos == (0.0, 0.0, 0.0):
+            return None
+        return np.array(pos)
+
+    def _on_mouse_down(self, obj, event):
+        """鼠标按下：记录起点"""
+        if not self.pick_mode:
+            return
+        pos = self.interactor.GetEventPosition()
+        p = self._pick_3d(pos[0], pos[1])
+        if p is not None:
+            self._dragging = True
+            self._drag_start = p
+            self._clear_box()
+            print(f"[Pick] Start: ({p[0]:.2f}, {p[1]:.2f}, {p[2]:.2f})")
+
+    def _on_mouse_move(self, obj, event):
+        """鼠标拖动：实时更新预览框"""
+        if not self._dragging or self._drag_start is None:
+            return
+        pos = self.interactor.GetEventPosition()
+        p = self._pick_3d(pos[0], pos[1])
+        if p is not None:
+            self._draw_preview_box(self._drag_start, p)
+
+    def _on_mouse_up(self, obj, event):
+        """鼠标松开：完成画框，通知主窗口"""
+        if not self._dragging or self._drag_start is None:
+            return
+        pos = self.interactor.GetEventPosition()
+        p = self._pick_3d(pos[0], pos[1])
+        if p is None:
+            p = self._drag_start  # 如果松开时没拾取到，用起点
+
+        self._dragging = False
+        p1, p2 = self._drag_start, p
+
+        # 确保框有最小尺寸
+        if np.linalg.norm(p2 - p1) < 0.1:
+            print("[Pick] Box too small, ignored")
+            self._clear_box()
             return
 
-        # 获取鼠标点击位置
-        click_pos = self.interactor.GetEventPosition()
-        self.picker.Pick(click_pos[0], click_pos[1], 0, self.renderer)
+        # 画最终框
+        self._draw_preview_box(p1, p2)
 
-        pick_pos = self.picker.GetPickPosition()
-        if pick_pos == (0.0, 0.0, 0.0):
-            # 没有拾取到点，忽略
-            return
+        # 计算 Z 范围（用框内点云的实际 Z 范围）
+        mn = np.minimum(p1, p2)
+        mx = np.maximum(p1, p2)
+        if self.points_data is not None:
+            mask = np.all((self.points_data >= mn - 0.5) & (self.points_data <= mx + 0.5), axis=1)
+            pts_in_box = self.points_data[mask]
+            if len(pts_in_box) > 0:
+                mn[2] = pts_in_box[:, 2].min()
+                mx[2] = pts_in_box[:, 2].max()
 
-        pos = np.array(pick_pos)
-        self.picked_points.append(pos)
-        self._add_pick_marker(pos)
-        print(f"[Pick] Point {len(self.picked_points)}: ({pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f})")
+        print(f"[Pick] Box: ({mn[0]:.1f},{mn[1]:.1f},{mn[2]:.1f}) -> ({mx[0]:.1f},{mx[1]:.1f},{mx[2]:.1f})")
 
-        if len(self.picked_points) == 2:
-            # 选够两个点，画框并发出信号
-            p1, p2 = self.picked_points
-            self._draw_box(p1, p2)
-            self.pick_finished.emit(self.pick_mode, [p1.tolist(), p2.tolist()])
-            self.exit_pick_mode()
+        # 退出选框模式
+        self.exit_pick_mode()
 
-    def _on_key_press(self, obj, event):
-        """按键回调：Esc 取消选框"""
+        # 发出信号，由主窗口弹出菜单让用户选航线类型
+        self.box_selected.emit([mn.tolist(), mx.tolist()])
+
+    def _on_pick_key(self, obj, event):
+        """画框模式下按 Esc 取消"""
         key = self.interactor.GetKeyCode()
-        if key == '\x1b':  # Esc
-            self._clear_pick_markers()
+        if key == '\x1b':
             self._clear_box()
             self.exit_pick_mode()
 
-    def _add_pick_marker(self, pos):
-        """在选中位置添加高亮标记（大号亮黄球 + 红色十字）"""
-        # 大号黄色半透明球
-        sphere = vtkSphereSource()
-        sphere.SetCenter(pos.tolist())
-        sphere.SetRadius(0.5)
-        sphere.Update()
-
-        m = vtkPolyDataMapper()
-        m.SetInputConnection(sphere.GetOutputPort())
-        a = vtkActor()
-        a.SetMapper(m)
-        a.GetProperty().SetColor(1.0, 1.0, 0.0)  # 亮黄色
-        a.GetProperty().SetOpacity(0.7)
-        a.GetProperty().SetPointSize(5)
-        self.renderer.AddActor(a)
-        self.pick_markers.append(a)
-        self._actors.append(a)
-        self.vtk_widget.GetRenderWindow().Render()
-
-    def _draw_box(self, p1, p2):
-        """画两点定义的包围盒线框"""
+    def _draw_preview_box(self, p1, p2):
+        """实时绘制预览框（黄色半透明线框）"""
         self._clear_box()
 
-        # 包围盒的 8 个顶点
         mn = np.minimum(p1, p2)
         mx = np.maximum(p1, p2)
+
+        # 8 个顶点
         corners = [
             [mn[0], mn[1], mn[2]], [mx[0], mn[1], mn[2]],
             [mx[0], mx[1], mn[2]], [mn[0], mx[1], mn[2]],
@@ -521,9 +568,9 @@ class VTKViewer(QWidget):
 
         # 12 条边
         edges = [
-            (0,1),(1,2),(2,3),(3,0),  # 底面
-            (4,5),(5,6),(6,7),(7,4),  # 顶面
-            (0,4),(1,5),(2,6),(3,7),  # 竖边
+            (0,1),(1,2),(2,3),(3,0),
+            (4,5),(5,6),(6,7),(7,4),
+            (0,4),(1,5),(2,6),(3,7),
         ]
 
         for i1, i2 in edges:
@@ -534,29 +581,18 @@ class VTKViewer(QWidget):
             m.SetInputConnection(line.GetOutputPort())
             a = vtkActor()
             a.SetMapper(m)
-            a.GetProperty().SetColor(1.0, 1.0, 0.0)  # 黄色
+            a.GetProperty().SetColor(1.0, 1.0, 0.0)
             a.GetProperty().SetLineWidth(2)
             a.GetProperty().SetOpacity(0.8)
             self.renderer.AddActor(a)
             self.box_actors.append(a)
-            self._actors.append(a)
 
         self.vtk_widget.GetRenderWindow().Render()
-
-    def _clear_pick_markers(self):
-        """清除所有选点标记"""
-        for a in self.pick_markers:
-            self.renderer.RemoveActor(a)
-            if a in self._actors:
-                self._actors.remove(a)
-        self.pick_markers.clear()
 
     def _clear_box(self):
         """清除选框线框"""
         for a in self.box_actors:
             self.renderer.RemoveActor(a)
-            if a in self._actors:
-                self._actors.remove(a)
         self.box_actors.clear()
 
     def _update_view(self):
@@ -711,7 +747,7 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self.viewer)
 
         # 连接选框完成信号
-        self.viewer.pick_finished.connect(self._on_pick_finished)
+        self.viewer.box_selected.connect(self._on_box_selected)
 
         # ─── 右侧控制面板 ───
         ctrl = QWidget()
@@ -728,13 +764,21 @@ class MainWindow(QMainWindow):
         gl.addWidget(self.lbl_pc_info)
         ctrl_layout.addWidget(grp_load)
 
+        # -- 统一框选按钮 --
+        grp_pick = QGroupBox("Region Selection")
+        pk = QVBoxLayout(grp_pick)
+        self.btn_pick_region = QPushButton("Pick Region (Drag to Draw Box)")
+        self.btn_pick_region.setStyleSheet("QPushButton { background: #2a4a2a; font-weight: bold; padding: 8px; } QPushButton:hover { background: #3a5a3a; }")
+        pk.addWidget(self.btn_pick_region)
+        lbl_pick_hint = QLabel("Auto switch to top view. Drag to select area, then choose route type.")
+        lbl_pick_hint.setStyleSheet("color: #888; font-size: 10px;")
+        lbl_pick_hint.setWordWrap(True)
+        pk.addWidget(lbl_pick_hint)
+        ctrl_layout.addWidget(grp_pick)
+
         # -- 平面航线（桥底面弓字形扫描）--
         grp_flat = QGroupBox("Flat Surface Route (Zigzag Scan)")
         fl = QVBoxLayout(grp_flat)
-
-        self.btn_select_flat = QPushButton("Select Area (Click 2 Points)")
-        self.btn_select_flat.setStyleSheet("QPushButton { background: #2a4a2a; } QPushButton:hover { background: #3a5a3a; }")
-        fl.addWidget(self.btn_select_flat)
 
         fl.addWidget(self._label("Scan Area X Range:"))
         h = QHBoxLayout()
@@ -770,10 +814,6 @@ class MainWindow(QMainWindow):
         grp_surface = QGroupBox("Surface Scan (Equidistant)")
         sl = QVBoxLayout(grp_surface)
 
-        self.btn_select_surface = QPushButton("Select Surface Area (Click 2 Points)")
-        self.btn_select_surface.setStyleSheet("QPushButton { background: #2a4a2a; } QPushButton:hover { background: #3a5a3a; }")
-        sl.addWidget(self.btn_select_surface)
-
         h = QHBoxLayout()
         h.addWidget(QLabel("Standoff Dist:"))
         self.edt_standoff = QLineEdit("2.0"); h.addWidget(self.edt_standoff)
@@ -797,10 +837,6 @@ class MainWindow(QMainWindow):
         # -- 立方体航线（桥柱环绕扫描）--
         grp_cube = QGroupBox("Cube Route (Pillar Surround Scan)")
         cl = QVBoxLayout(grp_cube)
-
-        self.btn_select_cube = QPushButton("Select Box (Click 2 Points)")
-        self.btn_select_cube.setStyleSheet("QPushButton { background: #2a4a2a; } QPushButton:hover { background: #3a5a3a; }")
-        cl.addWidget(self.btn_select_cube)
 
         cl.addWidget(self._label("Pillar Center (x,y,z):"))
         h = QHBoxLayout()
@@ -866,9 +902,7 @@ class MainWindow(QMainWindow):
 
         # -- 信号连接 --
         self.btn_load.clicked.connect(self.load_point_cloud)
-        self.btn_select_flat.clicked.connect(lambda: self.viewer.enter_pick_mode("flat"))
-        self.btn_select_cube.clicked.connect(lambda: self.viewer.enter_pick_mode("cube"))
-        self.btn_select_surface.clicked.connect(lambda: self.viewer.enter_pick_mode("surface"))
+        self.btn_pick_region.clicked.connect(self.viewer.enter_pick_mode)
         self.btn_flat.clicked.connect(self.generate_flat_route)
         self.btn_surface.clicked.connect(self.generate_surface_route)
         self.btn_cube.clicked.connect(self.generate_cube_route)
@@ -909,38 +943,53 @@ class MainWindow(QMainWindow):
         """)
 
     # ─── 选框完成回调 ────────────────────────────────────────
-    def _on_pick_finished(self, mode, points):
-        """收到选框完成信号，更新对应输入框"""
-        p1 = np.array(points[0])
-        p2 = np.array(points[1])
-        mn = np.minimum(p1, p2)
-        mx = np.maximum(p1, p2)
+    def _on_box_selected(self, box):
+        """收到选框完成信号，弹出菜单让用户选航线类型"""
+        mn = np.array(box[0])
+        mx = np.array(box[1])
+        self._last_box = (mn, mx)
 
+        # 弹出菜单
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu { background: #2b2b30; color: #eee; border: 1px solid #555; padding: 4px; }
+            QMenu::item { padding: 6px 20px; }
+            QMenu::item:selected { background: #4a9eff; }
+        """)
+        menu.addAction("Flat Route (Zigzag)", lambda: self._apply_box("flat", mn, mx))
+        menu.addAction("Cube Route (Pillar)", lambda: self._apply_box("cube", mn, mx))
+        menu.addAction("Surface Scan (Equidistant)", lambda: self._apply_box("surface", mn, mx))
+
+        # 在鼠标位置弹出
+        cursor_pos = self.cursor().pos()
+        menu.exec_(cursor_pos)
+
+    def _apply_box(self, mode, mn, mx):
+        """根据用户选择的航线类型，填充参数并生成航线"""
         if mode == "flat":
-            # 平面航线：用包围盒的 X/Y 范围 + Z 取最高点 + 偏移
             self.edt_xmin.setText(f"{mn[0]:.1f}")
             self.edt_xmax.setText(f"{mx[0]:.1f}")
             self.edt_ymin.setText(f"{mn[1]:.1f}")
             self.edt_ymax.setText(f"{mx[1]:.1f}")
             self.edt_z.setText(f"{mx[2] + 3:.1f}")
-            print(f"[Pick] Flat area: X[{mn[0]:.1f}, {mx[0]:.1f}] Y[{mn[1]:.1f}, {mx[1]:.1f}] Z={mx[2]+3:.1f}")
+            print(f"[Pick] Flat: X[{mn[0]:.1f}, {mx[0]:.1f}] Y[{mn[1]:.1f}, {mx[1]:.1f}] Z={mx[2]+3:.1f}")
+            self.generate_flat_route()
 
         elif mode == "cube":
-            # 立方体航线：中心 + 尺寸
             center = (mn + mx) / 2
             size = mx - mn
             self.edt_cx.setText(f"{center[0]:.1f}")
             self.edt_cy.setText(f"{center[1]:.1f}")
             self.edt_cz.setText(f"{mn[2]:.1f}")
-            self.edt_dx.setText(f"{size[0]:.1f}")
-            self.edt_dy.setText(f"{size[1]:.1f}")
-            self.edt_dz.setText(f"{size[2]:.1f}")
+            self.edt_dx.setText(f"{max(size[0], 0.5):.1f}")
+            self.edt_dy.setText(f"{max(size[1], 0.5):.1f}")
+            self.edt_dz.setText(f"{max(size[2], 0.5):.1f}")
             print(f"[Pick] Cube: center=({center[0]:.1f},{center[1]:.1f},{mn[2]:.1f}) size=({size[0]:.1f},{size[1]:.1f},{size[2]:.1f})")
+            self.generate_cube_route()
 
         elif mode == "surface":
-            # 等距面扫描：存储选区范围，自动生成
             self._surface_bounds = (mn, mx)
-            print(f"[Pick] Surface area: X[{mn[0]:.1f}, {mx[0]:.1f}] Y[{mn[1]:.1f}, {mx[1]:.1f}] Z[{mn[2]:.1f}, {mx[2]:.1f}]")
+            print(f"[Pick] Surface: X[{mn[0]:.1f}, {mx[0]:.1f}] Y[{mn[1]:.1f}, {mx[1]:.1f}] Z[{mn[2]:.1f}, {mx[2]:.1f}]")
             self.generate_surface_route()
 
     # ─── 加载点云 ───
