@@ -351,11 +351,6 @@ class VTKViewer(QWidget):
         glyph.SetInputData(polydata)
         glyph.Update()
 
-        # 设置拾取器的数据源
-        if self.picker:
-            self.picker.InitializePickList()
-            self.picker.SetPickList(polydata)
-
         mapper = vtkPolyDataMapper()
         mapper.SetInputConnection(glyph.GetOutputPort())
         mapper.ScalarVisibilityOn()
