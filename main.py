@@ -746,7 +746,7 @@ class MainWindow(QMainWindow):
 
         # ─── 右侧控制面板 ───
         ctrl = QWidget()
-        ctrl.setFixedWidth(340)
+        ctrl.setMinimumWidth(320)
         ctrl_layout = QVBoxLayout(ctrl)
         ctrl_layout.setSpacing(6)
 
@@ -926,7 +926,7 @@ class MainWindow(QMainWindow):
             QLineEdit:focus { border-color: #4a9eff; }
             QPushButton {
                 background: #3a3a42; border: 1px solid #555; border-radius: 4px;
-                padding: 6px 14px; color: #eee;
+                padding: 6px 14px; color: #eee; min-height: 24px;
             }
             QPushButton:hover { background: #4a4a55; }
             QPushButton:pressed { background: #555566; }
