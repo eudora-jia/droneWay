@@ -431,7 +431,7 @@ class VTKViewer(QWidget):
     # ─── 拖拽画框模式 ─────────────────────────────────────────
     def enter_pick_mode(self):
         """进入拖拽画框模式，自动切到俯视/仰视视角"""
-        if self.points is None or len(self.points) == 0:
+        if self.points_data is None or len(self.points_data) == 0:
             print("[Pick] No point cloud loaded")
             return
 
@@ -897,7 +897,7 @@ class MainWindow(QMainWindow):
 
         # -- 信号连接 --
         self.btn_load.clicked.connect(self.load_point_cloud)
-        self.btn_pick_region.clicked.connect(self.viewer.enter_pick_mode)
+        self.btn_pick_region.clicked.connect(lambda: self.viewer.enter_pick_mode())
         self.btn_flat.clicked.connect(self.generate_flat_route)
         self.btn_surface.clicked.connect(self.generate_surface_route)
         self.btn_cube.clicked.connect(self.generate_cube_route)
