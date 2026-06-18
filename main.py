@@ -20,9 +20,9 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QLabel, QLineEdit, QPushButton, QComboBox,
     QFileDialog, QMessageBox, QSplitter, QSizePolicy, QMenu,
-    QProgressBar, QCheckBox, QGridLayout
+    QProgressBar, QCheckBox, QGridLayout, QScrollArea, QTabWidget
 )
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from PyQt5.QtGui import QFont
 
 # ─── VTK 导入（兼容多个版本）────────────────────────────────
@@ -65,7 +65,8 @@ if VTK_AVAILABLE:
     from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
 
     class FoxgloveInteractorStyle(vtkInteractorStyleTrackballCamera):
-        """仿 Foxglove 交互风格：左键=平移，右键=旋转，滚轮=缩放"""
+        """仿 Foxglove 交互风格：左键=平移，右键=旋转，滚轮=缩放
+        所有鼠标逻辑统一在此处理，避免与观察者冲突。"""
 
         def __init__(self):
             super().__init__()
@@ -77,16 +78,71 @@ if VTK_AVAILABLE:
         def set_viewer(self, viewer):
             self._vtk_viewer = viewer
 
-        # ── 左键：平移（Pan）──
+        # ── 左键 ──
         def OnLeftButtonDown(self):
-            if self._vtk_viewer and getattr(self._vtk_viewer, '_pick_drag_active', False):
+            v = self._vtk_viewer
+            if v is None:
+                self.StartPan()
                 return
+
+            rwi = self.GetInteractor()
+            ctrl = rwi.GetControlKey()
+
+            # Ctrl + 左键：航点编辑 或 画框
+            if ctrl:
+                pos = rwi.GetEventPosition()
+                wp_idx = v._find_nearest_waypoint(pos[0], pos[1])
+                if wp_idx >= 0:
+                    v._start_wp_edit(wp_idx, pos[0], pos[1])
+                    v._pick_drag_active = True
+                    return
+                if v.pick_mode:
+                    p = v._pick_3d(pos[0], pos[1])
+                    if p is not None:
+                        v._dragging = True
+                        v._drag_start = p
+                        v._pick_drag_active = True
+                        v._clear_box()
+                    return
+
+            # 普通左键：平移
             self.StartPan()
 
         def OnLeftButtonUp(self):
+            v = self._vtk_viewer
+            if v and v._wp_editing:
+                v._end_wp_edit()
+                v._pick_drag_active = False
+                return
+            if v and v._dragging:
+                v._dragging = False
+                v._pick_drag_active = False
+                # 完成画框
+                rwi = self.GetInteractor()
+                pos = rwi.GetEventPosition()
+                p = v._pick_3d(pos[0], pos[1])
+                if p is None:
+                    p = v._drag_start
+                if p is not None and v._drag_start is not None:
+                    p1, p2 = v._drag_start, p
+                    if np.linalg.norm(p2 - p1) >= 0.1:
+                        v._draw_preview_box(p1, p2)
+                        mn = np.minimum(p1, p2)
+                        mx = np.maximum(p1, p2)
+                        if v.points_data is not None:
+                            mask = np.all((v.points_data >= mn - 0.5) & (v.points_data <= mx + 0.5), axis=1)
+                            pts_in_box = v.points_data[mask]
+                            if len(pts_in_box) > 0:
+                                mn[2] = pts_in_box[:, 2].min()
+                                mx[2] = pts_in_box[:, 2].max()
+                        v.box_selected.emit([mn.tolist(), mx.tolist()])
+                    else:
+                        v._clear_box()
+                v._drag_start = None
+                return
             self.EndPan()
 
-        # ── 右键：旋转（手动实现，避免 VTK 事件冲突）──
+        # ── 右键：旋转 ──
         def OnRightButtonDown(self):
             rwi = self.GetInteractor()
             self._last_x, self._last_y = rwi.GetEventPosition()
@@ -95,21 +151,37 @@ if VTK_AVAILABLE:
         def OnRightButtonUp(self):
             self._rotating = False
 
+        # ── 移动 ──
         def OnMouseMove(self):
+            v = self._vtk_viewer
+            rwi = self.GetInteractor()
+
+            # 航点编辑
+            if v and v._wp_editing:
+                pos = rwi.GetEventPosition()
+                v._update_wp_edit(pos[0], pos[1])
+                return
+
+            # 画框预览
+            if v and v._dragging:
+                pos = rwi.GetEventPosition()
+                p = v._pick_3d(pos[0], pos[1])
+                if p is not None:
+                    v._draw_preview_box(v._drag_start, p)
+                return
+
+            # 右键旋转
             if self._rotating:
-                rwi = self.GetInteractor()
                 renderer = self.GetCurrentRenderer()
                 if renderer is None:
                     self.FindPokedRenderer(rwi.GetEventPosition()[0], rwi.GetEventPosition()[1])
                     renderer = self.GetCurrentRenderer()
                 if renderer is None:
                     return
-
                 cur_x, cur_y = rwi.GetEventPosition()
                 dx = cur_x - self._last_x
                 dy = cur_y - self._last_y
                 self._last_x, self._last_y = cur_x, cur_y
-
                 camera = renderer.GetActiveCamera()
                 camera.Azimuth(-dx * 0.4)
                 camera.Elevation(dy * 0.4)
@@ -118,6 +190,7 @@ if VTK_AVAILABLE:
                 rwi.Render()
                 return
 
+            # 默认：平移时由 VTK 内部处理
             super().OnMouseMove()
 
 
@@ -350,6 +423,30 @@ class VTKViewer(QWidget):
 
         self.vtk_widget = QVTKRenderWindowInteractor(self)
         layout.addWidget(self.vtk_widget)
+
+        # ─── 视角切换按钮（右上角覆盖层）───
+        from PyQt5.QtWidgets import QFrame, QButtonGroup
+        view_frame = QFrame(self.vtk_widget)
+        view_frame.setStyleSheet("QFrame { background: rgba(30,30,34,180); border-radius: 6px; }")
+        view_frame.setFixedSize(180, 32)
+        view_layout = QHBoxLayout(view_frame)
+        view_layout.setContentsMargins(4, 2, 4, 2)
+        view_layout.setSpacing(2)
+
+        self._view_btns = QButtonGroup(self)
+        views = [("俯", "top"), ("仰", "bottom"), ("正", "front"), ("侧", "side"), ("透", "persp")]
+        for i, (label, name) in enumerate(views):
+            btn = QPushButton(label)
+            btn.setFixedSize(28, 24)
+            btn.setStyleSheet("QPushButton { background: #3a3a42; border: 1px solid #555; border-radius: 3px; color: #ddd; font-size: 11px; } QPushButton:checked { background: #4a9eff; }")
+            btn.setCheckable(True)
+            btn.clicked.connect(lambda checked, n=name: self._set_view(n))
+            view_layout.addWidget(btn)
+            self._view_btns.addButton(btn, i)
+
+        self._view_btns.button(0).setChecked(True)  # 默认俯视
+        # 延迟定位到右上角
+        QTimer.singleShot(100, lambda: view_frame.move(self.vtk_widget.width() - 190, 8))
 
         self.renderer = vtkRenderer()
         self.vtk_widget.GetRenderWindow().AddRenderer(self.renderer)
@@ -631,14 +728,14 @@ class VTKViewer(QWidget):
         # 计算标签偏移量（基于航点间距）
         if n >= 2:
             avg_d = np.mean([np.linalg.norm(waypoints[i+1]['pos'] - waypoints[i]['pos']) for i in range(n-1)])
-            label_offset = avg_d * 0.15
+            label_offset = avg_d * 0.08
         else:
-            label_offset = 0.3
+            label_offset = 0.2
 
         for i, wp in enumerate(waypoints):
             sphere = vtkSphereSource()
             sphere.SetCenter(wp['pos'].tolist())
-            sphere.SetRadius(0.15)
+            sphere.SetRadius(0.3)
             sphere.Update()
 
             m = vtkPolyDataMapper()
@@ -657,8 +754,8 @@ class VTKViewer(QWidget):
             txt_m.SetInputConnection(txt_src.GetOutputPort())
             follower = vtkFollower()
             follower.SetMapper(txt_m)
-            follower.SetScale(label_offset, label_offset, label_offset)
-            follower.SetPosition(wp['pos'][0], wp['pos'][1], wp['pos'][2] + label_offset * 1.5)
+            follower.SetScale(label_offset * 0.6, label_offset * 0.6, label_offset * 0.6)
+            follower.SetPosition(wp['pos'][0], wp['pos'][1], wp['pos'][2] + label_offset * 2)
             follower.GetProperty().SetColor(1.0, 1.0, 0.2)  # 黄色编号
             follower.SetCamera(self.renderer.GetActiveCamera())
             self.renderer.AddActor(follower)
@@ -771,90 +868,6 @@ class VTKViewer(QWidget):
         if pos == (0.0, 0.0, 0.0):
             return None
         return np.array(pos)
-
-    def _on_mouse_down(self, obj, event):
-        """鼠标按下：Ctrl+左键 → 航点编辑 或 画框选区"""
-        self._pick_drag_active = False
-        if not self.interactor.GetControlKey():
-            return  # 没按 Ctrl，交给 FoxgloveInteractorStyle 处理（左键平移）
-
-        pos = self.interactor.GetEventPosition()
-
-        # 优先检查：Ctrl+左键点击附近有航点 → 进入航点编辑
-        wp_idx = self._find_nearest_waypoint(pos[0], pos[1])
-        if wp_idx >= 0:
-            self._start_wp_edit(wp_idx, pos[0], pos[1])
-            self._pick_drag_active = True
-            return
-
-        # 次优先：pick_mode 下画框
-        if not self.pick_mode:
-            return
-        p = self._pick_3d(pos[0], pos[1])
-        if p is not None:
-            self._dragging = True
-            self._drag_start = p
-            self._pick_drag_active = True
-            self._clear_box()
-            print(f"[Pick] Start: ({p[0]:.2f}, {p[1]:.2f}, {p[2]:.2f})")
-
-    def _on_mouse_move(self, obj, event):
-        """鼠标拖动：航点编辑 或 画框预览"""
-        if self._wp_editing:
-            pos = self.interactor.GetEventPosition()
-            self._update_wp_edit(pos[0], pos[1])
-            return
-        if not self._dragging or self._drag_start is None:
-            return
-        pos = self.interactor.GetEventPosition()
-        p = self._pick_3d(pos[0], pos[1])
-        if p is not None:
-            self._draw_preview_box(self._drag_start, p)
-
-    def _on_mouse_up(self, obj, event):
-        """鼠标松开：完成航点编辑 或 画框"""
-        if self._wp_editing:
-            self._end_wp_edit()
-            self._pick_drag_active = False
-            return
-        if not self._dragging or self._drag_start is None:
-            self._pick_drag_active = False
-            return
-        pos = self.interactor.GetEventPosition()
-        p = self._pick_3d(pos[0], pos[1])
-        if p is None:
-            p = self._drag_start
-
-        self._dragging = False
-        self._pick_drag_active = False
-        p1, p2 = self._drag_start, p
-
-        # 确保框有最小尺寸
-        if np.linalg.norm(p2 - p1) < 0.1:
-            print("[Pick] Box too small, ignored")
-            self._clear_box()
-            return
-
-        # 画最终框
-        self._draw_preview_box(p1, p2)
-
-        # 计算 Z 范围（用框内点云的实际 Z 范围）
-        mn = np.minimum(p1, p2)
-        mx = np.maximum(p1, p2)
-        if self.points_data is not None:
-            mask = np.all((self.points_data >= mn - 0.5) & (self.points_data <= mx + 0.5), axis=1)
-            pts_in_box = self.points_data[mask]
-            if len(pts_in_box) > 0:
-                mn[2] = pts_in_box[:, 2].min()
-                mx[2] = pts_in_box[:, 2].max()
-
-        print(f"[Pick] Box: ({mn[0]:.1f},{mn[1]:.1f},{mn[2]:.1f}) -> ({mx[0]:.1f},{mx[1]:.1f},{mx[2]:.1f})")
-
-        # 退出选框模式
-        self.exit_pick_mode()
-
-        # 发出信号，由主窗口弹出菜单让用户选航线类型
-        self.box_selected.emit([mn.tolist(), mx.tolist()])
 
     # ─── 航点编辑 ──────────────────────────────────────────────
     def _find_nearest_waypoint(self, screen_x, screen_y):
@@ -1037,6 +1050,35 @@ class VTKViewer(QWidget):
         cam.Azimuth(-45)
         self.vtk_widget.GetRenderWindow().Render()
 
+    def _set_view(self, name):
+        """切换视角：top/bottom/front/side/persp"""
+        if not VTK_AVAILABLE:
+            return
+        cam = self.renderer.GetActiveCamera()
+        cam.SetFocalPoint(0, 0, 0)
+        cam.SetViewUp(0, 1, 0)
+
+        if name == "top":
+            cam.SetPosition(0, 0, 100)
+        elif name == "bottom":
+            cam.SetPosition(0, 0, -100)
+            cam.SetViewUp(0, -1, 0)
+        elif name == "front":
+            cam.SetPosition(0, -100, 0)
+        elif name == "side":
+            cam.SetPosition(100, 0, 0)
+        elif name == "persp":
+            cam.SetPosition(50, -80, 60)
+            cam.SetViewUp(0, 0, 1)
+            self.renderer.ResetCamera()
+            cam.Elevation(30)
+            cam.Azimuth(-45)
+            self.vtk_widget.GetRenderWindow().Render()
+            return
+
+        self.renderer.ResetCamera()
+        self.vtk_widget.GetRenderWindow().Render()
+
     def _on_global_key_press(self, obj, event):
         """全局快捷键：视角切换"""
         key = self.interactor.GetKeyCode()
@@ -1154,11 +1196,6 @@ class VTKViewer(QWidget):
 
         # 绑定全局快捷键（视角切换 + Esc 取消画框）
         self.interactor.AddObserver("KeyPressEvent", self._on_global_key_press)
-
-        # 一次性绑定鼠标事件（Ctrl+左键画框，由 pick_mode 标志位控制）
-        self.interactor.AddObserver("LeftButtonPressEvent", self._on_mouse_down)
-        self.interactor.AddObserver("MouseMoveEvent", self._on_mouse_move)
-        self.interactor.AddObserver("LeftButtonReleaseEvent", self._on_mouse_up)
 
 
 # ─── 主窗口 ──────────────────────────────────────────────────
@@ -1387,7 +1424,15 @@ class MainWindow(QMainWindow):
         ctrl_layout.addWidget(lbl_help)
 
         ctrl_layout.addStretch()
-        splitter.addWidget(ctrl)
+
+        # 用 QScrollArea 包裹控制面板，防止最大化时挤压
+        scroll = QScrollArea()
+        scroll.setWidget(ctrl)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setMinimumWidth(320)
+        scroll.setMaximumWidth(400)
+        splitter.addWidget(scroll)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 0)
         main_layout.addWidget(splitter)
