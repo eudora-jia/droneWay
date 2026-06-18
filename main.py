@@ -56,6 +56,38 @@ except ImportError:
         print("[WARNING] VTK not installed. Run: pip install vtk")
 
 
+# ─── Foxglove 风格交互：左键平移，右键旋转 ───────────────────
+if VTK_AVAILABLE:
+    from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
+
+    class FoxgloveInteractorStyle(vtkInteractorStyleTrackballCamera):
+        """仿 Foxglove 交互风格：左键=平移，右键=旋转，滚轮=缩放"""
+
+        def __init__(self):
+            super().__init__()
+            self._vtk_viewer = None  # 由 VTKViewer 设置引用
+
+        def set_viewer(self, viewer):
+            self._vtk_viewer = viewer
+
+        # ── 左键：平移（Pan）──
+        def OnLeftButtonDown(self):
+            # 画框拖拽激活时不执行 Pan，交给观察者处理
+            if self._vtk_viewer and getattr(self._vtk_viewer, '_pick_drag_active', False):
+                return
+            self.StartPan()
+
+        def OnLeftButtonUp(self):
+            self.EndPan()
+
+        # ── 右键：旋转（Rotate）──
+        def OnRightButtonDown(self):
+            self.StartRotate()
+
+        def OnRightButtonUp(self):
+            self.EndRotate()
+
+
 # ─── PCD 文件解析 ────────────────────────────────────────────
 def parse_pcd(filepath):
     """解析 PCD 文件，返回 numpy 数组 (N, 3) float64"""
@@ -287,6 +319,7 @@ class VTKViewer(QWidget):
         self.pick_mode = False      # 是否处于画框模式
         self._dragging = False      # 是否正在拖拽
         self._drag_start = None     # 拖拽起点 (3D)
+        self._pick_drag_active = False  # 画框拖拽已激活（阻止 interactor style 平移）
         self.box_actors = []        # 选框线框 actor
         self._observers = []        # 事件观察者 ID
 
@@ -455,6 +488,7 @@ class VTKViewer(QWidget):
         self.pick_mode = False
         self._dragging = False
         self._drag_start = None
+        self._pick_drag_active = False
         print("[Pick] Pick mode exited.")
 
     def _pick_3d(self, screen_x, screen_y):
@@ -468,14 +502,16 @@ class VTKViewer(QWidget):
         return np.array(pos)
 
     def _on_mouse_down(self, obj, event):
-        """鼠标按下：仅在 pick_mode 且按住 Ctrl 时画框，否则交给 VTK 默认旋转"""
+        """鼠标按下：仅在 pick_mode 且按住 Ctrl 时画框，否则交给 FoxgloveInteractorStyle 处理"""
+        self._pick_drag_active = False
         if not self.pick_mode or not self.interactor.GetControlKey():
-            return  # 没按 Ctrl 或不在 pick mode，交给 VTK 默认旋转
+            return  # 交给 FoxgloveInteractorStyle 处理（左键平移）
         pos = self.interactor.GetEventPosition()
         p = self._pick_3d(pos[0], pos[1])
         if p is not None:
             self._dragging = True
             self._drag_start = p
+            self._pick_drag_active = True  # 标记画框拖拽已激活，阻止 interactor style 的平移
             self._clear_box()
             print(f"[Pick] Start: ({p[0]:.2f}, {p[1]:.2f}, {p[2]:.2f})")
 
@@ -491,6 +527,7 @@ class VTKViewer(QWidget):
     def _on_mouse_up(self, obj, event):
         """鼠标松开：完成画框，通知主窗口"""
         if not self._dragging or self._drag_start is None:
+            self._pick_drag_active = False
             return
         pos = self.interactor.GetEventPosition()
         p = self._pick_3d(pos[0], pos[1])
@@ -498,6 +535,7 @@ class VTKViewer(QWidget):
             p = self._drag_start  # 如果松开时没拾取到，用起点
 
         self._dragging = False
+        self._pick_drag_active = False
         p1, p2 = self._drag_start, p
 
         # 确保框有最小尺寸
@@ -694,10 +732,15 @@ class VTKViewer(QWidget):
         self._update_view()
         self.interactor.Initialize()
 
-        # 绑定全局快捷键（视角切换）
+        # 设置 Foxglove 风格交互（左键平移，右键旋转）
+        style = FoxgloveInteractorStyle()
+        style.set_viewer(self)
+        self.interactor.SetInteractorStyle(style)
+
+        # 绑定全局快捷键（视角切换 + Esc 取消画框）
         self.interactor.AddObserver("KeyPressEvent", self._on_global_key_press)
 
-        # 一次性绑定鼠标事件（用 pick_mode 标志位控制是否画框）
+        # 一次性绑定鼠标事件（Ctrl+左键画框，由 pick_mode 标志位控制）
         self.interactor.AddObserver("LeftButtonPressEvent", self._on_mouse_down)
         self.interactor.AddObserver("MouseMoveEvent", self._on_mouse_move)
         self.interactor.AddObserver("LeftButtonReleaseEvent", self._on_mouse_up)
