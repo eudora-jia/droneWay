@@ -1092,6 +1092,36 @@ class MainWindow(QMainWindow):
         gl.addWidget(self.progress_bar)
         ctrl_layout.addWidget(grp_load)
 
+        # -- 桥梁参数 --
+        grp_bridge = QGroupBox("Bridge Parameters")
+        bp = QVBoxLayout(grp_bridge)
+
+        # 桥型
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Type:"))
+        self.cmb_bridge_type = QComboBox()
+        self.cmb_bridge_type.addItems(["Over River (跨河)", "Over Road (跨线)", "Viaduct (高架)"])
+        row.addWidget(self.cmb_bridge_type)
+        bp.addLayout(row)
+
+        # 桥长、桥宽、净空高度
+        self.edt_bridge_len = self._make_labeled_input(bp, "Length (m):", "100")
+        self.edt_bridge_wid = self._make_labeled_input(bp, "Width (m):", "15")
+        self.edt_bridge_clr = self._make_labeled_input(bp, "Clearance (m):", "8")
+        self.edt_bridge_span = self._make_labeled_input(bp, "Span (m):", "30")
+
+        btn_apply_bridge = QPushButton("Apply to Route Defaults")
+        btn_apply_bridge.setStyleSheet("QPushButton { background: #2a3a5a; padding: 6px; } QPushButton:hover { background: #3a4a6a; }")
+        btn_apply_bridge.clicked.connect(self._apply_bridge_params)
+        bp.addWidget(btn_apply_bridge)
+
+        lbl_bridge_hint = QLabel("Bridge params auto-fill route area & flight height.")
+        lbl_bridge_hint.setStyleSheet("color: #888; font-size: 10px;")
+        lbl_bridge_hint.setWordWrap(True)
+        bp.addWidget(lbl_bridge_hint)
+
+        ctrl_layout.addWidget(grp_bridge)
+
         # -- 统一框选按钮 --
         grp_pick = QGroupBox("Region Selection")
         pk = QVBoxLayout(grp_pick)
@@ -1629,7 +1659,78 @@ class MainWindow(QMainWindow):
 
         self._display_route()
 
-    # ─── 显示航线 ───
+    @staticmethod
+    def _make_labeled_input(parent_layout, label, default=""):
+        """创建一行 Label + QLineEdit，返回 QLineEdit"""
+        row = QHBoxLayout()
+        row.addWidget(QLabel(label))
+        edt = QLineEdit(default)
+        edt.setMaximumWidth(80)
+        row.addWidget(edt)
+        row.addStretch()
+        parent_layout.addLayout(row)
+        return edt
+
+    def _apply_bridge_params(self):
+        """根据桥参数自动填充航线默认值"""
+        try:
+            bridge_len = float(self.edt_bridge_len.text())
+            bridge_wid = float(self.edt_bridge_wid.text())
+            clearance = float(self.edt_bridge_clr.text())
+            span = float(self.edt_bridge_span.text())
+        except ValueError:
+            QMessageBox.warning(self, "Invalid Input", "Please enter valid bridge parameters")
+            return
+
+        bridge_type = self.cmb_bridge_type.currentIndex()
+
+        # 不同桥型的默认飞行高度偏移
+        if bridge_type == 0:    # 跨河：桥底面往下偏移
+            z_offset = 3.0
+        elif bridge_type == 1:  # 跨线：桥底面往下偏移更多（避开线路）
+            z_offset = 5.0
+        else:                   # 高架：桥底面偏移适中
+            z_offset = 4.0
+
+        # 用点云中心作为参考原点（如果有加载点云）
+        if self.points is not None and len(self.points) > 0:
+            center = (self.points.min(axis=0) + self.points.max(axis=0)) / 2
+            cx, cy = center[0], center[1]
+        else:
+            cx, cy = 0.0, 0.0
+
+        half_len = bridge_len / 2
+        half_wid = bridge_wid / 2
+
+        # 平面航线：覆盖桥底面区域
+        self.edt_xmin.setText(f"{cx - half_len:.1f}")
+        self.edt_xmax.setText(f"{cx + half_len:.1f}")
+        self.edt_ymin.setText(f"{cy - half_wid:.1f}")
+        self.edt_ymax.setText(f"{cy + half_wid:.1f}")
+
+        # Z = 桥底面高度（用点云最高点估算） - 偏移
+        if self.points is not None and len(self.points) > 0:
+            z_bottom = self.points[:, 2].max() - z_offset
+        else:
+            z_bottom = clearance
+        self.edt_z.setText(f"{z_bottom:.1f}")
+
+        # 立方体航线：桥墩扫描
+        self.edt_cx.setText(f"{cx:.1f}")
+        self.edt_cy.setText(f"{cy:.1f}")
+        self.edt_cz.setText(f"{clearance:.1f}")
+        self.edt_dx.setText(f"{bridge_wid * 0.3:.1f}")
+        self.edt_dy.setText(f"{bridge_wid * 0.3:.1f}")
+        self.edt_dz.setText(f"{clearance:.1f}")
+
+        # 扫描间距根据跨距调整
+        spacing = max(span / 5, 2.0)
+        self.edt_spacing.setText(f"{spacing:.1f}")
+
+        bridge_name = self.cmb_bridge_type.currentText()
+        print(f"[Bridge] Applied: {bridge_name}, L={bridge_len}m, W={bridge_wid}m, Clearance={clearance}m, Span={span}m")
+        self.lbl_info.setText(f"Bridge: {bridge_name}, {bridge_len}m x {bridge_wid}m")
+
     def _on_safe_dist_changed(self, text):
         """安全距离输入变更"""
         try:
@@ -1699,9 +1800,20 @@ class MainWindow(QMainWindow):
         if not path:
             return
 
+        # 桥梁参数
+        bridge_params = {
+            "type": self.cmb_bridge_type.currentText(),
+            "type_index": self.cmb_bridge_type.currentIndex(),
+            "length_m": self.edt_bridge_len.text(),
+            "width_m": self.edt_bridge_wid.text(),
+            "clearance_m": self.edt_bridge_clr.text(),
+            "span_m": self.edt_bridge_span.text(),
+        }
+
         data = {
-            "version": "1.0",
+            "version": "2.0",
             "description": "Bridge inspection route",
+            "bridge": bridge_params,
             "waypoint_count": len(self.waypoints),
             "waypoints": []
         }
@@ -1752,6 +1864,17 @@ class MainWindow(QMainWindow):
                     'speed': wp.get('speed', 2.0),
                     'action': wp.get('action', 'fly')
                 })
+
+            # 恢复桥梁参数
+            bridge = data.get('bridge', {})
+            if bridge:
+                idx = bridge.get('type_index', 0)
+                if 0 <= idx < self.cmb_bridge_type.count():
+                    self.cmb_bridge_type.setCurrentIndex(idx)
+                self.edt_bridge_len.setText(str(bridge.get('length_m', '100')))
+                self.edt_bridge_wid.setText(str(bridge.get('width_m', '15')))
+                self.edt_bridge_clr.setText(str(bridge.get('clearance_m', '8')))
+                self.edt_bridge_span.setText(str(bridge.get('span_m', '30')))
 
             self._display_route()
             QMessageBox.information(self, "Loaded", f"Loaded {len(self.waypoints)} waypoints")
