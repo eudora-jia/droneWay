@@ -415,8 +415,7 @@ class VTKViewer(QWidget):
         takeoff_actor.SetMapper(takeoff_mapper)
         takeoff_actor.GetProperty().SetColor(0.2, 0.5, 1.0)
         takeoff_actor.GetProperty().SetLineWidth(3)
-        takeoff_actor.GetProperty().SetLineStipplePattern(0xF0F0)
-        takeoff_actor.GetProperty().SetLineStippleRepeatFactor(1)
+        takeoff_actor.GetProperty().SetOpacity(0.6)
         self.renderer.AddActor(takeoff_actor)
         self._actors.append(takeoff_actor)
 
@@ -464,7 +463,7 @@ class VTKViewer(QWidget):
             follower.SetMapper(txt_m)
             follower.SetScale(label_offset * 0.6, label_offset * 0.6, label_offset * 0.6)
             follower.SetPosition(wp['pos'][0], wp['pos'][1], wp['pos'][2] + label_offset * 2)
-            follower.GetProperty().SetColor(1.0, 1.0, 0.2)
+            follower.GetProperty().SetColor(0.0, 0.2, 0.8)
             follower.SetCamera(self.renderer.GetActiveCamera())
             self.renderer.AddActor(follower)
             self._actors.append(follower)
@@ -649,12 +648,12 @@ class VTKViewer(QWidget):
     # ─── 点击放置模式 ─────────────────────────────────────
     def enter_place_mode(self):
         if self.points_data is None or len(self.points_data) == 0:
-            print("[Place] No point cloud loaded")
+            print("[Place] No point cloud loaded - 请先加载点云")
             return
         self.place_mode = True
         self._place_preview_pos = None
         self._place_preview_actor = None
-        print("[Place] 左键选择位置，右键确认，Esc取消")
+        print(f"[Place] 进入放置模式, place_mode={self.place_mode}")
 
     def exit_place_mode(self):
         self.place_mode = False
@@ -879,8 +878,8 @@ class VTKViewer(QWidget):
         m.SetInputData(grid_poly)
         a = vtkActor()
         a.SetMapper(m)
-        a.GetProperty().SetColor(0.3, 0.3, 0.3)
-        a.GetProperty().SetOpacity(0.4)
+        a.GetProperty().SetColor(0.5, 0.5, 0.5)
+        a.GetProperty().SetOpacity(0.6)
         self.renderer.AddActor(a)
         self._actors.append(a)
 

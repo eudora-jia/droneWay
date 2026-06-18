@@ -7,7 +7,7 @@ import numpy as np
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QLabel, QLineEdit, QPushButton, QComboBox,
-    QFileDialog, QMessageBox, QSplitter,
+    QFileDialog, QMessageBox, QSplitter, QButtonGroup,
     QProgressBar, QCheckBox, QGridLayout, QScrollArea, QTabWidget
 )
 from PyQt5.QtCore import Qt
@@ -59,8 +59,7 @@ class MainWindow(QMainWindow):
         # -- 模式切换 --
         grp_mode = QGroupBox("工作模式")
         mode_layout = QHBoxLayout(grp_mode)
-        from PyQt5.QtWidgets import QButtonGroup as QBtnGroup
-        self._mode_group = QBtnGroup(self)
+        self._mode_group = QButtonGroup(self)
         self.btn_mode_preview = QPushButton("预览模式")
         self.btn_mode_preview.setCheckable(True)
         self.btn_mode_preview.setChecked(True)
@@ -150,20 +149,18 @@ class MainWindow(QMainWindow):
         self.btn_poly_select.clicked.connect(self._start_polygon_select)
         fl.addWidget(self.btn_poly_select, 0, 0, 1, 4)
 
-        fl.addWidget(QLabel("高度Z:"), 1, 0)
-        self.edt_z = QLineEdit("5"); fl.addWidget(self.edt_z, 1, 1)
-        fl.addWidget(QLabel("线间距:"), 1, 2)
-        self.edt_spacing = QLineEdit("2"); fl.addWidget(self.edt_spacing, 1, 3)
+        fl.addWidget(QLabel("高度Z:"), 0, 0)
+        self.edt_z = QLineEdit("5"); fl.addWidget(self.edt_z, 0, 1)
+        fl.addWidget(QLabel("线间距:"), 0, 2)
+        self.edt_spacing = QLineEdit("2"); fl.addWidget(self.edt_spacing, 0, 3)
 
-        fl.addWidget(QLabel("航点距离:"), 2, 0)
-        self.edt_wp_spacing = QLineEdit("2"); fl.addWidget(self.edt_wp_spacing, 2, 1)
-        fl.addWidget(QLabel("速度(m/s):"), 2, 2)
-        self.edt_flat_speed = QLineEdit("3"); fl.addWidget(self.edt_flat_speed, 2, 3)
+        fl.addWidget(QLabel("航点距离:"), 1, 0)
+        self.edt_wp_spacing = QLineEdit("2"); fl.addWidget(self.edt_wp_spacing, 1, 1)
+        fl.addWidget(QLabel("速度(m/s):"), 1, 2)
+        self.edt_flat_speed = QLineEdit("3"); fl.addWidget(self.edt_flat_speed, 1, 3)
 
-        fl.addWidget(QLabel("曲度:"), 3, 0)
-        self.edt_flat_speed = QLineEdit("3"); fl.addWidget(self.edt_flat_speed, 2, 1)
-        fl.addWidget(QLabel("曲度:"), 2, 2)
-        self.edt_curvature = QLineEdit("0"); fl.addWidget(self.edt_curvature, 2, 3)
+        fl.addWidget(QLabel("曲度:"), 2, 0)
+        self.edt_curvature = QLineEdit("0"); fl.addWidget(self.edt_curvature, 2, 1)
 
         self.btn_flat = QPushButton("生成面状航线")
         fl.addWidget(self.btn_flat, 3, 0, 1, 4)
@@ -547,9 +544,15 @@ class MainWindow(QMainWindow):
             y += spacing
             if y <= ymax:
                 z_next = curved_z(y)
+                # 转折点朝向下一条扫描线方向
+                next_dir = -direction
+                quat = look_at_quaternion(
+                    np.array([x_end + next_dir, y, z_next]),
+                    np.array([x_end, y, z_next])
+                )
                 self.waypoints.append({
                     'pos': np.array([x_end, y, z_next]),
-                    'quat': np.array([1.0, 0.0, 0.0, 0.0]),
+                    'quat': quat,
                     'speed': speed,
                     'action': 'fly'
                 })
