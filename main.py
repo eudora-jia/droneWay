@@ -1493,27 +1493,27 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(f"""
             QMainWindow {{ background: #1e1e22; }}
             QWidget {{ color: #ddd; font-family: "{cn_font}", "Segoe UI", Arial; font-size: 12px; }}
-            QGroupBox {
+            QGroupBox {{
                 border: 1px solid #444; border-radius: 6px;
                 margin-top: 8px; padding: 10px 8px; font-weight: bold;
-            }
-            QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 4px; }
-            QLineEdit {
+            }}
+            QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 4px; }}
+            QLineEdit {{
                 background: #2b2b30; border: 1px solid #555; border-radius: 3px;
                 padding: 3px 6px; color: #eee;
-            }
-            QLineEdit:focus { border-color: #4a9eff; }
-            QPushButton {
+            }}
+            QLineEdit:focus {{ border-color: #4a9eff; }}
+            QPushButton {{
                 background: #3a3a42; border: 1px solid #555; border-radius: 4px;
                 padding: 6px 14px; color: #eee; min-height: 24px;
-            }
-            QPushButton:hover { background: #4a4a55; }
-            QPushButton:pressed { background: #555566; }
-            QComboBox {
+            }}
+            QPushButton:hover {{ background: #4a4a55; }}
+            QPushButton:pressed {{ background: #555566; }}
+            QComboBox {{
                 background: #2b2b30; border: 1px solid #555; border-radius: 3px;
                 padding: 3px 6px; color: #eee;
-            }
-            QComboBox QAbstractItemView { background: #2b2b30; color: #eee; selection-background-color: #4a9eff; }
+            }}
+            QComboBox QAbstractItemView {{ background: #2b2b30; color: #eee; selection-background-color: #4a9eff; }}
         """)
 
     # ─── 选框完成回调 ────────────────────────────────────────
