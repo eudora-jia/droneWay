@@ -98,8 +98,7 @@ if VTK_AVAILABLE:
                 if abs(pos[0] - start[0]) < 5 and abs(pos[1] - start[1]) < 5:
                     p = v._pick_3d(pos[0], pos[1])
                     if p is not None:
-                        v.place_picked.emit(p)
-                        v.place_mode = False
+                        v._update_place_preview(p)
                 return
 
             if v and v._wp_editing:
@@ -115,6 +114,11 @@ if VTK_AVAILABLE:
                     pts = [p.tolist() for p in v._poly_points]
                     v.polygon_finished.emit(pts)
                 v.exit_polygon_mode()
+                return
+            if v and v.place_mode:
+                if v._place_preview_pos is not None:
+                    v.place_picked.emit(v._place_preview_pos)
+                v.exit_place_mode()
                 return
             self.StartRotate()
 
@@ -648,11 +652,39 @@ class VTKViewer(QWidget):
             print("[Place] No point cloud loaded")
             return
         self.place_mode = True
-        print("[Place] 左键点击放置，Esc取消")
+        self._place_preview_pos = None
+        self._place_preview_actor = None
+        print("[Place] 左键选择位置，右键确认，Esc取消")
 
     def exit_place_mode(self):
         self.place_mode = False
+        self._place_preview_pos = None
+        self._clear_place_preview()
         print("[Place] Exited place mode.")
+
+    def _update_place_preview(self, pos):
+        """左键点击时更新预览位置"""
+        self._clear_place_preview()
+        self._place_preview_pos = pos
+
+        sphere = vtkSphereSource()
+        sphere.SetCenter(pos.tolist())
+        sphere.SetRadius(0.5)
+        sphere.Update()
+        m = vtkPolyDataMapper()
+        m.SetInputConnection(sphere.GetOutputPort())
+        a = vtkActor()
+        a.SetMapper(m)
+        a.GetProperty().SetColor(0.2, 0.8, 0.2)
+        a.GetProperty().SetOpacity(0.7)
+        self.renderer.AddActor(a)
+        self._place_preview_actor = a
+        self.vtk_widget.GetRenderWindow().Render()
+
+    def _clear_place_preview(self):
+        if self._place_preview_actor:
+            self.renderer.RemoveActor(self._place_preview_actor)
+            self._place_preview_actor = None
 
     def _add_polygon_point(self, pos):
         self._poly_points.append(pos)

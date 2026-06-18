@@ -386,12 +386,13 @@ class MainWindow(QMainWindow):
             self.edt_cy.setText(f"{pos[1]:.1f}")
             self.edt_cz.setText(f"{pos[2]:.1f}")
             self.generate_cube_route()
+            self.viewer._set_view("persp")
         elif self._place_target == "cylinder":
             self.edt_cyl_cx.setText(f"{pos[0]:.1f}")
             self.edt_cyl_cy.setText(f"{pos[1]:.1f}")
             self.edt_cyl_cz.setText(f"{pos[2]:.1f}")
             self.generate_cylinder_route()
-            self.viewer._set_view("persp")  # 第三人称视角看柱子全貌
+            self.viewer._set_view("persp")
         self._place_target = None
 
     # ─── 加载点云 ───
