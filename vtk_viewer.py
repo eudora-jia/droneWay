@@ -45,9 +45,6 @@ if VTK_AVAILABLE:
         def __init__(self):
             super().__init__()
             self._vtk_viewer = None
-            self._rotating = False
-            self._last_x = 0
-            self._last_y = 0
 
         def set_viewer(self, viewer):
             self._vtk_viewer = viewer
@@ -71,15 +68,6 @@ if VTK_AVAILABLE:
                 wp_idx = v._find_nearest_waypoint(pos[0], pos[1])
                 if wp_idx >= 0:
                     v._start_wp_edit(wp_idx, pos[0], pos[1])
-                    v._pick_drag_active = True
-                    return
-                if v.pick_mode:
-                    p = v._pick_3d(pos[0], pos[1])
-                    if p is not None:
-                        v._dragging = True
-                        v._drag_start = p
-                        v._pick_drag_active = True
-                        v._clear_box()
                     return
 
             self.StartPan()
@@ -100,36 +88,10 @@ if VTK_AVAILABLE:
 
             if v and v._wp_editing:
                 v._end_wp_edit()
-                v._pick_drag_active = False
-                return
-            if v and v._dragging:
-                v._dragging = False
-                v._pick_drag_active = False
-                rwi = self.GetInteractor()
-                pos = rwi.GetEventPosition()
-                p = v._pick_3d(pos[0], pos[1])
-                if p is None:
-                    p = v._drag_start
-                if p is not None and v._drag_start is not None:
-                    p1, p2 = v._drag_start, p
-                    if np.linalg.norm(p2 - p1) >= 0.1:
-                        v._draw_preview_box(p1, p2)
-                        mn = np.minimum(p1, p2)
-                        mx = np.maximum(p1, p2)
-                        if v.points_data is not None:
-                            mask = np.all((v.points_data >= mn - 0.5) & (v.points_data <= mx + 0.5), axis=1)
-                            pts_in_box = v.points_data[mask]
-                            if len(pts_in_box) > 0:
-                                mn[2] = pts_in_box[:, 2].min()
-                                mx[2] = pts_in_box[:, 2].max()
-                        v.box_selected.emit([mn.tolist(), mx.tolist()])
-                    else:
-                        v._clear_box()
-                v._drag_start = None
                 return
             self.EndPan()
 
-        # ── 右键：旋转 / 多边形模式下结束绘制 ──
+        # ── 右键：翻滚 / 多边形模式下结束绘制 ──
         def OnRightButtonDown(self):
             v = self._vtk_viewer
             if v and v.polygon_mode:
@@ -138,12 +100,10 @@ if VTK_AVAILABLE:
                     v.polygon_finished.emit(pts)
                 v.exit_polygon_mode()
                 return
-            rwi = self.GetInteractor()
-            self._last_x, self._last_y = rwi.GetEventPosition()
-            self._rotating = True
+            self.StartRotate()
 
         def OnRightButtonUp(self):
-            self._rotating = False
+            self.EndRotate()
 
         # ── 移动 ──
         def OnMouseMove(self):
@@ -155,32 +115,6 @@ if VTK_AVAILABLE:
                 v._update_wp_edit(pos[0], pos[1])
                 return
 
-            if v and v._dragging:
-                pos = rwi.GetEventPosition()
-                p = v._pick_3d(pos[0], pos[1])
-                if p is not None:
-                    v._draw_preview_box(v._drag_start, p)
-                return
-
-            if self._rotating:
-                renderer = self.GetCurrentRenderer()
-                if renderer is None:
-                    self.FindPokedRenderer(rwi.GetEventPosition()[0], rwi.GetEventPosition()[1])
-                    renderer = self.GetCurrentRenderer()
-                if renderer is None:
-                    return
-                cur_x, cur_y = rwi.GetEventPosition()
-                dx = cur_x - self._last_x
-                dy = cur_y - self._last_y
-                self._last_x, self._last_y = cur_x, cur_y
-                camera = renderer.GetActiveCamera()
-                camera.Azimuth(-dx * 0.4)
-                camera.Elevation(dy * 0.4)
-                camera.OrthogonalizeViewUp()
-                renderer.ResetCameraClippingRange()
-                rwi.Render()
-                return
-
             super().OnMouseMove()
 
 
@@ -188,7 +122,6 @@ if VTK_AVAILABLE:
 class VTKViewer(QWidget):
     """嵌入 PyQt5 的 VTK 3D 点云/航线可视化组件，支持交互式画框选点"""
 
-    box_selected = pyqtSignal(list)
     waypoint_edited = pyqtSignal(int, object, object)
     polygon_finished = pyqtSignal(list)
 
@@ -209,7 +142,7 @@ class VTKViewer(QWidget):
         # ─── 视角切换按钮（右上角覆盖层）───
         from PyQt5.QtWidgets import QFrame, QButtonGroup
         view_frame = QFrame(self.vtk_widget)
-        view_frame.setStyleSheet("QFrame { background: rgba(30,30,34,180); border-radius: 6px; }")
+        view_frame.setStyleSheet("QFrame { background: rgba(240,240,238,200); border: 1px solid #ccc; border-radius: 6px; }")
         view_frame.setFixedSize(180, 32)
         view_layout = QHBoxLayout(view_frame)
         view_layout.setContentsMargins(4, 2, 4, 2)
@@ -220,7 +153,7 @@ class VTKViewer(QWidget):
         for i, (label, name) in enumerate(views):
             btn = QPushButton(label)
             btn.setFixedSize(28, 24)
-            btn.setStyleSheet("QPushButton { background: #3a3a42; border: 1px solid #555; border-radius: 3px; color: #ddd; font-size: 11px; } QPushButton:checked { background: #4a9eff; }")
+            btn.setStyleSheet("QPushButton { background: #e0e0de; border: 1px solid #bbb; border-radius: 3px; color: #000; font-size: 11px; } QPushButton:checked { background: #4a9eff; color: #fff; }")
             btn.setCheckable(True)
             btn.clicked.connect(lambda checked, n=name: self._set_view(n))
             view_layout.addWidget(btn)
@@ -239,14 +172,6 @@ class VTKViewer(QWidget):
         self.points_data = None
         self._cloud_actor = None
 
-        # ─── 选框模式状态 ───
-        self.pick_mode = False
-        self._dragging = False
-        self._drag_start = None
-        self._pick_drag_active = False
-        self.box_actors = []
-        self._observers = []
-
         # ─── 航点编辑状态 ───
         self._wp_editing = False
         self._wp_edit_idx = -1
@@ -257,9 +182,6 @@ class VTKViewer(QWidget):
         self._waypoints_ref = None
         self._safe_distance = 2.0
         self.show_heading = True
-
-        # ─── 点拾取器 ───
-        self.picker = vtk.vtkPointPicker() if VTK_AVAILABLE else None
 
         # ─── 多边形选择模式 ───
         self.polygon_mode = False
@@ -424,7 +346,7 @@ class VTKViewer(QWidget):
 
         to_remove = []
         for i, actor in enumerate(self._actors):
-            if actor != self._cloud_actor and actor not in self.box_actors:
+            if actor != self._cloud_actor:
                 to_remove.append(i)
         for i in reversed(to_remove):
             self.renderer.RemoveActor(self._actors[i])
@@ -456,6 +378,36 @@ class VTKViewer(QWidget):
         actor.GetProperty().SetLineWidth(2.5)
         self.renderer.AddActor(actor)
         self._actors.append(actor)
+
+        # 起飞线：从地面 (0,0,1) 到航线起点
+        takeoff_start = [0.0, 0.0, 1.0]
+        takeoff_end = waypoints[0]['pos'].tolist()
+        takeoff_line = vtkLineSource()
+        takeoff_line.SetPoint1(takeoff_start)
+        takeoff_line.SetPoint2(takeoff_end)
+        takeoff_mapper = vtkPolyDataMapper()
+        takeoff_mapper.SetInputConnection(takeoff_line.GetOutputPort())
+        takeoff_actor = vtkActor()
+        takeoff_actor.SetMapper(takeoff_mapper)
+        takeoff_actor.GetProperty().SetColor(0.2, 0.5, 1.0)
+        takeoff_actor.GetProperty().SetLineWidth(3)
+        takeoff_actor.GetProperty().SetLineStipplePattern(0xF0F0)
+        takeoff_actor.GetProperty().SetLineStippleRepeatFactor(1)
+        self.renderer.AddActor(takeoff_actor)
+        self._actors.append(takeoff_actor)
+
+        # 起飞点标记
+        takeoff_sphere = vtkSphereSource()
+        takeoff_sphere.SetCenter(takeoff_start)
+        takeoff_sphere.SetRadius(0.4)
+        takeoff_sphere.Update()
+        tm = vtkPolyDataMapper()
+        tm.SetInputConnection(takeoff_sphere.GetOutputPort())
+        ta = vtkActor()
+        ta.SetMapper(tm)
+        ta.GetProperty().SetColor(0.2, 0.5, 1.0)
+        self.renderer.AddActor(ta)
+        self._actors.append(ta)
 
         self._waypoint_actors = []
         self._waypoints_ref = waypoints
@@ -524,38 +476,29 @@ class VTKViewer(QWidget):
         self._update_view()
         print(f"[VTK] Route displayed: {n} waypoints")
 
-    # ─── 拖拽画框模式 ─────────────────────────────────────────
-    def enter_pick_mode(self):
-        if self.points_data is None or len(self.points_data) == 0:
-            print("[Pick] No point cloud loaded")
-            return
-        self.pick_mode = True
-        self._dragging = False
-        self._drag_start = None
-        self._clear_box()
-        cam = self.renderer.GetActiveCamera()
-        cam.SetPosition(0, 0, 100)
-        cam.SetFocalPoint(0, 0, 0)
-        cam.SetViewUp(0, 1, 0)
-        self.renderer.ResetCamera()
-        self.vtk_widget.GetRenderWindow().Render()
-        print("[Pick] Ctrl+左键拖拽画框选区，Esc取消")
+    def _pick_3d(self, screen_x, screen_y, z_plane=None):
+        """屏幕坐标拾取3D点：射线与XY平面求交"""
+        ren = self.renderer
+        ren.SetDisplayPoint(screen_x, screen_y, 0)
+        ren.DisplayToWorld()
+        near = np.array(ren.GetWorldPoint()[:3])
+        ren.SetDisplayPoint(screen_x, screen_y, 1)
+        ren.DisplayToWorld()
+        far = np.array(ren.GetWorldPoint()[:3])
+        ray_dir = far - near
 
-    def exit_pick_mode(self):
-        self.pick_mode = False
-        self._dragging = False
-        self._drag_start = None
-        self._pick_drag_active = False
-        print("[Pick] Pick mode exited.")
+        if z_plane is None:
+            if self.points_data is not None and len(self.points_data) > 0:
+                z_plane = self.points_data[:, 2].max()
+            else:
+                z_plane = 0.0
 
-    def _pick_3d(self, screen_x, screen_y):
-        if not self.picker:
+        if abs(ray_dir[2]) < 1e-10:
             return None
-        self.picker.Pick(screen_x, screen_y, 0, self.renderer)
-        pos = self.picker.GetPickPosition()
-        if pos == (0.0, 0.0, 0.0):
+        t = (z_plane - near[2]) / ray_dir[2]
+        if t < 0:
             return None
-        return np.array(pos)
+        return near + t * ray_dir
 
     # ─── 航点编辑 ──────────────────────────────────────────────
     def _find_nearest_waypoint(self, screen_x, screen_y):
@@ -660,46 +603,6 @@ class VTKViewer(QWidget):
 
         self.waypoint_edited.emit(idx, new_pos, None)
         print(f"[WP Edit] Waypoint #{idx} moved to ({new_pos[0]:.2f}, {new_pos[1]:.2f}, {new_pos[2]:.2f})")
-
-    def _draw_preview_box(self, p1, p2):
-        self._clear_box()
-
-        mn = np.minimum(p1, p2)
-        mx = np.maximum(p1, p2)
-
-        corners = [
-            [mn[0], mn[1], mn[2]], [mx[0], mn[1], mn[2]],
-            [mx[0], mx[1], mn[2]], [mn[0], mx[1], mn[2]],
-            [mn[0], mn[1], mx[2]], [mx[0], mn[1], mx[2]],
-            [mx[0], mx[1], mx[2]], [mn[0], mx[1], mx[2]],
-        ]
-
-        edges = [
-            (0,1),(1,2),(2,3),(3,0),
-            (4,5),(5,6),(6,7),(7,4),
-            (0,4),(1,5),(2,6),(3,7),
-        ]
-
-        for i1, i2 in edges:
-            line = vtkLineSource()
-            line.SetPoint1(corners[i1])
-            line.SetPoint2(corners[i2])
-            m = vtkPolyDataMapper()
-            m.SetInputConnection(line.GetOutputPort())
-            a = vtkActor()
-            a.SetMapper(m)
-            a.GetProperty().SetColor(1.0, 1.0, 0.0)
-            a.GetProperty().SetLineWidth(2)
-            a.GetProperty().SetOpacity(0.8)
-            self.renderer.AddActor(a)
-            self.box_actors.append(a)
-
-        self.vtk_widget.GetRenderWindow().Render()
-
-    def _clear_box(self):
-        for a in self.box_actors:
-            self.renderer.RemoveActor(a)
-        self.box_actors.clear()
 
     # ─── 多边形选择模式 ─────────────────────────────────────
     def enter_polygon_mode(self):
@@ -856,9 +759,6 @@ class VTKViewer(QWidget):
         elif key == '\x1b':
             if self.polygon_mode:
                 self.exit_polygon_mode()
-            elif self.pick_mode:
-                self._clear_box()
-                self.exit_pick_mode()
 
         self.vtk_widget.GetRenderWindow().Render()
 

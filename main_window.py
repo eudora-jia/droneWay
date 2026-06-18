@@ -7,7 +7,7 @@ import numpy as np
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QLabel, QLineEdit, QPushButton, QComboBox,
-    QFileDialog, QMessageBox, QSplitter, QMenu,
+    QFileDialog, QMessageBox, QSplitter,
     QProgressBar, QCheckBox, QGridLayout, QScrollArea, QTabWidget
 )
 from PyQt5.QtCore import Qt
@@ -45,7 +45,6 @@ class MainWindow(QMainWindow):
         self.viewer = VTKViewer()
         splitter.addWidget(self.viewer)
 
-        self.viewer.box_selected.connect(self._on_box_selected)
         self.viewer.waypoint_edited.connect(self._on_waypoint_edited)
         self.viewer.polygon_finished.connect(self._on_polygon_finished)
 
@@ -108,20 +107,16 @@ class MainWindow(QMainWindow):
         self.edt_bridge_span = QLineEdit("30"); bp.addWidget(self.edt_bridge_span, 2, 3)
 
         btn_apply_bridge = QPushButton("应用到航线默认值")
-        btn_apply_bridge.setStyleSheet("QPushButton { background: #2a3a5a; padding: 6px; } QPushButton:hover { background: #3a4a6a; }")
+        btn_apply_bridge.setStyleSheet("QPushButton { background: #d0d8e8; padding: 6px; } QPushButton:hover { background: #c0c8d8; }")
         btn_apply_bridge.clicked.connect(self._apply_bridge_params)
         bp.addWidget(btn_apply_bridge, 3, 0, 1, 4)
 
         ctrl_layout.addWidget(grp_bridge)
         self._route_widgets.append(grp_bridge)
 
-        # -- 框选区域 --
-        grp_pick = QGroupBox("区域选择")
+        # -- 安全距离 --
+        grp_pick = QGroupBox("安全设置")
         pk = QVBoxLayout(grp_pick)
-        self.btn_pick_region = QPushButton("框选区域 (Ctrl+拖拽)")
-        self.btn_pick_region.setStyleSheet("QPushButton { background: #2a4a2a; font-weight: bold; padding: 8px; } QPushButton:hover { background: #3a5a3a; }")
-        pk.addWidget(self.btn_pick_region)
-
         sd_row = QHBoxLayout()
         sd_row.addWidget(QLabel("安全距离(m):"))
         self.edt_safe_dist = QLineEdit("2.0")
@@ -141,7 +136,7 @@ class MainWindow(QMainWindow):
 
         # ─── 航线类型 Tab ───
         route_tabs = QTabWidget()
-        route_tabs.setStyleSheet("QTabWidget::pane { border: 1px solid #444; } QTabBar::tab { background: #2b2b30; padding: 6px 12px; } QTabBar::tab:selected { background: #3a3a42; }")
+        route_tabs.setStyleSheet("QTabWidget::pane { border: 1px solid #ccc; } QTabBar::tab { background: #e0e0de; padding: 6px 12px; color: #000; } QTabBar::tab:selected { background: #fff; }")
 
         # -- Tab 1: 面状航线 --
         tab_flat = QWidget()
@@ -149,16 +144,21 @@ class MainWindow(QMainWindow):
         fl.setSpacing(4)
 
         self.btn_poly_select = QPushButton("多边形选择区域")
-        self.btn_poly_select.setStyleSheet("QPushButton { background: #2a4a2a; font-weight: bold; padding: 6px; } QPushButton:hover { background: #3a5a3a; }")
+        self.btn_poly_select.setStyleSheet("QPushButton { background: #d8e8d8; font-weight: bold; padding: 6px; } QPushButton:hover { background: #c8d8c8; }")
         self.btn_poly_select.clicked.connect(self._start_polygon_select)
         fl.addWidget(self.btn_poly_select, 0, 0, 1, 4)
 
         fl.addWidget(QLabel("高度Z:"), 1, 0)
         self.edt_z = QLineEdit("5"); fl.addWidget(self.edt_z, 1, 1)
-        fl.addWidget(QLabel("间距:"), 1, 2)
+        fl.addWidget(QLabel("线间距:"), 1, 2)
         self.edt_spacing = QLineEdit("2"); fl.addWidget(self.edt_spacing, 1, 3)
 
-        fl.addWidget(QLabel("速度(m/s):"), 2, 0)
+        fl.addWidget(QLabel("航点距离:"), 2, 0)
+        self.edt_wp_spacing = QLineEdit("2"); fl.addWidget(self.edt_wp_spacing, 2, 1)
+        fl.addWidget(QLabel("速度(m/s):"), 2, 2)
+        self.edt_flat_speed = QLineEdit("3"); fl.addWidget(self.edt_flat_speed, 2, 3)
+
+        fl.addWidget(QLabel("曲度:"), 3, 0)
         self.edt_flat_speed = QLineEdit("3"); fl.addWidget(self.edt_flat_speed, 2, 1)
         fl.addWidget(QLabel("曲度:"), 2, 2)
         self.edt_curvature = QLineEdit("0"); fl.addWidget(self.edt_curvature, 2, 3)
@@ -252,12 +252,7 @@ class MainWindow(QMainWindow):
         self.btn_load_route = QPushButton("加载航线 (JSON)")
         rl.addWidget(self.btn_load_route)
 
-        self.btn_resample = QPushButton("航点均匀分布")
-        self.btn_resample.setStyleSheet("QPushButton { background: #3a3a2a; padding: 6px; } QPushButton:hover { background: #4a4a3a; }")
-        self.btn_resample.clicked.connect(self._resample_waypoints)
-        rl.addWidget(self.btn_resample)
-
-        self.chk_show_heading = QCheckBox("显示机头方向箭头")
+        self.chk_show_heading = QCheckBox("显示机头方向")
         self.chk_show_heading.setChecked(True)
         self.chk_show_heading.stateChanged.connect(self._toggle_heading)
         rl.addWidget(self.chk_show_heading)
@@ -266,7 +261,7 @@ class MainWindow(QMainWindow):
         self._route_widgets.append(grp_route)
 
         # -- 快捷键提示 --
-        lbl_help = QLabel("快捷键: 1=俯视 2=正视 3=侧视 4=透视 5=仰视  Esc=取消框选")
+        lbl_help = QLabel("快捷键: 1=俯视 2=正视 3=侧视 4=透视 5=仰视  Esc=取消多边形")
         lbl_help.setStyleSheet("color: #666; font-size: 10px; padding: 4px;")
         lbl_help.setWordWrap(True)
         ctrl_layout.addWidget(lbl_help)
@@ -286,7 +281,6 @@ class MainWindow(QMainWindow):
 
         # -- 信号连接 --
         self.btn_load.clicked.connect(self.load_point_cloud)
-        self.btn_pick_region.clicked.connect(lambda: self.viewer.enter_pick_mode())
         self.btn_flat.clicked.connect(self.generate_flat_route)
         self.btn_cube.clicked.connect(self.generate_cube_route)
         self.btn_cylinder.clicked.connect(self.generate_cylinder_route)
@@ -307,71 +301,14 @@ class MainWindow(QMainWindow):
         self.btn_mode_route.setChecked(is_route)
         if is_route:
             self.btn_mode_preview.setStyleSheet("")
-            self.btn_mode_route.setStyleSheet("QPushButton { background: #4a9eff; font-weight: bold; }")
+            self.btn_mode_route.setStyleSheet("QPushButton { background: #4a9eff; font-weight: bold; color: #fff; }")
         else:
-            self.btn_mode_preview.setStyleSheet("QPushButton { background: #4a9eff; font-weight: bold; }")
+            self.btn_mode_preview.setStyleSheet("QPushButton { background: #4a9eff; font-weight: bold; color: #fff; }")
             self.btn_mode_route.setStyleSheet("")
 
     def _on_pillar_type_changed(self, idx):
         if idx == 1:
             self.edt_dy.setText(self.edt_dx.text())
-
-    def _resample_waypoints(self):
-        if len(self.waypoints) < 2:
-            QMessageBox.information(self, "提示", "航点不足，无法均匀分布")
-            return
-
-        positions = [wp['pos'] for wp in self.waypoints]
-        total_len = sum(np.linalg.norm(positions[i+1] - positions[i]) for i in range(len(positions)-1))
-        avg_spacing = total_len / (len(self.waypoints) - 1)
-
-        new_waypoints = self._interpolate_waypoints(self.waypoints, avg_spacing)
-        self.waypoints = new_waypoints
-        self._display_route()
-        print(f"[Resample] {len(self.waypoints)} waypoints, spacing={avg_spacing:.2f}m")
-
-    @staticmethod
-    def _interpolate_waypoints(waypoints, spacing):
-        if len(waypoints) < 2:
-            return waypoints
-
-        positions = np.array([wp['pos'] for wp in waypoints])
-        seg_lens = np.linalg.norm(np.diff(positions, axis=0), axis=1)
-        cum_len = np.concatenate([[0], np.cumsum(seg_lens)])
-        total_len = cum_len[-1]
-
-        if total_len < 1e-10:
-            return waypoints
-
-        n_new = max(2, int(total_len / spacing) + 1)
-        target_lens = np.linspace(0, total_len, n_new)
-
-        new_wps = []
-        seg_idx = 0
-        for t_len in target_lens:
-            while seg_idx < len(cum_len) - 2 and cum_len[seg_idx + 1] < t_len:
-                seg_idx += 1
-            seg_start = cum_len[seg_idx]
-            seg_end = cum_len[seg_idx + 1]
-            seg_len = seg_end - seg_start
-            if seg_len < 1e-10:
-                alpha = 0.0
-            else:
-                alpha = (t_len - seg_start) / seg_len
-            alpha = np.clip(alpha, 0.0, 1.0)
-
-            pos = waypoints[seg_idx]['pos'] * (1 - alpha) + waypoints[seg_idx + 1]['pos'] * alpha
-            quat = waypoints[seg_idx]['quat'] * (1 - alpha) + waypoints[seg_idx + 1]['quat'] * alpha
-            quat = quat / np.linalg.norm(quat)
-
-            new_wps.append({
-                'pos': pos,
-                'quat': quat,
-                'speed': waypoints[seg_idx]['speed'],
-                'action': waypoints[seg_idx]['action']
-            })
-
-        return new_wps
 
     def _apply_style(self):
         available = QFontDatabase().families()
@@ -382,73 +319,30 @@ class MainWindow(QMainWindow):
                 break
 
         self.setStyleSheet(f"""
-            QMainWindow {{ background: #1e1e22; }}
-            QWidget {{ color: #ddd; font-family: "{cn_font}", "Segoe UI", Arial; font-size: 12px; }}
+            QMainWindow {{ background: #f0f0ee; }}
+            QWidget {{ color: #000; font-family: "{cn_font}", "Segoe UI", Arial; font-size: 12px; }}
             QGroupBox {{
-                border: 1px solid #444; border-radius: 6px;
-                margin-top: 8px; padding: 10px 8px; font-weight: bold;
+                border: 1px solid #ccc; border-radius: 6px;
+                margin-top: 8px; padding: 10px 8px; font-weight: bold; color: #000;
             }}
-            QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 4px; }}
+            QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 4px; color: #000; }}
             QLineEdit {{
-                background: #2b2b30; border: 1px solid #555; border-radius: 3px;
-                padding: 3px 6px; color: #eee;
+                background: #fff; border: 1px solid #bbb; border-radius: 3px;
+                padding: 3px 6px; color: #000;
             }}
             QLineEdit:focus {{ border-color: #4a9eff; }}
             QPushButton {{
-                background: #3a3a42; border: 1px solid #555; border-radius: 4px;
-                padding: 6px 14px; color: #eee; min-height: 24px;
+                background: #e0e0de; border: 1px solid #bbb; border-radius: 4px;
+                padding: 6px 14px; color: #000; min-height: 24px;
             }}
-            QPushButton:hover {{ background: #4a4a55; }}
-            QPushButton:pressed {{ background: #555566; }}
+            QPushButton:hover {{ background: #d0d0ce; }}
+            QPushButton:pressed {{ background: #c0c0be; }}
             QComboBox {{
-                background: #2b2b30; border: 1px solid #555; border-radius: 3px;
-                padding: 3px 6px; color: #eee;
+                background: #fff; border: 1px solid #bbb; border-radius: 3px;
+                padding: 3px 6px; color: #000;
             }}
-            QComboBox QAbstractItemView {{ background: #2b2b30; color: #eee; selection-background-color: #4a9eff; }}
+            QComboBox QAbstractItemView {{ background: #fff; color: #000; selection-background-color: #4a9eff; }}
         """)
-
-    # ─── 选框完成回调 ────────────────────────────────────────
-    def _on_box_selected(self, box):
-        mn = np.array(box[0])
-        mx = np.array(box[1])
-        self._last_box = (mn, mx)
-
-        menu = QMenu(self)
-        menu.setStyleSheet("""
-            QMenu { background: #2b2b30; color: #eee; border: 1px solid #555; padding: 4px; }
-            QMenu::item { padding: 6px 20px; }
-            QMenu::item:selected { background: #4a9eff; }
-        """)
-        menu.addAction("立方体航线", lambda: self._apply_box("cube", mn, mx))
-        menu.addAction("圆柱体航线", lambda: self._apply_box("cylinder", mn, mx))
-
-        cursor_pos = self.cursor().pos()
-        menu.exec_(cursor_pos)
-
-    def _apply_box(self, mode, mn, mx):
-        if mode == "cube":
-            center = (mn + mx) / 2
-            size = mx - mn
-            self.edt_cx.setText(f"{center[0]:.1f}")
-            self.edt_cy.setText(f"{center[1]:.1f}")
-            self.edt_cz.setText(f"{mn[2]:.1f}")
-            self.edt_dx.setText(f"{max(size[0], 0.5):.1f}")
-            self.edt_dy.setText(f"{max(size[1], 0.5):.1f}")
-            self.edt_dz.setText(f"{max(size[2], 0.5):.1f}")
-            print(f"[Pick] Cube: center=({center[0]:.1f},{center[1]:.1f},{mn[2]:.1f}) size=({size[0]:.1f},{size[1]:.1f},{size[2]:.1f})")
-            self.generate_cube_route()
-
-        elif mode == "cylinder":
-            center = (mn + mx) / 2
-            size = mx - mn
-            self.edt_cyl_cx.setText(f"{center[0]:.1f}")
-            self.edt_cyl_cy.setText(f"{center[1]:.1f}")
-            self.edt_cyl_cz.setText(f"{mn[2]:.1f}")
-            diam = max(size[0], size[1])
-            self.edt_cyl_diam.setText(f"{max(diam, 0.5):.1f}")
-            self.edt_cyl_h.setText(f"{max(size[2], 0.5):.1f}")
-            print(f"[Pick] Cylinder: center=({center[0]:.1f},{center[1]:.1f},{mn[2]:.1f}) diam={diam:.1f} h={size[2]:.1f}")
-            self.generate_cylinder_route()
 
     # ─── 多边形选择 ──────────────────────────────────────────
     def _start_polygon_select(self):
@@ -522,13 +416,14 @@ class MainWindow(QMainWindow):
         try:
             z = float(self.edt_z.text())
             spacing = float(self.edt_spacing.text())
+            wp_spacing = float(self.edt_wp_spacing.text())
             speed = float(self.edt_flat_speed.text())
             curvature = float(self.edt_curvature.text())
         except ValueError:
             QMessageBox.warning(self, "输入错误", "请输入有效数字")
             return
 
-        if spacing <= 0:
+        if spacing <= 0 or wp_spacing <= 0:
             QMessageBox.warning(self, "输入错误", "间距必须为正数")
             return
 
@@ -551,11 +446,11 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "输入错误", "区域范围无效")
             return
 
-        x_center = (xmin + xmax) / 2
-        x_half = (xmax - xmin) / 2 if xmax != xmin else 1.0
+        y_center = (ymin + ymax) / 2
+        y_half = (ymax - ymin) / 2 if ymax != ymin else 1.0
 
-        def curved_z(x):
-            t = (x - x_center) / x_half
+        def curved_z(y):
+            t = (y - y_center) / y_half
             return z + curvature * t * t
 
         def point_in_polygon(x, y, polygon_xy):
@@ -595,26 +490,29 @@ class MainWindow(QMainWindow):
                 else:
                     x_start, x_end = inside_xs[-1], inside_xs[0]
 
-            z_start = curved_z(x_start)
-            self.waypoints.append({
-                'pos': np.array([x_start, y, z_start]),
-                'quat': np.array([1.0, 0.0, 0.0, 0.0]),
-                'speed': speed,
-                'action': 'fly'
-            })
+            # 沿扫描线均匀分布多个航点
+            line_len = abs(x_end - x_start)
+            n_pts = max(2, int(line_len / wp_spacing) + 1)
+            z_line = curved_z(y)
 
-            z_end = curved_z(x_end)
-            self.waypoints.append({
-                'pos': np.array([x_end, y, z_end]),
-                'quat': look_at_quaternion(np.array([x_end + direction, y, z_end]),
-                                           np.array([x_end, y, z_end])),
-                'speed': speed,
-                'action': 'fly'
-            })
+            for j in range(n_pts):
+                x = x_start + (x_end - x_start) * j / (n_pts - 1)
+                # 机头垂直于扫描线（朝向桥面，Y方向）
+                quat = look_at_quaternion(
+                    np.array([x, y + 1, z_line]),
+                    np.array([x, y, z_line])
+                )
+                self.waypoints.append({
+                    'pos': np.array([x, y, z_line]),
+                    'quat': quat,
+                    'speed': speed,
+                    'action': 'fly'
+                })
 
+            # 转折到下一条扫描线
             y += spacing
             if y <= ymax:
-                z_next = curved_z(x_end)
+                z_next = curved_z(y)
                 self.waypoints.append({
                     'pos': np.array([x_end, y, z_next]),
                     'quat': np.array([1.0, 0.0, 0.0, 0.0]),
@@ -626,11 +524,6 @@ class MainWindow(QMainWindow):
         if not self.waypoints:
             QMessageBox.warning(self, "提示", "多边形区域内无有效航点")
             return
-
-        for i in range(len(self.waypoints) - 1):
-            self.waypoints[i]['quat'] = look_at_quaternion(
-                self.waypoints[i + 1]['pos'], self.waypoints[i]['pos']
-            )
 
         self._display_route()
 
