@@ -37,6 +37,8 @@ try:
     from vtkmodules.vtkFiltersSources import vtkSphereSource, vtkLineSource
     from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyLine
     from vtkmodules.vtkCommonCore import vtkPoints as vtkPointsBase
+    from vtkmodules.vtkCommonTransforms import vtkTransform
+    from vtkmodules.vtkFiltersGeneral import vtkTransformPolyDataFilter
     VTK_AVAILABLE = True
 except ImportError:
     try:
@@ -49,7 +51,8 @@ except ImportError:
             vtkActor, vtkPolyDataMapper, vtkRenderer,
             vtkPoints, vtkPolyData, vtkVertexGlyphFilter,
             vtkSphereSource, vtkLineSource, vtkCellArray,
-            vtkPolyLine, vtkFollower, vtkVectorText
+            vtkPolyLine, vtkFollower, vtkVectorText,
+            vtkTransform, vtkTransformPolyDataFilter
         )
     except ImportError:
         VTK_AVAILABLE = False
@@ -284,6 +287,17 @@ def look_at_quaternion(target, position):
     return rotation_matrix_to_quaternion(mat)
 
 
+def quaternion_forward(quat):
+    """从四元数 [w, x, y, z] 计算前方向量（X 轴正方向旋转后的结果）"""
+    w, x, y, z = quat
+    fx = 1.0 - 2.0 * (y * y + z * z)
+    fy = 2.0 * (x * y + w * z)
+    fz = 2.0 * (x * z - w * y)
+    v = np.array([fx, fy, fz])
+    n = np.linalg.norm(v)
+    return v / n if n > 1e-10 else np.array([1.0, 0.0, 0.0])
+
+
 # ─── 3D 可视化组件 ───────────────────────────────────────────
 class VTKViewer(QWidget):
     """嵌入 PyQt5 的 VTK 3D 点云/航线可视化组件，支持交互式画框选点"""
@@ -457,6 +471,68 @@ class VTKViewer(QWidget):
             a.GetProperty().SetColor(1.0, 0.2, 0.2)
             self.renderer.AddActor(a)
             self._actors.append(a)
+
+        # ─── 机头方向箭头（橙色，朝向目标）───
+        # 计算箭头长度：取航点平均间距的 25%，最小 0.3，最大 2.0
+        if n >= 2:
+            dists = [np.linalg.norm(waypoints[i+1]['pos'] - waypoints[i]['pos']) for i in range(n-1)]
+            avg_dist = np.mean(dists)
+            arrow_len = np.clip(avg_dist * 0.25, 0.3, 2.0)
+        else:
+            arrow_len = 0.5
+
+        arrow_src = vtk.vtkArrowSource()
+        arrow_src.SetTipResolution(12)
+        arrow_src.SetShaftResolution(8)
+        arrow_src.SetShaftRadius(0.02)
+        arrow_src.SetTipLength(0.35)
+        arrow_src.SetTipRadius(0.06)
+        arrow_src.Update()
+
+        for wp in waypoints:
+            pos = wp['pos']
+            fwd = quaternion_forward(wp['quat'])
+
+            # 构造旋转矩阵：箭头默认沿 X 轴，旋转到 fwd 方向
+            up_ref = np.array([0.0, 0.0, 1.0])
+            if abs(np.dot(fwd, up_ref)) > 0.99:
+                up_ref = np.array([0.0, 1.0, 0.0])
+            right = np.cross(fwd, up_ref)
+            right /= np.linalg.norm(right)
+            actual_up = np.cross(right, fwd)
+            actual_up /= np.linalg.norm(actual_up)
+
+            # 用 vtkMatrix4x4 构造旋转+平移矩阵
+            mat = vtk.vtkMatrix4x4()
+            mat.Identity()
+            for c in range(3):
+                mat.SetElement(0, c, [fwd, right, actual_up][c][0])
+                mat.SetElement(1, c, [fwd, right, actual_up][c][1])
+                mat.SetElement(2, c, [fwd, right, actual_up][c][2])
+            mat.SetElement(0, 3, pos[0])
+            mat.SetElement(1, 3, pos[1])
+            mat.SetElement(2, 3, pos[2])
+
+            # PostMultiply: 先缩放箭头，再旋转+平移到位
+            # 应用顺序: RotateTranslate × Scale × point
+            transform = vtkTransform()
+            transform.PostMultiply()
+            transform.Concatenate(mat)  # 旋转+平移
+            transform.Scale(arrow_len, arrow_len, arrow_len)  # 缩放
+
+            tfilter = vtkTransformPolyDataFilter()
+            tfilter.SetInputConnection(arrow_src.GetOutputPort())
+            tfilter.SetTransform(transform)
+            tfilter.Update()
+
+            mapper = vtkPolyDataMapper()
+            mapper.SetInputConnection(tfilter.GetOutputPort())
+            actor = vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(1.0, 0.6, 0.0)  # 橙色
+            actor.GetProperty().SetOpacity(0.9)
+            self.renderer.AddActor(actor)
+            self._actors.append(actor)
 
         self._update_view()
         print(f"[VTK] Route displayed: {n} waypoints")
