@@ -129,6 +129,18 @@ class MainWindow(QMainWindow):
         sd_row.addStretch()
         pk.addLayout(sd_row)
 
+        tk_row = QHBoxLayout()
+        tk_row.addWidget(QLabel("起飞高度(m):"))
+        self.edt_takeoff_z = QLineEdit("1.0")
+        self.edt_takeoff_z.setMaximumWidth(60)
+        tk_row.addWidget(self.edt_takeoff_z)
+        tk_row.addWidget(QLabel("偏航角(°):"))
+        self.edt_takeoff_yaw = QLineEdit("0")
+        self.edt_takeoff_yaw.setMaximumWidth(60)
+        tk_row.addWidget(self.edt_takeoff_yaw)
+        tk_row.addStretch()
+        pk.addLayout(tk_row)
+
         lbl_wp_hint = QLabel("Ctrl+左键点击航点可拖动编辑位置")
         lbl_wp_hint.setStyleSheet("color: #888; font-size: 10px;")
         lbl_wp_hint.setWordWrap(True)
@@ -151,21 +163,21 @@ class MainWindow(QMainWindow):
         self.btn_poly_select.clicked.connect(self._start_polygon_select)
         fl.addWidget(self.btn_poly_select, 0, 0, 1, 4)
 
-        fl.addWidget(QLabel("高度Z:"), 0, 0)
-        self.edt_z = QLineEdit("5"); fl.addWidget(self.edt_z, 0, 1)
-        fl.addWidget(QLabel("线间距:"), 0, 2)
-        self.edt_spacing = QLineEdit("2"); fl.addWidget(self.edt_spacing, 0, 3)
+        fl.addWidget(QLabel("高度Z:"), 1, 0)
+        self.edt_z = QLineEdit("5"); fl.addWidget(self.edt_z, 1, 1)
+        fl.addWidget(QLabel("线间距:"), 1, 2)
+        self.edt_spacing = QLineEdit("2"); fl.addWidget(self.edt_spacing, 1, 3)
 
-        fl.addWidget(QLabel("航点距离:"), 1, 0)
-        self.edt_wp_spacing = QLineEdit("2"); fl.addWidget(self.edt_wp_spacing, 1, 1)
-        fl.addWidget(QLabel("速度(m/s):"), 1, 2)
-        self.edt_flat_speed = QLineEdit("3"); fl.addWidget(self.edt_flat_speed, 1, 3)
+        fl.addWidget(QLabel("航点距离:"), 2, 0)
+        self.edt_wp_spacing = QLineEdit("2"); fl.addWidget(self.edt_wp_spacing, 2, 1)
+        fl.addWidget(QLabel("速度(m/s):"), 2, 2)
+        self.edt_flat_speed = QLineEdit("3"); fl.addWidget(self.edt_flat_speed, 2, 3)
 
-        fl.addWidget(QLabel("曲度:"), 2, 0)
-        self.edt_curvature = QLineEdit("0"); fl.addWidget(self.edt_curvature, 2, 1)
+        fl.addWidget(QLabel("曲度:"), 3, 0)
+        self.edt_curvature = QLineEdit("0"); fl.addWidget(self.edt_curvature, 3, 1)
 
         self.btn_flat = QPushButton("生成面状航线")
-        fl.addWidget(self.btn_flat, 3, 0, 1, 4)
+        fl.addWidget(self.btn_flat, 4, 0, 1, 4)
         route_tabs.addTab(tab_flat, "面状航线")
 
         # -- Tab 2: 立方体航线 --
@@ -784,6 +796,14 @@ class MainWindow(QMainWindow):
     def _toggle_heading(self, state):
         self.viewer.show_heading = (state == Qt.Checked)
         if self.waypoints:
+            try:
+                self.viewer._takeoff_z = float(self.edt_takeoff_z.text())
+            except ValueError:
+                self.viewer._takeoff_z = 1.0
+            try:
+                self.viewer._takeoff_yaw = float(self.edt_takeoff_yaw.text())
+            except ValueError:
+                self.viewer._takeoff_yaw = 0.0
             self.viewer.add_route(self.waypoints)
             self._check_safety_distance()
 
@@ -798,6 +818,14 @@ class MainWindow(QMainWindow):
             pass
 
     def _display_route(self):
+        try:
+            self.viewer._takeoff_z = float(self.edt_takeoff_z.text())
+        except ValueError:
+            self.viewer._takeoff_z = 1.0
+        try:
+            self.viewer._takeoff_yaw = float(self.edt_takeoff_yaw.text())
+        except ValueError:
+            self.viewer._takeoff_yaw = 0.0
         self.viewer.add_route(self.waypoints)
         self.lbl_info.setText(f"航点: {len(self.waypoints)}")
         self._check_safety_distance()
@@ -862,17 +890,20 @@ class MainWindow(QMainWindow):
         self.waypoints = []
         self.viewer._clear_polygon()
         self.viewer._clear_place_preview()
-        # 只清除航线 actor，保留点云
-        to_remove = []
-        for i, actor in enumerate(self.viewer._actors):
-            if actor != self.viewer._cloud_actor:
-                to_remove.append(i)
-        for i in reversed(to_remove):
-            self.viewer.renderer.RemoveActor(self.viewer._actors[i])
-            del self.viewer._actors[i]
+
+        ren = self.viewer.renderer
+        cloud = self.viewer._cloud_actor
+
+        # 批量收集非点云 actor，一次性移除
+        to_remove = [a for a in self.viewer._actors if a != cloud]
+        for a in to_remove:
+            ren.RemoveActor(a)
+        self.viewer._actors = [cloud] if cloud else []
         self.viewer._waypoint_actors = []
         self.viewer._waypoints_ref = None
-        self.viewer.vtk_widget.GetRenderWindow().Render()
+
+        # 恢复坐标轴和网格
+        self.viewer._add_scene_axes()
         self.lbl_info.setText("航点: 0")
 
     # ─── 保存航线（nav_msgs/Path 格式）───
@@ -887,14 +918,23 @@ class MainWindow(QMainWindow):
         if not path:
             return
 
-        poses = []
-        for wp in self.waypoints:
-            q = wp['quat']  # 内部存储: (w, x, y, z)
-            poses.append({
-                "header": {
-                    "stamp": {"sec": 0, "nsec": 0},
-                    "frame_id": "map"
-                },
+        try:
+            takeoff_z = float(self.edt_takeoff_z.text())
+        except ValueError:
+            takeoff_z = 1.0
+        try:
+            takeoff_yaw = float(self.edt_takeoff_yaw.text())
+        except ValueError:
+            takeoff_yaw = 0.0
+
+        # 起飞偏航角转四元数
+        yaw_rad = np.radians(takeoff_yaw)
+        takeoff_quat = np.array([np.cos(yaw_rad / 2), 0, 0, np.sin(yaw_rad / 2)])
+
+        def _wp_to_pose(wp):
+            q = wp['quat']
+            return {
+                "header": {"stamp": {"sec": 0, "nsec": 0}, "frame_id": "map"},
                 "pose": {
                     "position": {
                         "x": round(float(wp['pos'][0]), 4),
@@ -908,7 +948,38 @@ class MainWindow(QMainWindow):
                         "w": round(float(q[0]), 6)
                     }
                 }
-            })
+            }
+
+        poses = []
+        # 第1个点：原点 (0,0,0)，方向为起飞偏航角
+        poses.append({
+            "header": {"stamp": {"sec": 0, "nsec": 0}, "frame_id": "map"},
+            "pose": {
+                "position": {"x": 0, "y": 0, "z": 0},
+                "orientation": {
+                    "x": round(float(takeoff_quat[1]), 6),
+                    "y": round(float(takeoff_quat[2]), 6),
+                    "z": round(float(takeoff_quat[3]), 6),
+                    "w": round(float(takeoff_quat[0]), 6)
+                }
+            }
+        })
+        # 第2个点：起飞点
+        poses.append({
+            "header": {"stamp": {"sec": 0, "nsec": 0}, "frame_id": "map"},
+            "pose": {
+                "position": {"x": 0, "y": 0, "z": round(takeoff_z, 4)},
+                "orientation": {
+                    "x": round(float(takeoff_quat[1]), 6),
+                    "y": round(float(takeoff_quat[2]), 6),
+                    "z": round(float(takeoff_quat[3]), 6),
+                    "w": round(float(takeoff_quat[0]), 6)
+                }
+            }
+        })
+        # 后续航点
+        for wp in self.waypoints:
+            poses.append(_wp_to_pose(wp))
 
         data = {
             "header": {
@@ -949,7 +1020,24 @@ class MainWindow(QMainWindow):
 
             # nav_msgs/Path 格式
             if 'poses' in data:
-                for ps in data['poses']:
+                all_poses = data['poses']
+                start_idx = 0
+
+                # 检测新格式：第1个点是(0,0,0)，第2个点是起飞点
+                if len(all_poses) >= 3:
+                    p0 = all_poses[0]['pose']['position']
+                    if abs(p0['x']) < 1e-6 and abs(p0['y']) < 1e-6 and abs(p0['z']) < 1e-6:
+                        # 提取起飞参数
+                        p1 = all_poses[1]['pose']
+                        self.edt_takeoff_z.setText(f"{p1['position']['z']:.1f}")
+                        o0 = all_poses[0]['pose']['orientation']
+                        # 四元数 (w,x,y,z) 转偏航角
+                        qw, qx, qy = o0['w'], o0['x'], o0['y']
+                        yaw_rad = 2 * np.arctan2(o0['z'], qw)
+                        self.edt_takeoff_yaw.setText(f"{np.degrees(yaw_rad):.1f}")
+                        start_idx = 2
+
+                for ps in all_poses[start_idx:]:
                     pose = ps['pose']
                     pos = pose['position']
                     ori = pose['orientation']  # ROS: (x, y, z, w)

@@ -4,13 +4,17 @@ import numpy as np
 
 
 def rotation_matrix_from_vectors(forward, up):
-    """从前进方向和上方向构建旋转矩阵 (3x3)，右手坐标系"""
+    """从前进方向和上方向构建旋转矩阵 (3x3)
+    旋转矩阵将 body 坐标系 (X=forward, Y=left, Z=up) 映射到世界坐标系
+    """
     f = forward / (np.linalg.norm(forward) + 1e-10)
     u = up / (np.linalg.norm(up) + 1e-10)
-    r = np.cross(u, f)  # right = up x forward（右手系）
-    r /= (np.linalg.norm(r) + 1e-10)
-    u = np.cross(f, r)  # 重新计算确保正交
-    return np.column_stack([r, u, f])
+    if abs(np.dot(f, u)) > 0.99:
+        u = np.array([0.0, 1.0, 0.0])
+    l = np.cross(u, f)  # left = up × forward
+    l /= (np.linalg.norm(l) + 1e-10)
+    u = np.cross(f, l)  # 重新计算确保正交
+    return np.column_stack([f, l, u])  # 列: [forward, left, up]
 
 
 def rotation_matrix_to_quaternion(m):

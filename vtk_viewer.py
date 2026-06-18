@@ -209,6 +209,8 @@ class VTKViewer(QWidget):
         self._waypoint_actors = []
         self._waypoints_ref = None
         self._safe_distance = 2.0
+        self._takeoff_z = 1.0
+        self._takeoff_yaw = 0.0
         self.show_heading = True
 
         # ─── 多边形选择模式 ───
@@ -410,7 +412,7 @@ class VTKViewer(QWidget):
         self._actors.append(actor)
 
         # ── 起飞线 + 起飞点 ──
-        takeoff_start = [0.0, 0.0, 1.0]
+        takeoff_start = [0.0, 0.0, self._takeoff_z]
         takeoff_end = waypoints[0]['pos'].tolist()
         takeoff_line = vtkLineSource()
         takeoff_line.SetPoint1(takeoff_start)
@@ -437,6 +439,23 @@ class VTKViewer(QWidget):
         self.renderer.AddActor(ta)
         self._actors.append(ta)
 
+        # 起飞方向箭头（原点处，按偏航角）
+        yaw_rad = np.radians(self._takeoff_yaw)
+        arrow_dir = np.array([np.cos(yaw_rad), np.sin(yaw_rad), 0])
+        arrow_len = 2.0
+        arrow_end = np.array(takeoff_start) + arrow_dir * arrow_len
+        arrow_line = vtkLineSource()
+        arrow_line.SetPoint1(takeoff_start)
+        arrow_line.SetPoint2(arrow_end.tolist())
+        arrow_mapper = vtkPolyDataMapper()
+        arrow_mapper.SetInputConnection(arrow_line.GetOutputPort())
+        arrow_actor = vtkActor()
+        arrow_actor.SetMapper(arrow_mapper)
+        arrow_actor.GetProperty().SetColor(1.0, 0.5, 0.0)
+        arrow_actor.GetProperty().SetLineWidth(3)
+        self.renderer.AddActor(arrow_actor)
+        self._actors.append(arrow_actor)
+
         self._waypoint_actors = []
         self._waypoints_ref = waypoints
         if n >= 2:
@@ -446,27 +465,35 @@ class VTKViewer(QWidget):
             label_offset = 0.2
 
         if n > BATCH_THRESHOLD:
-            # ── 批量模式：所有球体合并为一个 actor ──
-            from vtkmodules.vtkFiltersSources import vtkSphereSource as _SS
-            from vtkmodules.vtkFiltersGeneral import vtkAppendPolyData
-
-            append = vtkAppendPolyData()
+            # ── 批量模式：用 vtkGlyph3D 一次性渲染所有球体 ──
+            try:
+                from vtkmodules.vtkFiltersCore import vtkGlyph3D
+            except ImportError:
+                from vtk import vtkGlyph3D
+            glyph_pts = vtkPoints()
             for wp in waypoints:
-                s = _SS()
-                s.SetCenter(wp['pos'].tolist())
-                s.SetRadius(0.3)
-                s.Update()
-                append.AddInputData(s.GetOutput())
-            append.Update()
+                glyph_pts.InsertNextPoint(wp['pos'].tolist())
+            glyph_poly = vtkPolyData()
+            glyph_poly.SetPoints(glyph_pts)
+
+            glyph_src = vtkSphereSource()
+            glyph_src.SetRadius(0.3)
+            glyph_src.SetThetaResolution(8)
+            glyph_src.SetPhiResolution(8)
+
+            glyph = vtkGlyph3D()
+            glyph.SetInputData(glyph_poly)
+            glyph.SetSourceConnection(glyph_src.GetOutputPort())
+            glyph.ScalingOff()
+            glyph.Update()
 
             sm = vtkPolyDataMapper()
-            sm.SetInputConnection(append.GetOutputPort())
+            sm.SetInputConnection(glyph.GetOutputPort())
             sa = vtkActor()
             sa.SetMapper(sm)
             sa.GetProperty().SetColor(1.0, 0.2, 0.2)
             self.renderer.AddActor(sa)
             self._actors.append(sa)
-            # 批量模式下用单个 actor 代表所有航点
             self._waypoint_actors = [sa] * n
         else:
             # ── 少量航点：逐个创建（支持单独拖拽编辑）──
@@ -507,20 +534,24 @@ class VTKViewer(QWidget):
             headings = self._compute_forward_headings(waypoints)
 
             if n > BATCH_THRESHOLD:
-                # 批量合并所有方向线
-                from vtkmodules.vtkFiltersGeneral import vtkAppendPolyData
-                line_append = vtkAppendPolyData()
+                # 批量合并所有方向线（用 numpy 直接构建线段 polydata）
+                line_pts = vtkPoints()
+                line_cells = vtkCellArray()
                 for i, wp in enumerate(waypoints):
                     pos = wp['pos']
                     end = pos + headings[i] * line_len
-                    ls = vtkLineSource()
-                    ls.SetPoint1(pos.tolist())
-                    ls.SetPoint2(end.tolist())
-                    ls.Update()
-                    line_append.AddInputData(ls.GetOutput())
-                line_append.Update()
+                    idx = line_pts.InsertNextPoint(pos.tolist())
+                    line_pts.InsertNextPoint(end.tolist())
+                    line = vtkPolyLine()
+                    line.GetPointIds().SetNumberOfIds(2)
+                    line.GetPointIds().SetId(0, idx)
+                    line.GetPointIds().SetId(1, idx + 1)
+                    line_cells.InsertNextCell(line)
+                line_poly = vtkPolyData()
+                line_poly.SetPoints(line_pts)
+                line_poly.SetLines(line_cells)
                 lm = vtkPolyDataMapper()
-                lm.SetInputConnection(line_append.GetOutputPort())
+                lm.SetInputData(line_poly)
                 la = vtkActor()
                 la.SetMapper(lm)
                 la.GetProperty().SetColor(0.0, 0.9, 1.0)
@@ -628,15 +659,25 @@ class VTKViewer(QWidget):
         ren = self.renderer
         vp = ren.GetViewport()
         win_size = ren.GetRenderWindow().GetSize()
+        if win_size[0] == 0 or win_size[1] == 0:
+            return None
         vx = (screen_x / win_size[0] - vp[0]) / (vp[2] - vp[0])
         vy = (screen_y / win_size[1] - vp[1]) / (vp[3] - vp[1])
 
         ren.SetViewPoint(vx, vy, 0)
         ren.ViewToWorld()
         near = np.array(ren.GetWorldPoint()[:3])
+        w = ren.GetWorldPoint()[3]
+        if abs(w) > 1e-10:
+            near /= w
+
         ren.SetViewPoint(vx, vy, 1)
         ren.ViewToWorld()
         far = np.array(ren.GetWorldPoint()[:3])
+        w = ren.GetWorldPoint()[3]
+        if abs(w) > 1e-10:
+            far /= w
+
         ray_dir = far - near
 
         if abs(ray_dir[2]) < 1e-10:
@@ -902,11 +943,8 @@ class VTKViewer(QWidget):
 
         self.vtk_widget.GetRenderWindow().Render()
 
-    def setup_scene(self):
-        """初始化场景（坐标轴 + 网格）"""
-        if not VTK_AVAILABLE:
-            return
-
+    def _add_scene_axes(self):
+        """添加坐标轴和网格到场景"""
         axes = [
             ((0, 0, 0), (8, 0, 0), (1, 0, 0)),
             ((0, 0, 0), (0, 8, 0), (0, 1, 0)),
@@ -957,6 +995,13 @@ class VTKViewer(QWidget):
         a.GetProperty().SetOpacity(0.6)
         self.renderer.AddActor(a)
         self._actors.append(a)
+
+    def setup_scene(self):
+        """初始化场景（坐标轴 + 网格）"""
+        if not VTK_AVAILABLE:
+            return
+
+        self._add_scene_axes()
 
         self._update_view()
         self.interactor.Initialize()
