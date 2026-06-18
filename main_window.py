@@ -28,6 +28,8 @@ class MainWindow(QMainWindow):
 
         self.points = None
         self.waypoints = []
+        self._kdtree = None
+        self._kdtree_points_id = None
 
         self._init_ui()
         self._apply_style()
@@ -195,7 +197,7 @@ class MainWindow(QMainWindow):
         self.edt_cspeed = QLineEdit("2"); cl.addWidget(self.edt_cspeed, 4, 1)
         cl.addWidget(QLabel("路径:"), 4, 2)
         self.cbo_cube_type = QComboBox()
-        self.cbo_cube_type.addItems(["螺旋线", "Z字形"])
+        self.cbo_cube_type.addItems(["Z字形"])
         cl.addWidget(self.cbo_cube_type, 4, 3)
 
         cube_btn_row = QHBoxLayout()
@@ -528,13 +530,16 @@ class MainWindow(QMainWindow):
 
             for j in range(n_pts):
                 x = x_start + (x_end - x_start) * j / (n_pts - 1)
-                # 机头垂直于扫描线（朝向桥面，Y方向）
-                quat = look_at_quaternion(
-                    np.array([x, y + 1, z_line]),
-                    np.array([x, y, z_line])
-                )
+                pos = np.array([x, y, z_line])
+                # 机头朝向飞行方向（沿扫描线X方向）
+                if j < n_pts - 1:
+                    x_next = x_start + (x_end - x_start) * (j + 1) / (n_pts - 1)
+                    target = np.array([x_next, y, z_line])
+                else:
+                    target = np.array([x_end, y, z_line])
+                quat = look_at_quaternion(target, pos)
                 self.waypoints.append({
-                    'pos': np.array([x, y, z_line]),
+                    'pos': pos,
                     'quat': quat,
                     'speed': speed,
                     'action': 'fly'
@@ -544,10 +549,10 @@ class MainWindow(QMainWindow):
             y += spacing
             if y <= ymax:
                 z_next = curved_z(y)
-                # 转折点朝向下一条扫描线方向
-                next_dir = -direction
+                # 转折点朝向下一条扫描线起点方向
+                next_x = xmin if direction == 1 else xmax
                 quat = look_at_quaternion(
-                    np.array([x_end + next_dir, y, z_next]),
+                    np.array([next_x, y, z_next]),
                     np.array([x_end, y, z_next])
                 )
                 self.waypoints.append({
@@ -602,7 +607,10 @@ class MainWindow(QMainWindow):
                 ry = cy + radius * np.sin(angle)
                 pos = np.array([rx, ry, z])
 
-                quat = look_at_quaternion(np.array([cx, cy, z]), pos)
+                # 机头沿切线方向（飞行方向）
+                tangent = np.array([-np.sin(angle), np.cos(angle), 0])
+                target = pos + tangent
+                quat = look_at_quaternion(target, pos)
 
                 self.waypoints.append({
                     'pos': pos,
@@ -628,7 +636,13 @@ class MainWindow(QMainWindow):
                     ry = cy + radius * np.sin(angle)
                     pos = np.array([rx, ry, z])
 
-                    quat = look_at_quaternion(np.array([cx, cy, z]), pos)
+                    # 机头沿圆弧切线方向
+                    if layer % 2 == 0:
+                        tangent = np.array([-np.sin(angle), np.cos(angle), 0])
+                    else:
+                        tangent = np.array([np.sin(angle), -np.cos(angle), 0])
+                    target = pos + tangent
+                    quat = look_at_quaternion(target, pos)
 
                     self.waypoints.append({
                         'pos': pos,
@@ -671,30 +685,33 @@ class MainWindow(QMainWindow):
         ]
 
         self.waypoints = []
-        route_type = self.cbo_cube_type.currentText()
 
         for pillar in pillars:
             px, py = pillar['cx'], pillar['cy']
 
-            if route_type == "螺旋线":
-                num_turns = max(1, int(dz / vstep))
-                num_pts_per_turn = max(8, int(360 / max(1, cstep)))
-                total_pts = num_turns * num_pts_per_turn
+            num_layers = max(1, int(dz / vstep))
+            num_cols = max(1, int(360 / max(1, cstep)))
 
-                for i in range(total_pts + 1):
-                    t = i / total_pts
-                    angle = t * num_turns * 2 * np.pi
-                    z = cz + t * dz
+            for layer in range(num_layers + 1):
+                z = cz + layer * vstep
+                end_col = num_cols + 1 if layer == num_layers else num_cols
+                for col in range(end_col):
+                    if layer % 2 == 0:
+                        angle = (col / num_cols) * 2 * np.pi
+                    else:
+                        angle = (1 - col / num_cols) * 2 * np.pi
 
                     rx = px + dist * np.cos(angle)
                     ry = py + dist * np.sin(angle)
                     pos = np.array([rx, ry, z])
 
-                    inward = np.array([px, py, z]) - pos
-                    if np.linalg.norm(inward) > 1e-6:
-                        quat = look_at_quaternion(np.array([px, py, z]), pos)
+                    # 机头沿圆弧切线方向
+                    if layer % 2 == 0:
+                        tangent = np.array([-np.sin(angle), np.cos(angle), 0])
                     else:
-                        quat = np.array([1.0, 0.0, 0.0, 0.0])
+                        tangent = np.array([np.sin(angle), -np.cos(angle), 0])
+                    target = pos + tangent
+                    quat = look_at_quaternion(target, pos)
 
                     self.waypoints.append({
                         'pos': pos,
@@ -702,32 +719,6 @@ class MainWindow(QMainWindow):
                         'speed': speed,
                         'action': 'scan'
                     })
-
-            elif route_type == "Z字形":
-                num_layers = max(1, int(dz / vstep))
-                num_cols = max(1, int(360 / max(1, cstep)))
-
-                for layer in range(num_layers + 1):
-                    z = cz + layer * vstep
-                    end_col = num_cols + 1 if layer == num_layers else num_cols
-                    for col in range(end_col):
-                        if layer % 2 == 0:
-                            angle = (col / num_cols) * 2 * np.pi
-                        else:
-                            angle = (1 - col / num_cols) * 2 * np.pi
-
-                        rx = px + dist * np.cos(angle)
-                        ry = py + dist * np.sin(angle)
-                        pos = np.array([rx, ry, z])
-
-                        quat = look_at_quaternion(np.array([px, py, z]), pos)
-
-                        self.waypoints.append({
-                            'pos': pos,
-                            'quat': quat,
-                            'speed': speed,
-                            'action': 'scan'
-                        })
 
         self._display_route()
 
@@ -811,6 +802,17 @@ class MainWindow(QMainWindow):
             self.viewer.add_route(self.waypoints)
             self._check_safety_distance()
 
+    def _get_kdtree(self):
+        if self.points is None or len(self.points) == 0:
+            return None
+        pts_id = id(self.points)
+        if self._kdtree is not None and self._kdtree_points_id == pts_id:
+            return self._kdtree
+        from scipy.spatial import cKDTree
+        self._kdtree = cKDTree(self.points)
+        self._kdtree_points_id = pts_id
+        return self._kdtree
+
     def _check_safety_distance(self):
         if len(self.waypoints) < 2:
             return
@@ -829,11 +831,11 @@ class MainWindow(QMainWindow):
 
         collision_count = 0
         collision_dist = safe_dist * 0.5
-        if self.points is not None and len(self.points) > 0:
-            from scipy.spatial import cKDTree
-            tree = cKDTree(self.points)
-            for i, wp in enumerate(self.waypoints):
-                dist, _ = tree.query(wp['pos'])
+        tree = self._get_kdtree()
+        if tree is not None:
+            wp_positions = np.array([wp['pos'] for wp in self.waypoints])
+            dists, _ = tree.query(wp_positions)
+            for i, dist in enumerate(dists):
                 if dist < collision_dist:
                     collision_count += 1
                     if i < len(self.viewer._waypoint_actors):
@@ -850,6 +852,8 @@ class MainWindow(QMainWindow):
     # ─── 清除航线 ───
     def clear_route(self):
         self.waypoints = []
+        self.viewer._clear_polygon()
+        self.viewer._clear_place_preview()
         self.viewer.clear_actors()
         if self.points is not None:
             self.viewer.add_point_cloud(self.points)

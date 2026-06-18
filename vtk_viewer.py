@@ -113,12 +113,16 @@ if VTK_AVAILABLE:
                 if len(v._poly_points) >= 3:
                     pts = [p.tolist() for p in v._poly_points]
                     v.polygon_finished.emit(pts)
-                v.exit_polygon_mode()
+                    v.exit_polygon_mode(clear_markers=False)
+                else:
+                    v.exit_polygon_mode()
                 return
             if v and v.place_mode:
                 if v._place_preview_pos is not None:
                     v.place_picked.emit(v._place_preview_pos)
-                v.exit_place_mode()
+                    v.exit_place_mode(clear_marker=False)
+                else:
+                    v.exit_place_mode()
                 return
             self.StartRotate()
 
@@ -377,7 +381,9 @@ class VTKViewer(QWidget):
             del self._actors[i]
 
         n = len(waypoints)
+        BATCH_THRESHOLD = 50
 
+        # ── 航线路径 ──
         vtk_pts = vtkPoints()
         for wp in waypoints:
             vtk_pts.InsertNextPoint(wp['pos'].tolist())
@@ -403,7 +409,7 @@ class VTKViewer(QWidget):
         self.renderer.AddActor(actor)
         self._actors.append(actor)
 
-        # 起飞线：从地面 (0,0,1) 到航线起点
+        # ── 起飞线 + 起飞点 ──
         takeoff_start = [0.0, 0.0, 1.0]
         takeoff_end = waypoints[0]['pos'].tolist()
         takeoff_line = vtkLineSource()
@@ -419,7 +425,6 @@ class VTKViewer(QWidget):
         self.renderer.AddActor(takeoff_actor)
         self._actors.append(takeoff_actor)
 
-        # 起飞点标记
         takeoff_sphere = vtkSphereSource()
         takeoff_sphere.SetCenter(takeoff_start)
         takeoff_sphere.SetRadius(0.4)
@@ -440,74 +445,134 @@ class VTKViewer(QWidget):
         else:
             label_offset = 0.2
 
-        for i, wp in enumerate(waypoints):
-            sphere = vtkSphereSource()
-            sphere.SetCenter(wp['pos'].tolist())
-            sphere.SetRadius(0.3)
-            sphere.Update()
+        if n > BATCH_THRESHOLD:
+            # ── 批量模式：所有球体合并为一个 actor ──
+            from vtkmodules.vtkFiltersSources import vtkSphereSource as _SS
+            from vtkmodules.vtkFiltersGeneral import vtkAppendPolyData
 
-            m = vtkPolyDataMapper()
-            m.SetInputConnection(sphere.GetOutputPort())
-            a = vtkActor()
-            a.SetMapper(m)
-            a.GetProperty().SetColor(1.0, 0.2, 0.2)
-            self.renderer.AddActor(a)
-            self._actors.append(a)
-            self._waypoint_actors.append(a)
+            append = vtkAppendPolyData()
+            for wp in waypoints:
+                s = _SS()
+                s.SetCenter(wp['pos'].tolist())
+                s.SetRadius(0.3)
+                s.Update()
+                append.AddInputData(s.GetOutput())
+            append.Update()
 
-            txt_src = vtkVectorText()
-            txt_src.SetText(str(i + 1))
-            txt_m = vtkPolyDataMapper()
-            txt_m.SetInputConnection(txt_src.GetOutputPort())
-            follower = vtkFollower()
-            follower.SetMapper(txt_m)
-            follower.SetScale(label_offset * 0.6, label_offset * 0.6, label_offset * 0.6)
-            follower.SetPosition(wp['pos'][0], wp['pos'][1], wp['pos'][2] + label_offset * 2)
-            follower.GetProperty().SetColor(0.0, 0.2, 0.8)
-            follower.SetCamera(self.renderer.GetActiveCamera())
-            self.renderer.AddActor(follower)
-            self._actors.append(follower)
+            sm = vtkPolyDataMapper()
+            sm.SetInputConnection(append.GetOutputPort())
+            sa = vtkActor()
+            sa.SetMapper(sm)
+            sa.GetProperty().SetColor(1.0, 0.2, 0.2)
+            self.renderer.AddActor(sa)
+            self._actors.append(sa)
+            # 批量模式下用单个 actor 代表所有航点
+            self._waypoint_actors = [sa] * n
+        else:
+            # ── 少量航点：逐个创建（支持单独拖拽编辑）──
+            for wp in waypoints:
+                sphere = vtkSphereSource()
+                sphere.SetCenter(wp['pos'].tolist())
+                sphere.SetRadius(0.3)
+                sphere.Update()
+                m = vtkPolyDataMapper()
+                m.SetInputConnection(sphere.GetOutputPort())
+                a = vtkActor()
+                a.SetMapper(m)
+                a.GetProperty().SetColor(1.0, 0.2, 0.2)
+                self.renderer.AddActor(a)
+                self._actors.append(a)
+                self._waypoint_actors.append(a)
 
+            # 标签只在少量航点时显示
+            for i, wp in enumerate(waypoints):
+                txt_src = vtkVectorText()
+                txt_src.SetText(str(i + 1))
+                txt_m = vtkPolyDataMapper()
+                txt_m.SetInputConnection(txt_src.GetOutputPort())
+                follower = vtkFollower()
+                follower.SetMapper(txt_m)
+                follower.SetScale(label_offset * 0.6, label_offset * 0.6, label_offset * 0.6)
+                follower.SetPosition(wp['pos'][0], wp['pos'][1], wp['pos'][2] + label_offset * 2)
+                follower.GetProperty().SetColor(0.0, 0.2, 0.8)
+                follower.SetCamera(self.renderer.GetActiveCamera())
+                self.renderer.AddActor(follower)
+                self._actors.append(follower)
+
+        # ── 机头方向 ──
         if getattr(self, 'show_heading', True) and n >= 2:
             dists = [np.linalg.norm(waypoints[i+1]['pos'] - waypoints[i]['pos']) for i in range(n-1)]
             avg_dist = np.mean(dists)
             line_len = np.clip(avg_dist * 0.3, 0.3, 2.0)
-
             headings = self._compute_forward_headings(waypoints)
 
-            for i, wp in enumerate(waypoints):
-                pos = wp['pos']
-                fwd = headings[i]
-                end = pos + fwd * line_len
-
-                line = vtkLineSource()
-                line.SetPoint1(pos.tolist())
-                line.SetPoint2(end.tolist())
-                mapper = vtkPolyDataMapper()
-                mapper.SetInputConnection(line.GetOutputPort())
-                actor = vtkActor()
-                actor.SetMapper(mapper)
-                actor.GetProperty().SetLineWidth(3)
-                is_corner = self._is_corner(waypoints, i)
-                if is_corner:
-                    actor.GetProperty().SetColor(1.0, 0.9, 0.0)
-                else:
-                    actor.GetProperty().SetColor(0.0, 0.9, 1.0)
-                self.renderer.AddActor(actor)
-                self._actors.append(actor)
+            if n > BATCH_THRESHOLD:
+                # 批量合并所有方向线
+                from vtkmodules.vtkFiltersGeneral import vtkAppendPolyData
+                line_append = vtkAppendPolyData()
+                for i, wp in enumerate(waypoints):
+                    pos = wp['pos']
+                    end = pos + headings[i] * line_len
+                    ls = vtkLineSource()
+                    ls.SetPoint1(pos.tolist())
+                    ls.SetPoint2(end.tolist())
+                    ls.Update()
+                    line_append.AddInputData(ls.GetOutput())
+                line_append.Update()
+                lm = vtkPolyDataMapper()
+                lm.SetInputConnection(line_append.GetOutputPort())
+                la = vtkActor()
+                la.SetMapper(lm)
+                la.GetProperty().SetColor(0.0, 0.9, 1.0)
+                la.GetProperty().SetLineWidth(3)
+                self.renderer.AddActor(la)
+                self._actors.append(la)
+            else:
+                for i, wp in enumerate(waypoints):
+                    pos = wp['pos']
+                    end = pos + headings[i] * line_len
+                    line = vtkLineSource()
+                    line.SetPoint1(pos.tolist())
+                    line.SetPoint2(end.tolist())
+                    mapper = vtkPolyDataMapper()
+                    mapper.SetInputConnection(line.GetOutputPort())
+                    actor = vtkActor()
+                    actor.SetMapper(mapper)
+                    actor.GetProperty().SetLineWidth(3)
+                    if self._is_corner(waypoints, i):
+                        actor.GetProperty().SetColor(1.0, 0.9, 0.0)
+                    else:
+                        actor.GetProperty().SetColor(0.0, 0.9, 1.0)
+                    self.renderer.AddActor(actor)
+                    self._actors.append(actor)
 
         self._update_view()
         print(f"[VTK] Route displayed: {n} waypoints")
 
     def _pick_3d(self, screen_x, screen_y, z_plane=None):
-        """屏幕坐标拾取3D点：射线与XY平面求交"""
+        """屏幕坐标拾取3D点：射线与Z平面求交"""
         ren = self.renderer
-        ren.SetDisplayPoint(screen_x, screen_y, 0)
-        ren.DisplayToWorld()
+        vp = ren.GetViewport()
+        win_size = ren.GetRenderWindow().GetSize()
+        if win_size[0] == 0 or win_size[1] == 0:
+            return None
+        vx = (screen_x / win_size[0] - vp[0]) / (vp[2] - vp[0])
+        vy = (screen_y / win_size[1] - vp[1]) / (vp[3] - vp[1])
+
+        ren.SetViewPoint(vx, vy, 0)
+        ren.ViewToWorld()
         near = np.array(ren.GetWorldPoint()[:3])
-        ren.SetDisplayPoint(screen_x, screen_y, 1)
-        ren.DisplayToWorld()
+        w = ren.GetWorldPoint()[3]
+        if abs(w) > 1e-10:
+            near /= w
+
+        ren.SetViewPoint(vx, vy, 1)
+        ren.ViewToWorld()
         far = np.array(ren.GetWorldPoint()[:3])
+        w = ren.GetWorldPoint()[3]
+        if abs(w) > 1e-10:
+            far /= w
+
         ray_dir = far - near
 
         if z_plane is None:
@@ -521,7 +586,8 @@ class VTKViewer(QWidget):
         t = (z_plane - near[2]) / ray_dir[2]
         if t < 0:
             return None
-        return near + t * ray_dir
+        result = near + t * ray_dir
+        return result
 
     # ─── 航点编辑 ──────────────────────────────────────────────
     def _find_nearest_waypoint(self, screen_x, screen_y):
@@ -560,11 +626,16 @@ class VTKViewer(QWidget):
 
     def _screen_to_xy_plane(self, screen_x, screen_y, z_plane):
         ren = self.renderer
-        ren.SetDisplayPoint(screen_x, screen_y, 0)
-        ren.DisplayToWorld()
+        vp = ren.GetViewport()
+        win_size = ren.GetRenderWindow().GetSize()
+        vx = (screen_x / win_size[0] - vp[0]) / (vp[2] - vp[0])
+        vy = (screen_y / win_size[1] - vp[1]) / (vp[3] - vp[1])
+
+        ren.SetViewPoint(vx, vy, 0)
+        ren.ViewToWorld()
         near = np.array(ren.GetWorldPoint()[:3])
-        ren.SetDisplayPoint(screen_x, screen_y, 1)
-        ren.DisplayToWorld()
+        ren.SetViewPoint(vx, vy, 1)
+        ren.ViewToWorld()
         far = np.array(ren.GetWorldPoint()[:3])
         ray_dir = far - near
 
@@ -638,11 +709,12 @@ class VTKViewer(QWidget):
         self._set_view("top")
         print("[Polygon] 左键点击添加顶点，右键结束绘制，Esc取消")
 
-    def exit_polygon_mode(self):
+    def exit_polygon_mode(self, clear_markers=True):
         self.polygon_mode = False
         self._poly_points = []
         self._poly_click_start = None
-        self._clear_polygon()
+        if clear_markers:
+            self._clear_polygon()
         print("[Polygon] Exited polygon mode.")
 
     # ─── 点击放置模式 ─────────────────────────────────────
@@ -650,15 +722,18 @@ class VTKViewer(QWidget):
         if self.points_data is None or len(self.points_data) == 0:
             print("[Place] No point cloud loaded - 请先加载点云")
             return
+        self._clear_place_preview()
+        self._clear_polygon()
         self.place_mode = True
         self._place_preview_pos = None
         self._place_preview_actor = None
         print(f"[Place] 进入放置模式, place_mode={self.place_mode}")
 
-    def exit_place_mode(self):
+    def exit_place_mode(self, clear_marker=True):
         self.place_mode = False
         self._place_preview_pos = None
-        self._clear_place_preview()
+        if clear_marker:
+            self._clear_place_preview()
         print("[Place] Exited place mode.")
 
     def _update_place_preview(self, pos):
