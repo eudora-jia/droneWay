@@ -305,6 +305,8 @@ class VTKViewer(QWidget):
 
     # 选框完成信号：[[min_x,min_y,min_z], [max_x,max_y,max_z]]
     box_selected = pyqtSignal(list)
+    # 航点编辑完成信号：(航点索引, 新位置 ndarray, 新朝向 ndarray or None)
+    waypoint_edited = pyqtSignal(int, object, object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -337,6 +339,16 @@ class VTKViewer(QWidget):
         self._pick_drag_active = False  # 画框拖拽已激活（阻止 interactor style 平移）
         self.box_actors = []        # 选框线框 actor
         self._observers = []        # 事件观察者 ID
+
+        # ─── 航点编辑状态 ───
+        self._wp_editing = False        # 是否正在编辑航点
+        self._wp_edit_idx = -1          # 编辑中的航点索引
+        self._wp_edit_z = 0.0           # 拖拽平面 Z 高度
+        self._wp_edit_offset = None     # 拖拽偏移量
+        self._wp_edit_actor = None      # 被编辑航点的 actor（高亮用）
+        self._waypoint_actors = []      # 航点 actor 列表（用于拾取）
+        self._waypoints_ref = None      # 航点数据引用
+        self._safe_distance = 2.0       # 安全距离阈值（米）
 
         # ─── 点拾取器 ───
         self.picker = vtk.vtkPointPicker() if VTK_AVAILABLE else None
@@ -516,6 +528,8 @@ class VTKViewer(QWidget):
         self._actors.append(actor)
 
         # ─── 航点标记（红色球）───
+        self._waypoint_actors = []
+        self._waypoints_ref = waypoints
         for i, wp in enumerate(waypoints):
             sphere = vtkSphereSource()
             sphere.SetCenter(wp['pos'].tolist())
@@ -529,6 +543,7 @@ class VTKViewer(QWidget):
             a.GetProperty().SetColor(1.0, 0.2, 0.2)
             self.renderer.AddActor(a)
             self._actors.append(a)
+            self._waypoint_actors.append(a)
 
         # ─── 机头方向箭头（橙色，朝向目标）───
         # 计算箭头长度：取航点平均间距的 25%，最小 0.3，最大 2.0
@@ -636,21 +651,37 @@ class VTKViewer(QWidget):
         return np.array(pos)
 
     def _on_mouse_down(self, obj, event):
-        """鼠标按下：仅在 pick_mode 且按住 Ctrl 时画框，否则交给 FoxgloveInteractorStyle 处理"""
+        """鼠标按下：Ctrl+左键 → 航点编辑 或 画框选区"""
         self._pick_drag_active = False
-        if not self.pick_mode or not self.interactor.GetControlKey():
-            return  # 交给 FoxgloveInteractorStyle 处理（左键平移）
+        if not self.interactor.GetControlKey():
+            return  # 没按 Ctrl，交给 FoxgloveInteractorStyle 处理（左键平移）
+
         pos = self.interactor.GetEventPosition()
+
+        # 优先检查：Ctrl+左键点击附近有航点 → 进入航点编辑
+        wp_idx = self._find_nearest_waypoint(pos[0], pos[1])
+        if wp_idx >= 0:
+            self._start_wp_edit(wp_idx, pos[0], pos[1])
+            self._pick_drag_active = True
+            return
+
+        # 次优先：pick_mode 下画框
+        if not self.pick_mode:
+            return
         p = self._pick_3d(pos[0], pos[1])
         if p is not None:
             self._dragging = True
             self._drag_start = p
-            self._pick_drag_active = True  # 标记画框拖拽已激活，阻止 interactor style 的平移
+            self._pick_drag_active = True
             self._clear_box()
             print(f"[Pick] Start: ({p[0]:.2f}, {p[1]:.2f}, {p[2]:.2f})")
 
     def _on_mouse_move(self, obj, event):
-        """鼠标拖动：实时更新预览框"""
+        """鼠标拖动：航点编辑 或 画框预览"""
+        if self._wp_editing:
+            pos = self.interactor.GetEventPosition()
+            self._update_wp_edit(pos[0], pos[1])
+            return
         if not self._dragging or self._drag_start is None:
             return
         pos = self.interactor.GetEventPosition()
@@ -659,14 +690,18 @@ class VTKViewer(QWidget):
             self._draw_preview_box(self._drag_start, p)
 
     def _on_mouse_up(self, obj, event):
-        """鼠标松开：完成画框，通知主窗口"""
+        """鼠标松开：完成航点编辑 或 画框"""
+        if self._wp_editing:
+            self._end_wp_edit()
+            self._pick_drag_active = False
+            return
         if not self._dragging or self._drag_start is None:
             self._pick_drag_active = False
             return
         pos = self.interactor.GetEventPosition()
         p = self._pick_3d(pos[0], pos[1])
         if p is None:
-            p = self._drag_start  # 如果松开时没拾取到，用起点
+            p = self._drag_start
 
         self._dragging = False
         self._pick_drag_active = False
@@ -698,6 +733,130 @@ class VTKViewer(QWidget):
 
         # 发出信号，由主窗口弹出菜单让用户选航线类型
         self.box_selected.emit([mn.tolist(), mx.tolist()])
+
+    # ─── 航点编辑 ──────────────────────────────────────────────
+    def _find_nearest_waypoint(self, screen_x, screen_y):
+        """找到屏幕坐标最近的航点，返回索引（-1 表示未找到）"""
+        if not self._waypoint_actors or not self._waypoints_ref:
+            return -1
+
+        # 将屏幕坐标转为世界坐标射线
+        ren = self.renderer
+        ren.SetDisplayPoint(screen_x, screen_y, 0)
+        ren.DisplayToWorld()
+        near = np.array(ren.GetWorldPoint()[:3])
+        ren.SetDisplayPoint(screen_x, screen_y, 1)
+        ren.DisplayToWorld()
+        far = np.array(ren.GetWorldPoint()[:3])
+        ray_dir = far - near
+        ray_dir /= np.linalg.norm(ray_dir)
+
+        # 找最近的航点（射线到点的距离）
+        best_idx = -1
+        best_dist = float('inf')
+        PICK_THRESHOLD = 15.0  # 像素阈值
+
+        cam = ren.GetActiveCamera()
+        vp = ren.GetViewport()
+        win_size = ren.GetSize()
+
+        for i, wp in enumerate(self._waypoints_ref):
+            pos = wp['pos']
+            # 世界坐标 → 屏幕坐标
+            ren.SetWorldPoint(pos[0], pos[1], pos[2], 1)
+            ren.WorldToDisplay()
+            dp = ren.GetDisplayPoint()
+            dx = dp[0] - screen_x
+            dy = dp[1] - screen_y
+            dist_px = (dx**2 + dy**2) ** 0.5
+            if dist_px < best_dist:
+                best_dist = dist_px
+                best_idx = i
+
+        if best_dist > PICK_THRESHOLD:
+            return -1
+        return best_idx
+
+    def _screen_to_xy_plane(self, screen_x, screen_y, z_plane):
+        """屏幕坐标射线与 Z=z_plane 平面的交点"""
+        ren = self.renderer
+        ren.SetDisplayPoint(screen_x, screen_y, 0)
+        ren.DisplayToWorld()
+        near = np.array(ren.GetWorldPoint()[:3])
+        ren.SetDisplayPoint(screen_x, screen_y, 1)
+        ren.DisplayToWorld()
+        far = np.array(ren.GetWorldPoint()[:3])
+        ray_dir = far - near
+
+        # 射线: P = near + t * ray_dir
+        # 平面: P.z = z_plane
+        if abs(ray_dir[2]) < 1e-10:
+            return None
+        t = (z_plane - near[2]) / ray_dir[2]
+        if t < 0:
+            return None
+        return near + t * ray_dir
+
+    def _start_wp_edit(self, idx, screen_x, screen_y):
+        """开始编辑航点"""
+        self._wp_editing = True
+        self._wp_edit_idx = idx
+        wp = self._waypoints_ref[idx]
+        self._wp_edit_z = wp['pos'][2]
+
+        # 计算拖拽偏移（鼠标点击位置与航点位置的 XY 偏差）
+        world_p = self._screen_to_xy_plane(screen_x, screen_y, self._wp_edit_z)
+        if world_p is not None:
+            self._wp_edit_offset = wp['pos'][:2] - world_p[:2]
+        else:
+            self._wp_edit_offset = np.zeros(2)
+
+        # 高亮选中的航点
+        if idx < len(self._waypoint_actors):
+            self._waypoint_actors[idx].GetProperty().SetColor(1.0, 1.0, 0.0)  # 黄色高亮
+
+        print(f"[WP Edit] Selected waypoint #{idx} at ({wp['pos'][0]:.2f}, {wp['pos'][1]:.2f}, {wp['pos'][2]:.2f})")
+
+    def _update_wp_edit(self, screen_x, screen_y):
+        """拖动更新航点位置"""
+        if not self._wp_editing:
+            return
+        world_p = self._screen_to_xy_plane(screen_x, screen_y, self._wp_edit_z)
+        if world_p is None:
+            return
+
+        new_pos = world_p[:2] + self._wp_edit_offset
+        wp = self._waypoints_ref[self._wp_edit_idx]
+        wp['pos'][0] = new_pos[0]
+        wp['pos'][1] = new_pos[1]
+
+        # 更新球体位置
+        if self._wp_edit_idx < len(self._waypoint_actors):
+            actor = self._waypoint_actors[self._wp_edit_idx]
+            actor.SetPosition(new_pos[0] - actor.GetCenter()[0],
+                              new_pos[1] - actor.GetCenter()[1], 0)
+
+        # 更新箭头位置
+        self.vtk_widget.GetRenderWindow().Render()
+
+    def _end_wp_edit(self):
+        """完成航点编辑，通知主窗口"""
+        if not self._wp_editing:
+            return
+        idx = self._wp_edit_idx
+        wp = self._waypoints_ref[idx]
+        new_pos = wp['pos'].copy()
+
+        # 恢复航点颜色（安全距离检测会重新标色）
+        if idx < len(self._waypoint_actors):
+            self._waypoint_actors[idx].GetProperty().SetColor(1.0, 0.2, 0.2)
+
+        self._wp_editing = False
+        self._wp_edit_idx = -1
+
+        # 发出信号通知主窗口
+        self.waypoint_edited.emit(idx, new_pos, None)
+        print(f"[WP Edit] Waypoint #{idx} moved to ({new_pos[0]:.2f}, {new_pos[1]:.2f}, {new_pos[2]:.2f})")
 
     def _draw_preview_box(self, p1, p2):
         """实时绘制预览框（黄色半透明线框）"""
@@ -911,6 +1070,7 @@ class MainWindow(QMainWindow):
 
         # 连接选框完成信号
         self.viewer.box_selected.connect(self._on_box_selected)
+        self.viewer.waypoint_edited.connect(self._on_waypoint_edited)
 
         # ─── 右侧控制面板 ───
         ctrl = QWidget()
@@ -942,6 +1102,22 @@ class MainWindow(QMainWindow):
         lbl_pick_hint.setStyleSheet("color: #888; font-size: 10px;")
         lbl_pick_hint.setWordWrap(True)
         pk.addWidget(lbl_pick_hint)
+
+        # 安全距离设置
+        sd_row = QHBoxLayout()
+        sd_row.addWidget(QLabel("Safe Distance (m):"))
+        self.edt_safe_dist = QLineEdit("2.0")
+        self.edt_safe_dist.setMaximumWidth(60)
+        self.edt_safe_dist.textChanged.connect(self._on_safe_dist_changed)
+        sd_row.addWidget(self.edt_safe_dist)
+        sd_row.addStretch()
+        pk.addLayout(sd_row)
+
+        lbl_wp_hint = QLabel("Ctrl+Left Click on waypoint to drag & edit position.")
+        lbl_wp_hint.setStyleSheet("color: #888; font-size: 10px;")
+        lbl_wp_hint.setWordWrap(True)
+        pk.addWidget(lbl_wp_hint)
+
         ctrl_layout.addWidget(grp_pick)
 
         # -- 平面航线（桥底面弓字形扫描）--
@@ -1454,9 +1630,54 @@ class MainWindow(QMainWindow):
         self._display_route()
 
     # ─── 显示航线 ───
+    def _on_safe_dist_changed(self, text):
+        """安全距离输入变更"""
+        try:
+            val = float(text)
+            if val > 0:
+                self.viewer._safe_distance = val
+                # 重新检查安全距离
+                if self.waypoints:
+                    self._check_safety_distance()
+        except ValueError:
+            pass
+
     def _display_route(self):
         self.viewer.add_route(self.waypoints)
         self.lbl_info.setText(f"Waypoints: {len(self.waypoints)}")
+        self._check_safety_distance()
+
+    def _on_waypoint_edited(self, idx, new_pos, new_quat):
+        """航点被拖动编辑后的回调"""
+        if idx < len(self.waypoints):
+            self.waypoints[idx]['pos'] = new_pos
+            if new_quat is not None:
+                self.waypoints[idx]['quat'] = new_quat
+            # 重新渲染航线（更新路径线和箭头）
+            self.viewer.add_route(self.waypoints)
+            self._check_safety_distance()
+
+    def _check_safety_distance(self):
+        """检测航点间安全距离，过近的航点标红警告"""
+        if len(self.waypoints) < 2:
+            return
+        safe_dist = self.viewer._safe_distance
+        violations = []
+        for i in range(len(self.waypoints) - 1):
+            d = np.linalg.norm(self.waypoints[i+1]['pos'] - self.waypoints[i]['pos'])
+            if d < safe_dist:
+                violations.append((i, i+1, d))
+
+        # 标红过近的航点
+        for i, j, d in violations:
+            if i < len(self.viewer._waypoint_actors):
+                self.viewer._waypoint_actors[i].GetProperty().SetColor(1.0, 0.0, 0.0)
+            if j < len(self.viewer._waypoint_actors):
+                self.viewer._waypoint_actors[j].GetProperty().SetColor(1.0, 0.0, 0.0)
+
+        if violations:
+            self.lbl_info.setText(f"Waypoints: {len(self.waypoints)} | WARNING: {len(violations)} pair(s) too close (<{safe_dist}m)")
+        self.viewer.vtk_widget.GetRenderWindow().Render()
 
     # ─── 清除航线 ───
     def clear_route(self):
