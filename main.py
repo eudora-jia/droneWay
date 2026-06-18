@@ -20,7 +20,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QLabel, QLineEdit, QPushButton, QComboBox,
     QFileDialog, QMessageBox, QSplitter, QSizePolicy, QMenu,
-    QProgressBar, QCheckBox
+    QProgressBar, QCheckBox, QGridLayout
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont
@@ -625,9 +625,16 @@ class VTKViewer(QWidget):
         self.renderer.AddActor(actor)
         self._actors.append(actor)
 
-        # ─── 航点标记（红色球）───
+        # ─── 航点标记（红色球 + 编号标签）───
         self._waypoint_actors = []
         self._waypoints_ref = waypoints
+        # 计算标签偏移量（基于航点间距）
+        if n >= 2:
+            avg_d = np.mean([np.linalg.norm(waypoints[i+1]['pos'] - waypoints[i]['pos']) for i in range(n-1)])
+            label_offset = avg_d * 0.15
+        else:
+            label_offset = 0.3
+
         for i, wp in enumerate(waypoints):
             sphere = vtkSphereSource()
             sphere.SetCenter(wp['pos'].tolist())
@@ -642,6 +649,20 @@ class VTKViewer(QWidget):
             self.renderer.AddActor(a)
             self._actors.append(a)
             self._waypoint_actors.append(a)
+
+            # 航点编号标签
+            txt_src = vtkVectorText()
+            txt_src.SetText(str(i + 1))
+            txt_m = vtkPolyDataMapper()
+            txt_m.SetInputConnection(txt_src.GetOutputPort())
+            follower = vtkFollower()
+            follower.SetMapper(txt_m)
+            follower.SetScale(label_offset, label_offset, label_offset)
+            follower.SetPosition(wp['pos'][0], wp['pos'][1], wp['pos'][2] + label_offset * 1.5)
+            follower.GetProperty().SetColor(1.0, 1.0, 0.2)  # 黄色编号
+            follower.SetCamera(self.renderer.GetActiveCamera())
+            self.renderer.AddActor(follower)
+            self._actors.append(follower)
 
         # ─── 机头方向箭头（可选显示）───
         if getattr(self, 'show_heading', True) and n >= 2:
@@ -1146,7 +1167,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Bridge Inspection Drone Waypoint Planner")
+        self.setWindowTitle("桥梁巡检无人机航线规划工具")
         self.resize(1400, 900)
 
         self.points = None
@@ -1180,11 +1201,11 @@ class MainWindow(QMainWindow):
         ctrl_layout.setSpacing(6)
 
         # -- 加载点云 --
-        grp_load = QGroupBox("Load Point Cloud")
+        grp_load = QGroupBox("加载点云")
         gl = QVBoxLayout(grp_load)
-        self.btn_load = QPushButton("Open PCD File")
+        self.btn_load = QPushButton("打开 PCD 文件")
         gl.addWidget(self.btn_load)
-        self.lbl_pc_info = QLabel("No point cloud loaded")
+        self.lbl_pc_info = QLabel("未加载点云")
         gl.addWidget(self.lbl_pc_info)
         self.progress_bar = QProgressBar()
         self.progress_bar.setMaximumHeight(12)
@@ -1194,49 +1215,41 @@ class MainWindow(QMainWindow):
         ctrl_layout.addWidget(grp_load)
 
         # -- 桥梁参数 --
-        grp_bridge = QGroupBox("Bridge Parameters")
-        bp = QVBoxLayout(grp_bridge)
+        grp_bridge = QGroupBox("桥梁参数")
+        bp = QGridLayout(grp_bridge)
+        bp.setSpacing(4)
 
-        # 桥型
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Type:"))
+        bp.addWidget(QLabel("桥型:"), 0, 0)
         self.cmb_bridge_type = QComboBox()
-        self.cmb_bridge_type.addItems(["Over River (跨河)", "Over Road (跨线)", "Viaduct (高架)"])
-        row.addWidget(self.cmb_bridge_type)
-        bp.addLayout(row)
+        self.cmb_bridge_type.addItems(["跨河桥", "跨线桥", "高架桥"])
+        bp.addWidget(self.cmb_bridge_type, 0, 1, 1, 3)
 
-        # 桥长、桥宽、净空高度
-        self.edt_bridge_len = self._make_labeled_input(bp, "Length (m):", "100")
-        self.edt_bridge_wid = self._make_labeled_input(bp, "Width (m):", "15")
-        self.edt_bridge_clr = self._make_labeled_input(bp, "Clearance (m):", "8")
-        self.edt_bridge_span = self._make_labeled_input(bp, "Span (m):", "30")
+        bp.addWidget(QLabel("桥长(m):"), 1, 0)
+        self.edt_bridge_len = QLineEdit("100"); bp.addWidget(self.edt_bridge_len, 1, 1)
+        bp.addWidget(QLabel("桥宽(m):"), 1, 2)
+        self.edt_bridge_wid = QLineEdit("15"); bp.addWidget(self.edt_bridge_wid, 1, 3)
 
-        btn_apply_bridge = QPushButton("Apply to Route Defaults")
+        bp.addWidget(QLabel("净空(m):"), 2, 0)
+        self.edt_bridge_clr = QLineEdit("8"); bp.addWidget(self.edt_bridge_clr, 2, 1)
+        bp.addWidget(QLabel("跨距(m):"), 2, 2)
+        self.edt_bridge_span = QLineEdit("30"); bp.addWidget(self.edt_bridge_span, 2, 3)
+
+        btn_apply_bridge = QPushButton("应用到航线默认值")
         btn_apply_bridge.setStyleSheet("QPushButton { background: #2a3a5a; padding: 6px; } QPushButton:hover { background: #3a4a6a; }")
         btn_apply_bridge.clicked.connect(self._apply_bridge_params)
-        bp.addWidget(btn_apply_bridge)
-
-        lbl_bridge_hint = QLabel("Bridge params auto-fill route area & flight height.")
-        lbl_bridge_hint.setStyleSheet("color: #888; font-size: 10px;")
-        lbl_bridge_hint.setWordWrap(True)
-        bp.addWidget(lbl_bridge_hint)
+        bp.addWidget(btn_apply_bridge, 3, 0, 1, 4)
 
         ctrl_layout.addWidget(grp_bridge)
 
-        # -- 统一框选按钮 --
-        grp_pick = QGroupBox("Region Selection")
+        # -- 框选区域 --
+        grp_pick = QGroupBox("区域选择")
         pk = QVBoxLayout(grp_pick)
-        self.btn_pick_region = QPushButton("Pick Region (Ctrl+Drag to Draw Box)")
+        self.btn_pick_region = QPushButton("框选区域 (Ctrl+拖拽)")
         self.btn_pick_region.setStyleSheet("QPushButton { background: #2a4a2a; font-weight: bold; padding: 8px; } QPushButton:hover { background: #3a5a3a; }")
         pk.addWidget(self.btn_pick_region)
-        lbl_pick_hint = QLabel("Auto switch to top view. Drag to select area, then choose route type.")
-        lbl_pick_hint.setStyleSheet("color: #888; font-size: 10px;")
-        lbl_pick_hint.setWordWrap(True)
-        pk.addWidget(lbl_pick_hint)
 
-        # 安全距离设置
         sd_row = QHBoxLayout()
-        sd_row.addWidget(QLabel("Safe Distance (m):"))
+        sd_row.addWidget(QLabel("安全距离(m):"))
         self.edt_safe_dist = QLineEdit("2.0")
         self.edt_safe_dist.setMaximumWidth(60)
         self.edt_safe_dist.textChanged.connect(self._on_safe_dist_changed)
@@ -1244,139 +1257,129 @@ class MainWindow(QMainWindow):
         sd_row.addStretch()
         pk.addLayout(sd_row)
 
-        lbl_wp_hint = QLabel("Ctrl+Left Click on waypoint to drag & edit position.")
+        lbl_wp_hint = QLabel("Ctrl+左键点击航点可拖动编辑位置")
         lbl_wp_hint.setStyleSheet("color: #888; font-size: 10px;")
         lbl_wp_hint.setWordWrap(True)
         pk.addWidget(lbl_wp_hint)
 
         ctrl_layout.addWidget(grp_pick)
 
-        # -- 平面航线（桥底面弓字形扫描）--
-        grp_flat = QGroupBox("Flat Surface Route (Zigzag Scan)")
-        fl = QVBoxLayout(grp_flat)
+        # -- 面状航线（桥底面弓字形扫描）--
+        grp_flat = QGroupBox("面状航线（弓字形扫描）")
+        fl = QGridLayout(grp_flat)
+        fl.setSpacing(4)
 
-        fl.addWidget(self._label("Scan Area X Range:"))
-        h = QHBoxLayout()
-        self.edt_xmin = QLineEdit("-10"); self.edt_xmax = QLineEdit("10")
-        h.addWidget(QLabel("Min X")); h.addWidget(self.edt_xmin)
-        h.addWidget(QLabel("Max X")); h.addWidget(self.edt_xmax)
-        fl.addLayout(h)
+        fl.addWidget(QLabel("X 范围:"), 0, 0)
+        self.edt_xmin = QLineEdit("-10"); fl.addWidget(self.edt_xmin, 0, 1)
+        fl.addWidget(QLabel("~"), 0, 2)
+        self.edt_xmax = QLineEdit("10"); fl.addWidget(self.edt_xmax, 0, 3)
 
-        fl.addWidget(self._label("Scan Area Y Range:"))
-        h = QHBoxLayout()
-        self.edt_ymin = QLineEdit("-10"); self.edt_ymax = QLineEdit("10")
-        h.addWidget(QLabel("Min Y")); h.addWidget(self.edt_ymin)
-        h.addWidget(QLabel("Max Y")); h.addWidget(self.edt_ymax)
-        fl.addLayout(h)
+        fl.addWidget(QLabel("Y 范围:"), 1, 0)
+        self.edt_ymin = QLineEdit("-10"); fl.addWidget(self.edt_ymin, 1, 1)
+        fl.addWidget(QLabel("~"), 1, 2)
+        self.edt_ymax = QLineEdit("10"); fl.addWidget(self.edt_ymax, 1, 3)
 
-        h = QHBoxLayout()
-        h.addWidget(QLabel("Altitude Z:"))
-        self.edt_z = QLineEdit("5"); h.addWidget(self.edt_z)
-        h.addWidget(QLabel("Line Spacing:"))
-        self.edt_spacing = QLineEdit("2"); h.addWidget(self.edt_spacing)
-        fl.addLayout(h)
+        fl.addWidget(QLabel("高度Z:"), 2, 0)
+        self.edt_z = QLineEdit("5"); fl.addWidget(self.edt_z, 2, 1)
+        fl.addWidget(QLabel("间距:"), 2, 2)
+        self.edt_spacing = QLineEdit("2"); fl.addWidget(self.edt_spacing, 2, 3)
 
-        h = QHBoxLayout()
-        h.addWidget(QLabel("Speed (m/s):"))
-        self.edt_flat_speed = QLineEdit("3"); h.addWidget(self.edt_flat_speed)
-        fl.addLayout(h)
+        fl.addWidget(QLabel("速度(m/s):"), 3, 0)
+        self.edt_flat_speed = QLineEdit("3"); fl.addWidget(self.edt_flat_speed, 3, 1)
 
-        self.btn_flat = QPushButton("Generate Flat Route")
-        fl.addWidget(self.btn_flat)
+        self.btn_flat = QPushButton("生成面状航线")
+        fl.addWidget(self.btn_flat, 4, 0, 1, 4)
         ctrl_layout.addWidget(grp_flat)
 
-        # -- 等距面扫描（沿表面等距飞行）--
-        grp_surface = QGroupBox("Surface Scan (Equidistant)")
-        sl = QVBoxLayout(grp_surface)
+        # -- 等距面扫描 --
+        grp_surface = QGroupBox("等距面扫描（沿表面法向）")
+        sl = QGridLayout(grp_surface)
+        sl.setSpacing(4)
 
-        h = QHBoxLayout()
-        h.addWidget(QLabel("Standoff Dist:"))
-        self.edt_standoff = QLineEdit("2.0"); h.addWidget(self.edt_standoff)
-        h.addWidget(QLabel("Speed:"))
-        self.edt_surface_speed = QLineEdit("2.0"); h.addWidget(self.edt_surface_speed)
-        sl.addLayout(h)
+        sl.addWidget(QLabel("离面距离:"), 0, 0)
+        self.edt_standoff = QLineEdit("2.0"); sl.addWidget(self.edt_standoff, 0, 1)
+        sl.addWidget(QLabel("速度:"), 0, 2)
+        self.edt_surface_speed = QLineEdit("2.0"); sl.addWidget(self.edt_surface_speed, 0, 3)
 
-        h = QHBoxLayout()
-        h.addWidget(QLabel("K Neighbors:"))
-        self.edt_k_neighbors = QLineEdit("30"); h.addWidget(self.edt_k_neighbors)
-        h.addWidget(QLabel("Normal Dir:"))
+        sl.addWidget(QLabel("K邻域:"), 1, 0)
+        self.edt_k_neighbors = QLineEdit("30"); sl.addWidget(self.edt_k_neighbors, 1, 1)
+        sl.addWidget(QLabel("法向:"), 1, 2)
         self.cbo_normal_dir = QComboBox()
-        self.cbo_normal_dir.addItems(["Down", "Up", "Auto"])
-        h.addWidget(self.cbo_normal_dir)
-        sl.addLayout(h)
+        self.cbo_normal_dir.addItems(["朝下", "朝上", "自动"])
+        sl.addWidget(self.cbo_normal_dir, 1, 3)
 
-        self.btn_surface = QPushButton("Generate Surface Route")
-        sl.addWidget(self.btn_surface)
+        self.btn_surface = QPushButton("生成等距面航线")
+        sl.addWidget(self.btn_surface, 2, 0, 1, 4)
         ctrl_layout.addWidget(grp_surface)
 
-        # -- 立方体航线（桥柱环绕扫描）--
-        grp_cube = QGroupBox("Cube Route (Pillar Surround Scan)")
-        cl = QVBoxLayout(grp_cube)
+        # -- 立方体/圆柱体航线（桥柱环绕扫描）--
+        grp_cube = QGroupBox("柱体航线（桥柱环绕扫描）")
+        cl = QGridLayout(grp_cube)
+        cl.setSpacing(4)
 
-        cl.addWidget(self._label("Pillar Center (x,y,z):"))
-        h = QHBoxLayout()
-        self.edt_cx = QLineEdit("0"); self.edt_cy = QLineEdit("0"); self.edt_cz = QLineEdit("0")
-        h.addWidget(self.edt_cx); h.addWidget(self.edt_cy); h.addWidget(self.edt_cz)
-        cl.addLayout(h)
+        cl.addWidget(QLabel("类型:"), 0, 0)
+        self.cbo_pillar_type = QComboBox()
+        self.cbo_pillar_type.addItems(["立方体", "圆柱体"])
+        self.cbo_pillar_type.currentIndexChanged.connect(self._on_pillar_type_changed)
+        cl.addWidget(self.cbo_pillar_type, 0, 1, 1, 3)
 
-        cl.addWidget(self._label("Pillar Size (Wx, Wy, H):"))
-        h = QHBoxLayout()
-        self.edt_dx = QLineEdit("4"); self.edt_dy = QLineEdit("4"); self.edt_dz = QLineEdit("8")
-        h.addWidget(self.edt_dx); h.addWidget(self.edt_dy); h.addWidget(self.edt_dz)
-        cl.addLayout(h)
+        cl.addWidget(QLabel("中心(x,y,z):"), 1, 0)
+        self.edt_cx = QLineEdit("0"); cl.addWidget(self.edt_cx, 1, 1)
+        self.edt_cy = QLineEdit("0"); cl.addWidget(self.edt_cy, 1, 2)
+        self.edt_cz = QLineEdit("0"); cl.addWidget(self.edt_cz, 1, 3)
 
-        h = QHBoxLayout()
-        h.addWidget(QLabel("H Step:"))
-        self.edt_cstep = QLineEdit("2"); h.addWidget(self.edt_cstep)
-        h.addWidget(QLabel("V Step:"))
-        self.edt_vstep = QLineEdit("2"); h.addWidget(self.edt_vstep)
-        cl.addLayout(h)
+        cl.addWidget(QLabel("尺寸(Wx,Wy,H):"), 2, 0)
+        self.edt_dx = QLineEdit("4"); cl.addWidget(self.edt_dx, 2, 1)
+        self.edt_dy = QLineEdit("4"); cl.addWidget(self.edt_dy, 2, 2)
+        self.edt_dz = QLineEdit("8"); cl.addWidget(self.edt_dz, 2, 3)
 
-        h = QHBoxLayout()
-        h.addWidget(QLabel("Standoff Dist:"))
-        self.edt_dist = QLineEdit("3"); h.addWidget(self.edt_dist)
-        h.addWidget(QLabel("Speed:"))
-        self.edt_cspeed = QLineEdit("2"); h.addWidget(self.edt_cspeed)
-        cl.addLayout(h)
+        cl.addWidget(QLabel("水平步距:"), 3, 0)
+        self.edt_cstep = QLineEdit("2"); cl.addWidget(self.edt_cstep, 3, 1)
+        cl.addWidget(QLabel("垂直步距:"), 3, 2)
+        self.edt_vstep = QLineEdit("2"); cl.addWidget(self.edt_vstep, 3, 3)
 
-        h = QHBoxLayout()
-        h.addWidget(QLabel("Route Type:"))
+        cl.addWidget(QLabel("离柱距离:"), 4, 0)
+        self.edt_dist = QLineEdit("3"); cl.addWidget(self.edt_dist, 4, 1)
+        cl.addWidget(QLabel("速度:"), 4, 2)
+        self.edt_cspeed = QLineEdit("2"); cl.addWidget(self.edt_cspeed, 4, 3)
+
+        cl.addWidget(QLabel("路径类型:"), 5, 0)
         self.cbo_cube_type = QComboBox()
-        self.cbo_cube_type.addItems(["Spiral", "Zigzag"])
-        h.addWidget(self.cbo_cube_type)
-        cl.addLayout(h)
+        self.cbo_cube_type.addItems(["螺旋线", "Z字形"])
+        cl.addWidget(self.cbo_cube_type, 5, 1, 1, 3)
 
-        self.btn_cube = QPushButton("Generate Cube Route")
-        cl.addWidget(self.btn_cube)
+        self.btn_cube = QPushButton("生成柱体航线")
+        cl.addWidget(self.btn_cube, 6, 0, 1, 4)
         ctrl_layout.addWidget(grp_cube)
 
         # -- 航线管理 --
-        grp_route = QGroupBox("Route Management")
+        grp_route = QGroupBox("航线管理")
         rl = QVBoxLayout(grp_route)
-        self.lbl_info = QLabel("Waypoints: 0")
+        self.lbl_info = QLabel("航点: 0")
         rl.addWidget(self.lbl_info)
-        self.btn_clear = QPushButton("Clear Route")
+        self.btn_clear = QPushButton("清除航线")
         rl.addWidget(self.btn_clear)
-        self.btn_save = QPushButton("Save Route (JSON)")
+        self.btn_save = QPushButton("保存航线 (JSON)")
         rl.addWidget(self.btn_save)
-        self.btn_load_route = QPushButton("Load Route (JSON)")
+        self.btn_load_route = QPushButton("加载航线 (JSON)")
         rl.addWidget(self.btn_load_route)
 
+        # 均匀分布按钮
+        self.btn_resample = QPushButton("航点均匀分布")
+        self.btn_resample.setStyleSheet("QPushButton { background: #3a3a2a; padding: 6px; } QPushButton:hover { background: #4a4a3a; }")
+        self.btn_resample.clicked.connect(self._resample_waypoints)
+        rl.addWidget(self.btn_resample)
+
         # 机头方向显示开关
-        self.chk_show_heading = QCheckBox("Show Heading Arrows")
+        self.chk_show_heading = QCheckBox("显示机头方向箭头")
         self.chk_show_heading.setChecked(True)
         self.chk_show_heading.stateChanged.connect(self._toggle_heading)
         rl.addWidget(self.chk_show_heading)
 
-        lbl_heading_hint = QLabel("Cyan=straight, Yellow=corner. Heading perpendicular to route.")
-        lbl_heading_hint.setStyleSheet("color: #888; font-size: 10px;")
-        lbl_heading_hint.setWordWrap(True)
-        rl.addWidget(lbl_heading_hint)
-
         ctrl_layout.addWidget(grp_route)
 
         # -- 快捷键提示 --
-        lbl_help = QLabel("Shortcuts: 1=Top 2=Front 3=Side 4=Perspective 5=Bottom(Up)  Esc=Cancel Pick")
+        lbl_help = QLabel("快捷键: 1=俯视 2=正视 3=侧视 4=透视 5=仰视  Esc=取消框选")
         lbl_help.setStyleSheet("color: #666; font-size: 10px; padding: 4px;")
         lbl_help.setWordWrap(True)
         ctrl_layout.addWidget(lbl_help)
@@ -1402,10 +1405,92 @@ class MainWindow(QMainWindow):
         lbl.setStyleSheet("color: #aaa; font-size: 11px;")
         return lbl
 
+    def _on_pillar_type_changed(self, idx):
+        """切换柱体类型时更新尺寸标签"""
+        if idx == 1:  # 圆柱体：Wx=Wy=直径
+            self.edt_dy.setText(self.edt_dx.text())
+
+    def _resample_waypoints(self):
+        """将现有航点均匀重新分布"""
+        if len(self.waypoints) < 2:
+            QMessageBox.information(self, "提示", "航点不足，无法均匀分布")
+            return
+
+        # 计算原始路径总长度
+        positions = [wp['pos'] for wp in self.waypoints]
+        total_len = sum(np.linalg.norm(positions[i+1] - positions[i]) for i in range(len(positions)-1))
+
+        # 按原始间距的平均值作为目标间距
+        avg_spacing = total_len / (len(self.waypoints) - 1)
+
+        # 沿路径均匀插值
+        new_waypoints = self._interpolate_waypoints(self.waypoints, avg_spacing)
+        self.waypoints = new_waypoints
+        self._display_route()
+        print(f"[Resample] {len(self.waypoints)} waypoints, spacing={avg_spacing:.2f}m")
+
+    @staticmethod
+    def _interpolate_waypoints(waypoints, spacing):
+        """沿路径均匀插值航点"""
+        if len(waypoints) < 2:
+            return waypoints
+
+        positions = np.array([wp['pos'] for wp in waypoints])
+        # 累积弧长
+        seg_lens = np.linalg.norm(np.diff(positions, axis=0), axis=1)
+        cum_len = np.concatenate([[0], np.cumsum(seg_lens)])
+        total_len = cum_len[-1]
+
+        if total_len < 1e-10:
+            return waypoints
+
+        # 目标弧长位置
+        n_new = max(2, int(total_len / spacing) + 1)
+        target_lens = np.linspace(0, total_len, n_new)
+
+        new_wps = []
+        seg_idx = 0
+        for t_len in target_lens:
+            # 找到所在段
+            while seg_idx < len(cum_len) - 2 and cum_len[seg_idx + 1] < t_len:
+                seg_idx += 1
+            # 线性插值
+            seg_start = cum_len[seg_idx]
+            seg_end = cum_len[seg_idx + 1]
+            seg_len = seg_end - seg_start
+            if seg_len < 1e-10:
+                alpha = 0.0
+            else:
+                alpha = (t_len - seg_start) / seg_len
+            alpha = np.clip(alpha, 0.0, 1.0)
+
+            pos = waypoints[seg_idx]['pos'] * (1 - alpha) + waypoints[seg_idx + 1]['pos'] * alpha
+            quat = waypoints[seg_idx]['quat'] * (1 - alpha) + waypoints[seg_idx + 1]['quat'] * alpha
+            # 四元数归一化
+            quat = quat / np.linalg.norm(quat)
+
+            new_wps.append({
+                'pos': pos,
+                'quat': quat,
+                'speed': waypoints[seg_idx]['speed'],
+                'action': waypoints[seg_idx]['action']
+            })
+
+        return new_wps
+
     def _apply_style(self):
-        self.setStyleSheet("""
-            QMainWindow { background: #1e1e22; }
-            QWidget { color: #ddd; font-family: "Segoe UI", Arial; font-size: 12px; }
+        # 检测中文字体可用性
+        from PyQt5.QtGui import QFontDatabase
+        available = QFontDatabase().families()
+        cn_font = "Microsoft YaHei"
+        for candidate in ["Microsoft YaHei", "SimHei", "WenQuanYi Micro Hei", "Noto Sans CJK SC", "PingFang SC"]:
+            if candidate in available:
+                cn_font = candidate
+                break
+
+        self.setStyleSheet(f"""
+            QMainWindow {{ background: #1e1e22; }}
+            QWidget {{ color: #ddd; font-family: "{cn_font}", "Segoe UI", Arial; font-size: 12px; }}
             QGroupBox {
                 border: 1px solid #444; border-radius: 6px;
                 margin-top: 8px; padding: 10px 8px; font-weight: bold;
@@ -1482,7 +1567,7 @@ class MainWindow(QMainWindow):
     # ─── 加载点云 ───
     def load_point_cloud(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Open PCD Point Cloud", "", "PCD Files (*.pcd);;All Files (*)"
+            self, "打开 PCD 点云文件", "", "PCD 文件 (*.pcd);;所有文件 (*)"
         )
         if not path:
             return
@@ -1490,7 +1575,7 @@ class MainWindow(QMainWindow):
         # 显示进度条
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)  # 不确定进度模式
-        self.lbl_pc_info.setText(f"Loading {os.path.basename(path)}...")
+        self.lbl_pc_info.setText(f"正在加载 {os.path.basename(path)}...")
         QApplication.processEvents()
 
         try:
@@ -1504,7 +1589,7 @@ class MainWindow(QMainWindow):
             QApplication.processEvents()
 
             n = len(self.points)
-            self.lbl_pc_info.setText(f"Loaded: {os.path.basename(path)} ({n:,} pts)")
+            self.lbl_pc_info.setText(f"已加载: {os.path.basename(path)} ({n:,} 点)")
 
             # 根据点云范围自动填充平面航线默认值
             if n > 0:
@@ -1527,7 +1612,7 @@ class MainWindow(QMainWindow):
             self.progress_bar.setValue(100)
 
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load point cloud:\n{str(e)}")
+            QMessageBox.critical(self, "错误", f"加载点云失败:\n{str(e)}")
         finally:
             self.progress_bar.setVisible(False)
 
@@ -1542,11 +1627,11 @@ class MainWindow(QMainWindow):
             spacing = float(self.edt_spacing.text())
             speed = float(self.edt_flat_speed.text())
         except ValueError:
-            QMessageBox.warning(self, "Invalid Input", "Please enter valid numbers")
+            QMessageBox.warning(self, "输入错误", "请输入有效数字")
             return
 
         if spacing <= 0 or xmin >= xmax or ymin >= ymax:
-            QMessageBox.warning(self, "Invalid Input", "Please check parameter ranges")
+            QMessageBox.warning(self, "输入错误", "请检查参数范围")
             return
 
         self.waypoints = []
@@ -1599,7 +1684,7 @@ class MainWindow(QMainWindow):
     def generate_surface_route(self):
         """沿点云表面等距飞行的航线生成"""
         if self.points is None or len(self.points) == 0:
-            QMessageBox.warning(self, "Warning", "No point cloud loaded")
+            QMessageBox.warning(self, "警告", "未加载点云")
             return
 
         # 获取选区范围（如果没有画框，用整个点云）
@@ -1614,17 +1699,17 @@ class MainWindow(QMainWindow):
             speed = float(self.edt_surface_speed.text())
             k = int(self.edt_k_neighbors.text())
         except ValueError:
-            QMessageBox.warning(self, "Invalid Input", "Please enter valid numbers")
+            QMessageBox.warning(self, "输入错误", "请输入有效数字")
             return
 
-        normal_dir = self.cbo_normal_dir.currentText()  # "Down" / "Up" / "Auto"
+        normal_dir = self.cbo_normal_dir.currentText()  # "朝下" / "朝上" / "自动"
 
         # 提取选区内的点云
         mask = np.all((self.points >= mn) & (self.points <= mx), axis=1)
         surface_pts = self.points[mask]
 
         if len(surface_pts) < 10:
-            QMessageBox.warning(self, "Warning", "Too few points in selected area")
+            QMessageBox.warning(self, "警告", "所选区域内点太少")
             return
 
         print(f"[Surface] Processing {len(surface_pts)} points, k={k}, standoff={standoff}m")
@@ -1634,12 +1719,12 @@ class MainWindow(QMainWindow):
             normals = estimate_normals(surface_pts, k=k)
 
             # 根据用户选择统一法向量方向
-            if normal_dir == "Down":
+            if normal_dir == "朝下":
                 # 强制朝下（Z 负方向）
                 for i in range(len(normals)):
                     if normals[i, 2] > 0:
                         normals[i] = -normals[i]
-            elif normal_dir == "Up":
+            elif normal_dir == "朝上":
                 # 强制朝上（Z 正方向）
                 for i in range(len(normals)):
                     if normals[i, 2] < 0:
@@ -1673,10 +1758,10 @@ class MainWindow(QMainWindow):
             print(f"[Surface] Generated {len(self.waypoints)} waypoints")
 
         except ImportError:
-            QMessageBox.critical(self, "Error",
-                                 "scipy is required for surface scan.\nRun: pip install scipy")
+            QMessageBox.critical(self, "错误",
+                                 "等距面扫描需要 scipy 库。\n请运行: pip install scipy")
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Surface scan failed:\n{str(e)}")
+            QMessageBox.critical(self, "错误", f"等距面扫描失败:\n{str(e)}")
 
     # ─── 生成立方体航线 ───
     def generate_cube_route(self):
@@ -1692,11 +1777,11 @@ class MainWindow(QMainWindow):
             dist = float(self.edt_dist.text())
             speed = float(self.edt_cspeed.text())
         except ValueError:
-            QMessageBox.warning(self, "Invalid Input", "Please enter valid numbers")
+            QMessageBox.warning(self, "输入错误", "请输入有效数字")
             return
 
         if cstep <= 0 or vstep <= 0 or dz <= 0:
-            QMessageBox.warning(self, "Invalid Input", "Step size and height must be positive")
+            QMessageBox.warning(self, "输入错误", "步距和高度必须为正数")
             return
 
         # 定义 4 个柱面（矩形柱体的四条边）
@@ -1792,7 +1877,7 @@ class MainWindow(QMainWindow):
             clearance = float(self.edt_bridge_clr.text())
             span = float(self.edt_bridge_span.text())
         except ValueError:
-            QMessageBox.warning(self, "Invalid Input", "Please enter valid bridge parameters")
+            QMessageBox.warning(self, "输入错误", "请输入有效的桥梁参数")
             return
 
         bridge_type = self.cmb_bridge_type.currentIndex()
@@ -1842,7 +1927,7 @@ class MainWindow(QMainWindow):
 
         bridge_name = self.cmb_bridge_type.currentText()
         print(f"[Bridge] Applied: {bridge_name}, L={bridge_len}m, W={bridge_wid}m, Clearance={clearance}m, Span={span}m")
-        self.lbl_info.setText(f"Bridge: {bridge_name}, {bridge_len}m x {bridge_wid}m")
+        self.lbl_info.setText(f"桥梁: {bridge_name}, {bridge_len}m x {bridge_wid}m")
 
     def _toggle_heading(self, state):
         """切换机头方向箭头显示"""
@@ -1865,7 +1950,7 @@ class MainWindow(QMainWindow):
 
     def _display_route(self):
         self.viewer.add_route(self.waypoints)
-        self.lbl_info.setText(f"Waypoints: {len(self.waypoints)}")
+        self.lbl_info.setText(f"航点: {len(self.waypoints)}")
         self._check_safety_distance()
 
     def _on_waypoint_edited(self, idx, new_pos, new_quat):
@@ -1897,7 +1982,7 @@ class MainWindow(QMainWindow):
                 self.viewer._waypoint_actors[j].GetProperty().SetColor(1.0, 0.0, 0.0)
 
         if violations:
-            self.lbl_info.setText(f"Waypoints: {len(self.waypoints)} | WARNING: {len(violations)} pair(s) too close (<{safe_dist}m)")
+            self.lbl_info.setText(f"航点: {len(self.waypoints)} | 警告: {len(violations)} 对过近 (<{safe_dist}m)")
         self.viewer.vtk_widget.GetRenderWindow().Render()
 
     # ─── 清除航线 ───
@@ -1906,16 +1991,16 @@ class MainWindow(QMainWindow):
         self.viewer.clear_actors()
         if self.points is not None:
             self.viewer.add_point_cloud(self.points)
-        self.lbl_info.setText("Waypoints: 0")
+        self.lbl_info.setText("航点: 0")
 
     # ─── 保存航线 ───
     def save_route(self):
         if not self.waypoints:
-            QMessageBox.information(self, "Info", "No route to save")
+            QMessageBox.information(self, "提示", "没有航线可保存")
             return
 
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save Route", "", "JSON Files (*.json)"
+            self, "保存航线", "", "JSON 文件 (*.json)"
         )
         if not path:
             return
@@ -1958,14 +2043,14 @@ class MainWindow(QMainWindow):
         try:
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
-            QMessageBox.information(self, "Saved", f"Route saved to:\n{path}")
+            QMessageBox.information(self, "已保存", f"航线已保存到:\n{path}")
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Save failed:\n{str(e)}")
+            QMessageBox.critical(self, "错误", f"保存失败:\n{str(e)}")
 
     # ─── 加载航线 ───
     def load_route(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Load Route", "", "JSON Files (*.json)"
+            self, "加载航线", "", "JSON 文件 (*.json)"
         )
         if not path:
             return
@@ -1997,9 +2082,9 @@ class MainWindow(QMainWindow):
                 self.edt_bridge_span.setText(str(bridge.get('span_m', '30')))
 
             self._display_route()
-            QMessageBox.information(self, "Loaded", f"Loaded {len(self.waypoints)} waypoints")
+            QMessageBox.information(self, "已加载", f"已加载 {len(self.waypoints)} 个航点")
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Load failed:\n{str(e)}")
+            QMessageBox.critical(self, "错误", f"加载失败:\n{str(e)}")
 
 
 # ─── 入口 ────────────────────────────────────────────────────
