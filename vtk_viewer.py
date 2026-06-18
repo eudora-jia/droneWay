@@ -17,8 +17,6 @@ try:
     from vtkmodules.vtkFiltersSources import vtkSphereSource, vtkLineSource
     from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyLine
     from vtkmodules.vtkCommonCore import vtkPoints as vtkPointsBase
-    from vtkmodules.vtkCommonTransforms import vtkTransform
-    from vtkmodules.vtkFiltersGeneral import vtkTransformPolyDataFilter
     VTK_AVAILABLE = True
 except ImportError:
     try:
@@ -31,7 +29,6 @@ except ImportError:
             vtkPoints, vtkPolyData, vtkVertexGlyphFilter,
             vtkSphereSource, vtkLineSource, vtkCellArray,
             vtkPolyLine, vtkFollower, vtkVectorText,
-            vtkTransform, vtkTransformPolyDataFilter
         )
     except ImportError:
         VTK_AVAILABLE = False
@@ -389,42 +386,21 @@ class VTKViewer(QWidget):
         return result
 
     @staticmethod
-    def _compute_perpendicular_headings(waypoints):
+    def _compute_forward_headings(waypoints):
         n = len(waypoints)
-        positions = [wp['pos'] for wp in waypoints]
+        if n < 2:
+            return [np.array([1.0, 0.0, 0.0])]
         headings = []
-
-        seg_perps = []
-        for i in range(n - 1):
-            d = positions[i + 1] - positions[i]
+        for i in range(n):
+            if i < n - 1:
+                d = waypoints[i + 1]['pos'] - waypoints[i]['pos']
+            else:
+                d = waypoints[i]['pos'] - waypoints[i - 1]['pos']
             norm = np.linalg.norm(d)
             if norm < 1e-10:
-                seg_perps.append(np.array([0.0, 1.0, 0.0]))
-                continue
-            d = d / norm
-            perp = np.array([-d[1], d[0], 0.0])
-            pnorm = np.linalg.norm(perp)
-            if pnorm < 1e-10:
-                perp = np.array([1.0, 0.0, 0.0])
+                headings.append(np.array([1.0, 0.0, 0.0]))
             else:
-                perp = perp / pnorm
-            seg_perps.append(perp)
-
-        for i in range(n):
-            if n == 1:
-                headings.append(np.array([0.0, 1.0, 0.0]))
-            elif i == 0:
-                headings.append(seg_perps[0])
-            elif i == n - 1:
-                headings.append(seg_perps[-1])
-            else:
-                avg = seg_perps[i - 1] + seg_perps[i]
-                norm = np.linalg.norm(avg)
-                if norm < 1e-10:
-                    headings.append(seg_perps[i])
-                else:
-                    headings.append(avg / norm)
-
+                headings.append(d / norm)
         return headings
 
     @staticmethod
@@ -520,60 +496,28 @@ class VTKViewer(QWidget):
         if getattr(self, 'show_heading', True) and n >= 2:
             dists = [np.linalg.norm(waypoints[i+1]['pos'] - waypoints[i]['pos']) for i in range(n-1)]
             avg_dist = np.mean(dists)
-            arrow_len = np.clip(avg_dist * 0.25, 0.3, 2.0)
+            line_len = np.clip(avg_dist * 0.3, 0.3, 2.0)
 
-            headings = self._compute_perpendicular_headings(waypoints)
-
-            arrow_src = vtk.vtkArrowSource()
-            arrow_src.SetTipResolution(12)
-            arrow_src.SetShaftResolution(8)
-            arrow_src.SetShaftRadius(0.02)
-            arrow_src.SetTipLength(0.35)
-            arrow_src.SetTipRadius(0.06)
-            arrow_src.Update()
+            headings = self._compute_forward_headings(waypoints)
 
             for i, wp in enumerate(waypoints):
                 pos = wp['pos']
                 fwd = headings[i]
+                end = pos + fwd * line_len
 
-                up_ref = np.array([0.0, 0.0, 1.0])
-                if abs(np.dot(fwd, up_ref)) > 0.99:
-                    up_ref = np.array([0.0, 1.0, 0.0])
-                right = np.cross(fwd, up_ref)
-                right /= np.linalg.norm(right)
-                actual_up = np.cross(right, fwd)
-                actual_up /= np.linalg.norm(actual_up)
-
-                mat = vtk.vtkMatrix4x4()
-                mat.Identity()
-                for c in range(3):
-                    mat.SetElement(0, c, [fwd, right, actual_up][c][0])
-                    mat.SetElement(1, c, [fwd, right, actual_up][c][1])
-                    mat.SetElement(2, c, [fwd, right, actual_up][c][2])
-                mat.SetElement(0, 3, pos[0])
-                mat.SetElement(1, 3, pos[1])
-                mat.SetElement(2, 3, pos[2])
-
-                transform = vtkTransform()
-                transform.PostMultiply()
-                transform.Concatenate(mat)
-                transform.Scale(arrow_len, arrow_len, arrow_len)
-
-                tfilter = vtkTransformPolyDataFilter()
-                tfilter.SetInputConnection(arrow_src.GetOutputPort())
-                tfilter.SetTransform(transform)
-                tfilter.Update()
-
+                line = vtkLineSource()
+                line.SetPoint1(pos.tolist())
+                line.SetPoint2(end.tolist())
                 mapper = vtkPolyDataMapper()
-                mapper.SetInputConnection(tfilter.GetOutputPort())
+                mapper.SetInputConnection(line.GetOutputPort())
                 actor = vtkActor()
                 actor.SetMapper(mapper)
+                actor.GetProperty().SetLineWidth(3)
                 is_corner = self._is_corner(waypoints, i)
                 if is_corner:
                     actor.GetProperty().SetColor(1.0, 0.9, 0.0)
                 else:
                     actor.GetProperty().SetColor(0.0, 0.9, 1.0)
-                actor.GetProperty().SetOpacity(0.9)
                 self.renderer.AddActor(actor)
                 self._actors.append(actor)
 
