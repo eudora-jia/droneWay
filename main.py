@@ -19,7 +19,8 @@ import numpy as np
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QLabel, QLineEdit, QPushButton, QComboBox,
-    QFileDialog, QMessageBox, QSplitter, QSizePolicy, QMenu
+    QFileDialog, QMessageBox, QSplitter, QSizePolicy, QMenu,
+    QProgressBar
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont
@@ -353,46 +354,63 @@ class VTKViewer(QWidget):
         self._cloud_actor = None
 
     def add_point_cloud(self, points):
-        """显示点云（按高度着色）"""
+        """显示点云（按高度着色，大点云自动降采样渲染）"""
         if not VTK_AVAILABLE or len(points) == 0:
             return
         self.clear_actors()
-        self.points_data = points
+        self.points_data = points  # 保留完整数据用于拾取和分析
+
+        # ─── 大点云降采样渲染（超过 500 万点时）───
+        MAX_RENDER_POINTS = 5_000_000
+        if len(points) > MAX_RENDER_POINTS:
+            # 体素降采样：按网格取重心
+            voxel_size = self._estimate_voxel_size(points, MAX_RENDER_POINTS)
+            render_points = self._voxel_downsample(points, voxel_size)
+            print(f"[VTK] Downsampled {len(points)} -> {len(render_points)} points (voxel={voxel_size:.2f})")
+        else:
+            render_points = points
 
         vtk_points = vtkPoints()
-        vtk_array = numpy_to_vtk(points.astype(np.float64), deep=True)
+        vtk_array = numpy_to_vtk(render_points.astype(np.float64), deep=True)
         vtk_array.SetName('Points')
         vtk_points.SetData(vtk_array)
 
         polydata = vtkPolyData()
         polydata.SetPoints(vtk_points)
 
-        # ─── 高度着色：低处蓝色 → 中间绿色 → 高处红色 ───
-        z_vals = points[:, 2]
+        # ─── 高度着色（向量化计算，替代逐点循环）───
+        z_vals = render_points[:, 2]
         z_min, z_max = z_vals.min(), z_vals.max()
         z_range = z_max - z_min if z_max > z_min else 1.0
 
-        colors = vtk.vtkUnsignedCharArray()
-        colors.SetNumberOfComponents(3)
-        colors.SetName('Colors')
+        t = (z_vals - z_min) / z_range  # 归一化到 [0, 1]
 
-        for z in z_vals:
-            t = (z - z_min) / z_range  # 0=最低, 1=最高
-            if t < 0.25:
-                # 蓝 → 青
-                r, g, b = 0, int(t * 4 * 255), 255
-            elif t < 0.5:
-                # 青 → 绿
-                r, g, b = 0, 255, int((0.5 - t) * 4 * 255)
-            elif t < 0.75:
-                # 绿 → 黄
-                r, g, b = int((t - 0.5) * 4 * 255), 255, 0
-            else:
-                # 黄 → 红
-                r, g, b = 255, int((1.0 - t) * 4 * 255), 0
-            colors.InsertNextTuple3(r, g, b)
+        # 分段计算 RGB（纯 numpy 向量化）
+        r = np.zeros(len(t), dtype=np.uint8)
+        g = np.zeros(len(t), dtype=np.uint8)
+        b = np.zeros(len(t), dtype=np.uint8)
 
-        polydata.GetPointData().SetScalars(colors)
+        mask = t < 0.25
+        g[mask] = (t[mask] * 4 * 255).astype(np.uint8)
+        b[mask] = 255
+
+        mask = (t >= 0.25) & (t < 0.5)
+        g[mask] = 255
+        b[mask] = ((0.5 - t[mask]) * 4 * 255).astype(np.uint8)
+
+        mask = (t >= 0.5) & (t < 0.75)
+        r[mask] = ((t[mask] - 0.5) * 4 * 255).astype(np.uint8)
+        g[mask] = 255
+
+        mask = t >= 0.75
+        r[mask] = 255
+        g[mask] = ((1.0 - t[mask]) * 4 * 255).astype(np.uint8)
+
+        # 合并为 (N, 3) 数组，直接设置到 VTK
+        rgb = np.column_stack([r, g, b]).astype(np.uint8)
+        vtk_colors = numpy_to_vtk(rgb, deep=True, array_type=vtk.VTK_UNSIGNED_CHAR)
+        vtk_colors.SetName('Colors')
+        polydata.GetPointData().SetScalars(vtk_colors)
 
         glyph = vtkVertexGlyphFilter()
         glyph.SetInputData(polydata)
@@ -413,7 +431,47 @@ class VTKViewer(QWidget):
 
         self.renderer.ResetCamera()
         self._update_view()
-        print(f"[VTK] Point cloud loaded: {len(points)} points")
+        print(f"[VTK] Point cloud loaded: {len(points)} points (rendered: {len(render_points)})")
+
+    @staticmethod
+    def _estimate_voxel_size(points, target_count):
+        """估算体素大小，使降采样后点数接近 target_count"""
+        # 用包围盒体积估算
+        mn = points.min(axis=0)
+        mx = points.max(axis=0)
+        volume = np.prod(mx - mn + 1e-10)
+        # 体素体积 = 总体积 / 目标点数
+        voxel_vol = volume / target_count
+        voxel_size = voxel_vol ** (1.0 / 3.0)
+        return max(voxel_size, 0.01)
+
+    @staticmethod
+    def _voxel_downsample(points, voxel_size):
+        """体素网格降采样：每个体素取重心代表点（纯 numpy，无 Python 循环）"""
+        mn = points.min(axis=0)
+        # 量化到体素网格坐标
+        voxel_idx = ((points - mn) / voxel_size).astype(np.int64)
+
+        # 编码为唯一整数键
+        max_idx = voxel_idx.max(axis=0) + 1
+        keys = voxel_idx[:, 0] + voxel_idx[:, 1] * max_idx[0] + voxel_idx[:, 2] * max_idx[0] * max_idx[1]
+
+        # 按键排序
+        sort_order = np.argsort(keys)
+        sorted_keys = keys[sort_order]
+        sorted_points = points[sort_order]
+
+        # 找到每个体素的起始位置
+        boundaries = np.concatenate([[0], np.where(np.diff(sorted_keys))[0] + 1, [len(sorted_keys)]])
+
+        # 用 reduceat 计算每个体素的点数和坐标总和
+        counts = np.diff(boundaries).astype(np.float64)
+        sums_x = np.add.reduceat(sorted_points[:, 0], boundaries[:-1])
+        sums_y = np.add.reduceat(sorted_points[:, 1], boundaries[:-1])
+        sums_z = np.add.reduceat(sorted_points[:, 2], boundaries[:-1])
+
+        result = np.column_stack([sums_x, sums_y, sums_z]) / counts[:, None]
+        return result
 
     def add_route(self, waypoints):
         """显示航线和航点"""
@@ -867,6 +925,11 @@ class MainWindow(QMainWindow):
         gl.addWidget(self.btn_load)
         self.lbl_pc_info = QLabel("No point cloud loaded")
         gl.addWidget(self.lbl_pc_info)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setMaximumHeight(12)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setVisible(False)
+        gl.addWidget(self.progress_bar)
         ctrl_layout.addWidget(grp_load)
 
         # -- 统一框选按钮 --
@@ -1104,13 +1167,28 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
+
+        # 显示进度条
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0)  # 不确定进度模式
+        self.lbl_pc_info.setText(f"Loading {os.path.basename(path)}...")
+        QApplication.processEvents()
+
         try:
             self.points = parse_pcd(path)
+            self.progress_bar.setRange(0, 100)
+            self.progress_bar.setValue(30)
+            QApplication.processEvents()
+
             self.viewer.add_point_cloud(self.points)
-            self.lbl_pc_info.setText(f"Loaded: {os.path.basename(path)} ({len(self.points)} pts)")
+            self.progress_bar.setValue(80)
+            QApplication.processEvents()
+
+            n = len(self.points)
+            self.lbl_pc_info.setText(f"Loaded: {os.path.basename(path)} ({n:,} pts)")
 
             # 根据点云范围自动填充平面航线默认值
-            if len(self.points) > 0:
+            if n > 0:
                 mn = self.points.min(axis=0)
                 mx = self.points.max(axis=0)
                 pad = max((mx - mn).max() * 0.05, 1.0)
@@ -1127,8 +1205,12 @@ class MainWindow(QMainWindow):
                 self.edt_cz.setText(f"{mn[2]:.1f}")
                 self.edt_dz.setText(f"{mx[2] - mn[2]:.1f}")
 
+            self.progress_bar.setValue(100)
+
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load point cloud:\n{str(e)}")
+        finally:
+            self.progress_bar.setVisible(False)
 
     # ─── 生成平面航线 ───
     def generate_flat_route(self):
