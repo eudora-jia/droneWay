@@ -430,7 +430,7 @@ class VTKViewer(QWidget):
 
     # ─── 拖拽画框模式 ─────────────────────────────────────────
     def enter_pick_mode(self):
-        """进入拖拽画框模式，自动切到俯视/仰视视角"""
+        """进入拖拽画框模式，自动切到俯视视角"""
         if self.points_data is None or len(self.points_data) == 0:
             print("[Pick] No point cloud loaded")
             return
@@ -440,7 +440,7 @@ class VTKViewer(QWidget):
         self._drag_start = None
         self._clear_box()
 
-        # 自动切到俯视图（从上往下看，方便画框）
+        # 自动切到俯视图
         cam = self.renderer.GetActiveCamera()
         cam.SetPosition(0, 0, 100)
         cam.SetFocalPoint(0, 0, 0)
@@ -448,25 +448,13 @@ class VTKViewer(QWidget):
         self.renderer.ResetCamera()
         self.vtk_widget.GetRenderWindow().Render()
 
-        # 绑定鼠标事件
-        self._observers = [
-            self.interactor.AddObserver("LeftButtonPressEvent", self._on_mouse_down),
-            self.interactor.AddObserver("MouseMoveEvent", self._on_mouse_move),
-            self.interactor.AddObserver("LeftButtonReleaseEvent", self._on_mouse_up),
-            self.interactor.AddObserver("KeyPressEvent", self._on_pick_key),
-        ]
-        print("[Pick] Drag to draw box. Esc to cancel.")
+        print("[Pick] Ctrl + Left Drag to draw box. Esc to cancel.")
 
     def exit_pick_mode(self):
-        """退出画框模式，解绑事件"""
+        """退出画框模式"""
         self.pick_mode = False
         self._dragging = False
         self._drag_start = None
-        # 解绑事件
-        if hasattr(self, '_observers'):
-            for obs_id in self._observers:
-                self.interactor.RemoveObserver(obs_id)
-            self._observers = []
         print("[Pick] Pick mode exited.")
 
     def _pick_3d(self, screen_x, screen_y):
@@ -480,9 +468,9 @@ class VTKViewer(QWidget):
         return np.array(pos)
 
     def _on_mouse_down(self, obj, event):
-        """鼠标按下：记录起点"""
-        if not self.pick_mode:
-            return
+        """鼠标按下：仅在 pick_mode 且按住 Ctrl 时画框，否则交给 VTK 默认旋转"""
+        if not self.pick_mode or not self.interactor.GetControlKey():
+            return  # 没按 Ctrl 或不在 pick mode，交给 VTK 默认旋转
         pos = self.interactor.GetEventPosition()
         p = self._pick_3d(pos[0], pos[1])
         if p is not None:
@@ -538,13 +526,6 @@ class VTKViewer(QWidget):
 
         # 发出信号，由主窗口弹出菜单让用户选航线类型
         self.box_selected.emit([mn.tolist(), mx.tolist()])
-
-    def _on_pick_key(self, obj, event):
-        """画框模式下按 Esc 取消"""
-        key = self.interactor.GetKeyCode()
-        if key == '\x1b':
-            self._clear_box()
-            self.exit_pick_mode()
 
     def _draw_preview_box(self, p1, p2):
         """实时绘制预览框（黄色半透明线框）"""
@@ -642,6 +623,11 @@ class VTKViewer(QWidget):
             cam.SetViewUp(0, 1, 0)
             self.renderer.ResetCamera()
             print("[View] Bottom View (looking up)")
+        elif key == '\x1b':
+            # Esc 取消画框模式
+            if self.pick_mode:
+                self._clear_box()
+                self.exit_pick_mode()
 
         self.vtk_widget.GetRenderWindow().Render()
 
@@ -711,6 +697,11 @@ class VTKViewer(QWidget):
         # 绑定全局快捷键（视角切换）
         self.interactor.AddObserver("KeyPressEvent", self._on_global_key_press)
 
+        # 一次性绑定鼠标事件（用 pick_mode 标志位控制是否画框）
+        self.interactor.AddObserver("LeftButtonPressEvent", self._on_mouse_down)
+        self.interactor.AddObserver("MouseMoveEvent", self._on_mouse_move)
+        self.interactor.AddObserver("LeftButtonReleaseEvent", self._on_mouse_up)
+
 
 # ─── 主窗口 ──────────────────────────────────────────────────
 class MainWindow(QMainWindow):
@@ -762,7 +753,7 @@ class MainWindow(QMainWindow):
         # -- 统一框选按钮 --
         grp_pick = QGroupBox("Region Selection")
         pk = QVBoxLayout(grp_pick)
-        self.btn_pick_region = QPushButton("Pick Region (Drag to Draw Box)")
+        self.btn_pick_region = QPushButton("Pick Region (Ctrl+Drag to Draw Box)")
         self.btn_pick_region.setStyleSheet("QPushButton { background: #2a4a2a; font-weight: bold; padding: 8px; } QPushButton:hover { background: #3a5a3a; }")
         pk.addWidget(self.btn_pick_region)
         lbl_pick_hint = QLabel("Auto switch to top view. Drag to select area, then choose route type.")
