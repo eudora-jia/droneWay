@@ -195,10 +195,8 @@ class MainWindow(QMainWindow):
 
         cl.addWidget(QLabel("速度:"), 4, 0)
         self.edt_cspeed = QLineEdit("2"); cl.addWidget(self.edt_cspeed, 4, 1)
-        cl.addWidget(QLabel("路径:"), 4, 2)
-        self.cbo_cube_type = QComboBox()
-        self.cbo_cube_type.addItems(["Z字形"])
-        cl.addWidget(self.cbo_cube_type, 4, 3)
+        cl.addWidget(QLabel("起始角度(°):"), 4, 2)
+        self.edt_cube_start_angle = QLineEdit("0"); cl.addWidget(self.edt_cube_start_angle, 4, 3)
 
         cube_btn_row = QHBoxLayout()
         self.btn_cube_place = QPushButton("点击放置")
@@ -238,7 +236,9 @@ class MainWindow(QMainWindow):
         cyl.addWidget(QLabel("路径:"), 4, 0)
         self.cbo_cyl_type = QComboBox()
         self.cbo_cyl_type.addItems(["螺旋线", "Z字形"])
-        cyl.addWidget(self.cbo_cyl_type, 4, 1, 1, 3)
+        cyl.addWidget(self.cbo_cyl_type, 4, 1)
+        cyl.addWidget(QLabel("起始角度(°):"), 4, 2)
+        self.edt_cyl_start_angle = QLineEdit("0"); cyl.addWidget(self.edt_cyl_start_angle, 4, 3)
 
         cyl_btn_row = QHBoxLayout()
         self.btn_cyl_place = QPushButton("点击放置")
@@ -503,10 +503,17 @@ class MainWindow(QMainWindow):
             poly_xy = [(p[0], p[1]) for p in self._polygon_vertices]
 
         self.waypoints = []
-        y = ymin
-        direction = 1
+        # 起始点选择离原点最近的角
+        corners = [(xmin, ymin), (xmax, ymin), (xmin, ymax), (xmax, ymax)]
+        best = min(corners, key=lambda c: c[0]**2 + c[1]**2)
+        start_y = best[1]
+        start_x = best[0]
+        # 从起始角开始：Y方向朝另一端扫描，X方向朝另一端扫描
+        direction = 1 if start_x == xmin else -1
+        y = start_y
+        y_step = spacing if start_y == ymin else -spacing
 
-        while y <= ymax:
+        while (y_step > 0 and y <= ymax) or (y_step < 0 and y >= ymin):
             if direction == 1:
                 x_start, x_end = xmin, xmax
             else:
@@ -516,7 +523,7 @@ class MainWindow(QMainWindow):
                 xs = np.linspace(xmin, xmax, max(100, int((xmax - xmin) / 0.5)))
                 inside_xs = [x for x in xs if point_in_polygon(x, y, poly_xy)]
                 if not inside_xs:
-                    y += spacing
+                    y += y_step
                     continue
                 if direction == 1:
                     x_start, x_end = inside_xs[0], inside_xs[-1]
@@ -546,10 +553,10 @@ class MainWindow(QMainWindow):
                 })
 
             # 转折到下一条扫描线
-            y += spacing
-            if y <= ymax:
+            y += y_step
+            has_next = (y_step > 0 and y <= ymax) or (y_step < 0 and y >= ymin)
+            if has_next:
                 z_next = curved_z(y)
-                # 转折点朝向下一条扫描线起点方向
                 next_x = xmin if direction == 1 else xmax
                 quat = look_at_quaternion(
                     np.array([next_x, y, z_next]),
@@ -581,6 +588,7 @@ class MainWindow(QMainWindow):
             astep = float(self.edt_cyl_astep.text())
             vstep = float(self.edt_cyl_vstep.text())
             speed = float(self.edt_cyl_speed.text())
+            start_angle = np.radians(float(self.edt_cyl_start_angle.text()))
         except ValueError:
             QMessageBox.warning(self, "输入错误", "请输入有效数字")
             return
@@ -600,14 +608,13 @@ class MainWindow(QMainWindow):
 
             for i in range(total_pts + 1):
                 t = i / total_pts
-                angle = t * num_turns * 2 * np.pi
+                angle = start_angle + t * num_turns * 2 * np.pi
                 z = cz + t * h
 
                 rx = cx + radius * np.cos(angle)
                 ry = cy + radius * np.sin(angle)
                 pos = np.array([rx, ry, z])
 
-                # 机头沿切线方向（飞行方向）
                 tangent = np.array([-np.sin(angle), np.cos(angle), 0])
                 target = pos + tangent
                 quat = look_at_quaternion(target, pos)
@@ -628,9 +635,9 @@ class MainWindow(QMainWindow):
                 end_col = num_cols + 1 if layer == num_layers else num_cols
                 for col in range(end_col):
                     if layer % 2 == 0:
-                        angle = (col / num_cols) * 2 * np.pi
+                        angle = start_angle + (col / num_cols) * 2 * np.pi
                     else:
-                        angle = (1 - col / num_cols) * 2 * np.pi
+                        angle = start_angle + (1 - col / num_cols) * 2 * np.pi
 
                     rx = cx + radius * np.cos(angle)
                     ry = cy + radius * np.sin(angle)
@@ -667,6 +674,7 @@ class MainWindow(QMainWindow):
             vstep = float(self.edt_vstep.text())
             dist = float(self.edt_dist.text())
             speed = float(self.edt_cspeed.text())
+            start_angle = np.radians(float(self.edt_cube_start_angle.text()))
         except ValueError:
             QMessageBox.warning(self, "输入错误", "请输入有效数字")
             return
@@ -697,9 +705,9 @@ class MainWindow(QMainWindow):
                 end_col = num_cols + 1 if layer == num_layers else num_cols
                 for col in range(end_col):
                     if layer % 2 == 0:
-                        angle = (col / num_cols) * 2 * np.pi
+                        angle = start_angle + (col / num_cols) * 2 * np.pi
                     else:
-                        angle = (1 - col / num_cols) * 2 * np.pi
+                        angle = start_angle + (1 - col / num_cols) * 2 * np.pi
 
                     rx = px + dist * np.cos(angle)
                     ry = py + dist * np.sin(angle)
@@ -854,9 +862,17 @@ class MainWindow(QMainWindow):
         self.waypoints = []
         self.viewer._clear_polygon()
         self.viewer._clear_place_preview()
-        self.viewer.clear_actors()
-        if self.points is not None:
-            self.viewer.add_point_cloud(self.points)
+        # 只清除航线 actor，保留点云
+        to_remove = []
+        for i, actor in enumerate(self.viewer._actors):
+            if actor != self.viewer._cloud_actor:
+                to_remove.append(i)
+        for i in reversed(to_remove):
+            self.viewer.renderer.RemoveActor(self.viewer._actors[i])
+            del self.viewer._actors[i]
+        self.viewer._waypoint_actors = []
+        self.viewer._waypoints_ref = None
+        self.viewer.vtk_widget.GetRenderWindow().Render()
         self.lbl_info.setText("航点: 0")
 
     # ─── 保存航线（nav_msgs/Path 格式）───
