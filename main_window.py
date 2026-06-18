@@ -925,7 +925,7 @@ class MainWindow(QMainWindow):
             self.viewer.add_point_cloud(self.points)
         self.lbl_info.setText("航点: 0")
 
-    # ─── 保存航线 ───
+    # ─── 保存航线（nav_msgs/Path 格式）───
     def save_route(self):
         if not self.waypoints:
             QMessageBox.information(self, "提示", "没有航线可保存")
@@ -937,39 +937,44 @@ class MainWindow(QMainWindow):
         if not path:
             return
 
-        bridge_params = {
-            "type": self.cmb_bridge_type.currentText(),
-            "type_index": self.cmb_bridge_type.currentIndex(),
-            "length_m": self.edt_bridge_len.text(),
-            "width_m": self.edt_bridge_wid.text(),
-            "clearance_m": self.edt_bridge_clr.text(),
-            "span_m": self.edt_bridge_span.text(),
-        }
+        poses = []
+        for wp in self.waypoints:
+            q = wp['quat']  # 内部存储: (w, x, y, z)
+            poses.append({
+                "header": {
+                    "stamp": {"sec": 0, "nsec": 0},
+                    "frame_id": "map"
+                },
+                "pose": {
+                    "position": {
+                        "x": round(float(wp['pos'][0]), 4),
+                        "y": round(float(wp['pos'][1]), 4),
+                        "z": round(float(wp['pos'][2]), 4)
+                    },
+                    "orientation": {
+                        "x": round(float(q[1]), 6),
+                        "y": round(float(q[2]), 6),
+                        "z": round(float(q[3]), 6),
+                        "w": round(float(q[0]), 6)
+                    }
+                }
+            })
 
         data = {
-            "version": "2.0",
-            "description": "Bridge inspection route",
-            "bridge": bridge_params,
-            "waypoint_count": len(self.waypoints),
-            "waypoints": []
+            "header": {
+                "stamp": {"sec": 0, "nsec": 0},
+                "frame_id": "map"
+            },
+            "poses": poses,
+            "bridge": {
+                "type": self.cmb_bridge_type.currentText(),
+                "type_index": self.cmb_bridge_type.currentIndex(),
+                "length_m": self.edt_bridge_len.text(),
+                "width_m": self.edt_bridge_wid.text(),
+                "clearance_m": self.edt_bridge_clr.text(),
+                "span_m": self.edt_bridge_span.text()
+            }
         }
-
-        for wp in self.waypoints:
-            data["waypoints"].append({
-                "position": {
-                    "x": round(float(wp['pos'][0]), 4),
-                    "y": round(float(wp['pos'][1]), 4),
-                    "z": round(float(wp['pos'][2]), 4)
-                },
-                "quaternion": {
-                    "w": round(float(wp['quat'][0]), 6),
-                    "x": round(float(wp['quat'][1]), 6),
-                    "y": round(float(wp['quat'][2]), 6),
-                    "z": round(float(wp['quat'][3]), 6)
-                },
-                "speed": round(float(wp['speed']), 2),
-                "action": wp['action']
-            })
 
         try:
             with open(path, 'w', encoding='utf-8') as f:
@@ -978,7 +983,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "错误", f"保存失败:\n{str(e)}")
 
-    # ─── 加载航线 ───
+    # ─── 加载航线（兼容 nav_msgs/Path 和旧格式）───
     def load_route(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "加载航线", "", "JSON 文件 (*.json)"
@@ -991,15 +996,30 @@ class MainWindow(QMainWindow):
                 data = json.load(f)
 
             self.waypoints = []
-            for wp in data.get('waypoints', []):
-                pos = wp['position']
-                quat = wp['quaternion']
-                self.waypoints.append({
-                    'pos': np.array([pos['x'], pos['y'], pos['z']], dtype=np.float64),
-                    'quat': np.array([quat['w'], quat['x'], quat['y'], quat['z']], dtype=np.float64),
-                    'speed': wp.get('speed', 2.0),
-                    'action': wp.get('action', 'fly')
-                })
+
+            # nav_msgs/Path 格式
+            if 'poses' in data:
+                for ps in data['poses']:
+                    pose = ps['pose']
+                    pos = pose['position']
+                    ori = pose['orientation']  # ROS: (x, y, z, w)
+                    self.waypoints.append({
+                        'pos': np.array([pos['x'], pos['y'], pos['z']], dtype=np.float64),
+                        'quat': np.array([ori['w'], ori['x'], ori['y'], ori['z']], dtype=np.float64),
+                        'speed': 2.0,
+                        'action': 'fly'
+                    })
+            # 旧格式
+            elif 'waypoints' in data:
+                for wp in data['waypoints']:
+                    pos = wp['position']
+                    quat = wp['quaternion']  # 旧格式: (w, x, y, z)
+                    self.waypoints.append({
+                        'pos': np.array([pos['x'], pos['y'], pos['z']], dtype=np.float64),
+                        'quat': np.array([quat['w'], quat['x'], quat['y'], quat['z']], dtype=np.float64),
+                        'speed': wp.get('speed', 2.0),
+                        'action': wp.get('action', 'fly')
+                    })
 
             bridge = data.get('bridge', {})
             if bridge:
