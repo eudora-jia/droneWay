@@ -1286,6 +1286,8 @@ class MainWindow(QMainWindow):
 
         fl.addWidget(QLabel("速度(m/s):"), 3, 0)
         self.edt_flat_speed = QLineEdit("3"); fl.addWidget(self.edt_flat_speed, 3, 1)
+        fl.addWidget(QLabel("曲度:"), 3, 2)
+        self.edt_curvature = QLineEdit("0"); fl.addWidget(self.edt_curvature, 3, 3)
 
         self.btn_flat = QPushButton("生成面状航线")
         fl.addWidget(self.btn_flat, 4, 0, 1, 4)
@@ -1323,7 +1325,7 @@ class MainWindow(QMainWindow):
         self.cbo_pillar_type.currentIndexChanged.connect(self._on_pillar_type_changed)
         cl.addWidget(self.cbo_pillar_type, 0, 1, 1, 3)
 
-        cl.addWidget(QLabel("中心(x,y,z):"), 1, 0)
+        cl.addWidget(QLabel("底面中心(x,y,z):"), 1, 0)
         self.edt_cx = QLineEdit("0"); cl.addWidget(self.edt_cx, 1, 1)
         self.edt_cy = QLineEdit("0"); cl.addWidget(self.edt_cy, 1, 2)
         self.edt_cz = QLineEdit("0"); cl.addWidget(self.edt_cz, 1, 3)
@@ -1528,9 +1530,9 @@ class MainWindow(QMainWindow):
             QMenu::item { padding: 6px 20px; }
             QMenu::item:selected { background: #4a9eff; }
         """)
-        menu.addAction("Flat Route (Zigzag)", lambda: self._apply_box("flat", mn, mx))
-        menu.addAction("Cube Route (Pillar)", lambda: self._apply_box("cube", mn, mx))
-        menu.addAction("Surface Scan (Equidistant)", lambda: self._apply_box("surface", mn, mx))
+        menu.addAction("面状航线（弓字形）", lambda: self._apply_box("flat", mn, mx))
+        menu.addAction("柱体航线（桥柱）", lambda: self._apply_box("cube", mn, mx))
+        menu.addAction("等距面扫描", lambda: self._apply_box("surface", mn, mx))
 
         # 在鼠标位置弹出
         cursor_pos = self.cursor().pos()
@@ -1626,6 +1628,7 @@ class MainWindow(QMainWindow):
             z = float(self.edt_z.text())
             spacing = float(self.edt_spacing.text())
             speed = float(self.edt_flat_speed.text())
+            curvature = float(self.edt_curvature.text())
         except ValueError:
             QMessageBox.warning(self, "输入错误", "请输入有效数字")
             return
@@ -1633,6 +1636,14 @@ class MainWindow(QMainWindow):
         if spacing <= 0 or xmin >= xmax or ymin >= ymax:
             QMessageBox.warning(self, "输入错误", "请检查参数范围")
             return
+
+        # 曲度计算：z(x) = z_base + curvature * ((x - center) / half_w)^2
+        x_center = (xmin + xmax) / 2
+        x_half = (xmax - xmin) / 2 if xmax != xmin else 1.0
+
+        def curved_z(x):
+            t = (x - x_center) / x_half  # [-1, 1]
+            return z + curvature * t * t
 
         self.waypoints = []
         y = ymin
@@ -1645,18 +1656,20 @@ class MainWindow(QMainWindow):
                 x_start, x_end = xmax, xmin
 
             # 起点
+            z_start = curved_z(x_start)
             self.waypoints.append({
-                'pos': np.array([x_start, y, z]),
+                'pos': np.array([x_start, y, z_start]),
                 'quat': np.array([1.0, 0.0, 0.0, 0.0]),
                 'speed': speed,
                 'action': 'fly'
             })
 
             # 终点
+            z_end = curved_z(x_end)
             self.waypoints.append({
-                'pos': np.array([x_end, y, z]),
-                'quat': look_at_quaternion(np.array([x_end + direction, y, z]),
-                                           np.array([x_end, y, z])),
+                'pos': np.array([x_end, y, z_end]),
+                'quat': look_at_quaternion(np.array([x_end + direction, y, z_end]),
+                                           np.array([x_end, y, z_end])),
                 'speed': speed,
                 'action': 'fly'
             })
@@ -1664,8 +1677,9 @@ class MainWindow(QMainWindow):
             # 移到下一行
             y += spacing
             if y <= ymax:
+                z_next = curved_z(x_end)
                 self.waypoints.append({
-                    'pos': np.array([x_end, y, z]),
+                    'pos': np.array([x_end, y, z_next]),
                     'quat': np.array([1.0, 0.0, 0.0, 0.0]),
                     'speed': speed,
                     'action': 'fly'
@@ -1800,7 +1814,7 @@ class MainWindow(QMainWindow):
         for pillar in pillars:
             px, py = pillar['cx'], pillar['cy']
 
-            if route_type == "Spiral":
+            if route_type == "螺旋线":
                 # 螺旋线：绕柱面螺旋上升
                 num_turns = max(1, int(dz / vstep))
                 num_pts_per_turn = max(8, int(360 / max(1, cstep)))
@@ -1829,7 +1843,7 @@ class MainWindow(QMainWindow):
                         'action': 'scan'
                     })
 
-            elif route_type == "Zigzag":
+            elif route_type == "Z字形":
                 # Z字形：上下扫描，每层旋转一定角度
                 num_layers = max(1, int(dz / vstep))
                 num_cols = max(1, int(360 / max(1, cstep)))
