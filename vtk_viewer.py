@@ -64,6 +64,10 @@ if VTK_AVAILABLE:
                 v._poly_click_start = pos
                 return
 
+            if v.place_mode:
+                v._poly_click_start = pos
+                return
+
             if ctrl:
                 wp_idx = v._find_nearest_waypoint(pos[0], pos[1])
                 if wp_idx >= 0:
@@ -84,6 +88,18 @@ if VTK_AVAILABLE:
                     p = v._pick_3d(pos[0], pos[1])
                     if p is not None:
                         v._add_polygon_point(p)
+                return
+
+            if v and v.place_mode and v._poly_click_start is not None:
+                rwi = self.GetInteractor()
+                pos = rwi.GetEventPosition()
+                start = v._poly_click_start
+                v._poly_click_start = None
+                if abs(pos[0] - start[0]) < 5 and abs(pos[1] - start[1]) < 5:
+                    p = v._pick_3d(pos[0], pos[1])
+                    if p is not None:
+                        v.place_picked.emit(p)
+                        v.place_mode = False
                 return
 
             if v and v._wp_editing:
@@ -124,6 +140,7 @@ class VTKViewer(QWidget):
 
     waypoint_edited = pyqtSignal(int, object, object)
     polygon_finished = pyqtSignal(list)
+    place_picked = pyqtSignal(object)  # 点击放置模式
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -171,6 +188,9 @@ class VTKViewer(QWidget):
         self._actors = []
         self.points_data = None
         self._cloud_actor = None
+
+        # ─── 点击放置模式 ───
+        self.place_mode = False
 
         # ─── 航点编辑状态 ───
         self._wp_editing = False
@@ -622,6 +642,18 @@ class VTKViewer(QWidget):
         self._clear_polygon()
         print("[Polygon] Exited polygon mode.")
 
+    # ─── 点击放置模式 ─────────────────────────────────────
+    def enter_place_mode(self):
+        if self.points_data is None or len(self.points_data) == 0:
+            print("[Place] No point cloud loaded")
+            return
+        self.place_mode = True
+        print("[Place] 左键点击放置，Esc取消")
+
+    def exit_place_mode(self):
+        self.place_mode = False
+        print("[Place] Exited place mode.")
+
     def _add_polygon_point(self, pos):
         self._poly_points.append(pos)
 
@@ -759,6 +791,8 @@ class VTKViewer(QWidget):
         elif key == '\x1b':
             if self.polygon_mode:
                 self.exit_polygon_mode()
+            elif self.place_mode:
+                self.exit_place_mode()
 
         self.vtk_widget.GetRenderWindow().Render()
 

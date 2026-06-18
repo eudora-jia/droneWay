@@ -47,6 +47,8 @@ class MainWindow(QMainWindow):
 
         self.viewer.waypoint_edited.connect(self._on_waypoint_edited)
         self.viewer.polygon_finished.connect(self._on_polygon_finished)
+        self.viewer.place_picked.connect(self._on_place_picked)
+        self._place_target = None  # "cube" or "cylinder"
 
         # ─── 右侧控制面板 ───
         ctrl = QWidget()
@@ -199,8 +201,14 @@ class MainWindow(QMainWindow):
         self.cbo_cube_type.addItems(["螺旋线", "Z字形"])
         cl.addWidget(self.cbo_cube_type, 4, 3)
 
+        cube_btn_row = QHBoxLayout()
+        self.btn_cube_place = QPushButton("点击放置")
+        self.btn_cube_place.setStyleSheet("QPushButton { background: #d8e8d8; font-weight: bold; padding: 6px; } QPushButton:hover { background: #c8d8c8; }")
+        self.btn_cube_place.clicked.connect(lambda: self._start_place_mode("cube"))
+        cube_btn_row.addWidget(self.btn_cube_place)
         self.btn_cube = QPushButton("生成立方体航线")
-        cl.addWidget(self.btn_cube, 5, 0, 1, 4)
+        cube_btn_row.addWidget(self.btn_cube)
+        cl.addLayout(cube_btn_row, 5, 0, 1, 4)
         route_tabs.addTab(tab_cube, "立方体航线")
 
         # -- Tab 3: 圆柱体航线 --
@@ -233,8 +241,14 @@ class MainWindow(QMainWindow):
         self.cbo_cyl_type.addItems(["螺旋线", "Z字形"])
         cyl.addWidget(self.cbo_cyl_type, 4, 1, 1, 3)
 
+        cyl_btn_row = QHBoxLayout()
+        self.btn_cyl_place = QPushButton("点击放置")
+        self.btn_cyl_place.setStyleSheet("QPushButton { background: #d8e8d8; font-weight: bold; padding: 6px; } QPushButton:hover { background: #c8d8c8; }")
+        self.btn_cyl_place.clicked.connect(lambda: self._start_place_mode("cylinder"))
+        cyl_btn_row.addWidget(self.btn_cyl_place)
         self.btn_cylinder = QPushButton("生成圆柱体航线")
-        cyl.addWidget(self.btn_cylinder, 5, 0, 1, 4)
+        cyl_btn_row.addWidget(self.btn_cylinder)
+        cyl.addLayout(cyl_btn_row, 5, 0, 1, 4)
         route_tabs.addTab(tab_cyl, "圆柱体航线")
 
         ctrl_layout.addWidget(route_tabs)
@@ -360,6 +374,25 @@ class MainWindow(QMainWindow):
         self._polygon_vertices = pts
         self.generate_flat_route()
         print(f"[Polygon] {len(pts)} vertices, bbox=[{mn[0]:.1f},{mx[0]:.1f}]x[{mn[1]:.1f},{mx[1]:.1f}]")
+
+    # ─── 点击放置模式 ──────────────────────────────────────
+    def _start_place_mode(self, target):
+        self._place_target = target
+        self.viewer.enter_place_mode()
+
+    def _on_place_picked(self, pos):
+        if self._place_target == "cube":
+            self.edt_cx.setText(f"{pos[0]:.1f}")
+            self.edt_cy.setText(f"{pos[1]:.1f}")
+            self.edt_cz.setText(f"{pos[2]:.1f}")
+            self.generate_cube_route()
+        elif self._place_target == "cylinder":
+            self.edt_cyl_cx.setText(f"{pos[0]:.1f}")
+            self.edt_cyl_cy.setText(f"{pos[1]:.1f}")
+            self.edt_cyl_cz.setText(f"{pos[2]:.1f}")
+            self.generate_cylinder_route()
+            self.viewer._set_view("persp")  # 第三人称视角看柱子全貌
+        self._place_target = None
 
     # ─── 加载点云 ───
     def load_point_cloud(self):
