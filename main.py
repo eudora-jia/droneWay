@@ -1964,7 +1964,7 @@ class MainWindow(QMainWindow):
             self._check_safety_distance()
 
     def _check_safety_distance(self):
-        """检测航点间安全距离，过近的航点标红警告"""
+        """检测航点间安全距离 + 碰撞检测"""
         if len(self.waypoints) < 2:
             return
         safe_dist = self.viewer._safe_distance
@@ -1981,8 +1981,27 @@ class MainWindow(QMainWindow):
             if j < len(self.viewer._waypoint_actors):
                 self.viewer._waypoint_actors[j].GetProperty().SetColor(1.0, 0.0, 0.0)
 
+        # 碰撞检测：航点与点云过近
+        collision_count = 0
+        collision_dist = safe_dist * 0.5  # 碰撞距离 = 安全距离的一半
+        if self.points is not None and len(self.points) > 0:
+            from scipy.spatial import cKDTree
+            tree = cKDTree(self.points)
+            for i, wp in enumerate(self.waypoints):
+                dist, _ = tree.query(wp['pos'])
+                if dist < collision_dist:
+                    collision_count += 1
+                    if i < len(self.viewer._waypoint_actors):
+                        # 品红色 = 碰撞
+                        self.viewer._waypoint_actors[i].GetProperty().SetColor(1.0, 0.0, 1.0)
+
+        # 状态栏信息
+        msgs = [f"航点: {len(self.waypoints)}"]
         if violations:
-            self.lbl_info.setText(f"航点: {len(self.waypoints)} | 警告: {len(violations)} 对过近 (<{safe_dist}m)")
+            msgs.append(f"{len(violations)} 对过近 (<{safe_dist}m)")
+        if collision_count:
+            msgs.append(f"{collision_count} 个碰撞 (<{collision_dist:.1f}m)")
+        self.lbl_info.setText(" | ".join(msgs))
         self.viewer.vtk_widget.GetRenderWindow().Render()
 
     # ─── 清除航线 ───
