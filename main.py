@@ -20,7 +20,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QLabel, QLineEdit, QPushButton, QComboBox,
     QFileDialog, QMessageBox, QSplitter, QSizePolicy, QMenu,
-    QProgressBar
+    QProgressBar, QCheckBox
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont
@@ -378,6 +378,7 @@ class VTKViewer(QWidget):
         self._waypoint_actors = []      # 航点 actor 列表（用于拾取）
         self._waypoints_ref = None      # 航点数据引用
         self._safe_distance = 2.0       # 安全距离阈值（米）
+        self.show_heading = True        # 是否显示机头方向箭头
 
         # ─── 点拾取器 ───
         self.picker = vtk.vtkPointPicker() if VTK_AVAILABLE else None
@@ -514,6 +515,74 @@ class VTKViewer(QWidget):
         result = np.column_stack([sums_x, sums_y, sums_z]) / counts[:, None]
         return result
 
+    @staticmethod
+    def _compute_perpendicular_headings(waypoints):
+        """计算每个航点垂直于航线的朝向（朝向桥面）。
+
+        直行段：飞行方向旋转90°得到垂直方向
+        拐角处：取前后两段垂直方向的平均值，朝向Z形内侧
+        """
+        n = len(waypoints)
+        positions = [wp['pos'] for wp in waypoints]
+        headings = []
+
+        # 先计算每段的飞行方向和垂直方向
+        seg_perps = []
+        for i in range(n - 1):
+            d = positions[i + 1] - positions[i]
+            norm = np.linalg.norm(d)
+            if norm < 1e-10:
+                seg_perps.append(np.array([0.0, 1.0, 0.0]))
+                continue
+            d = d / norm
+            # 垂直方向：飞行方向在 XY 平面旋转 90°
+            # 同时考虑 Z 分量的影响
+            perp = np.array([-d[1], d[0], 0.0])
+            pnorm = np.linalg.norm(perp)
+            if pnorm < 1e-10:
+                # 飞行方向是纯 Z 方向，用 X 轴作为垂直
+                perp = np.array([1.0, 0.0, 0.0])
+            else:
+                perp = perp / pnorm
+            seg_perps.append(perp)
+
+        for i in range(n):
+            if n == 1:
+                headings.append(np.array([0.0, 1.0, 0.0]))
+            elif i == 0:
+                # 第一个点：用第一段的垂直方向
+                headings.append(seg_perps[0])
+            elif i == n - 1:
+                # 最后一个点：用最后一段的垂直方向
+                headings.append(seg_perps[-1])
+            else:
+                # 中间点：取前后两段垂直方向的平均（处理拐角）
+                avg = seg_perps[i - 1] + seg_perps[i]
+                norm = np.linalg.norm(avg)
+                if norm < 1e-10:
+                    # 前后垂直方向相反（U 型转弯），用第一段
+                    headings.append(seg_perps[i])
+                else:
+                    headings.append(avg / norm)
+
+        return headings
+
+    @staticmethod
+    def _is_corner(waypoints, idx):
+        """判断航点是否在拐角处（飞行方向发生显著变化）"""
+        n = len(waypoints)
+        if idx == 0 or idx == n - 1:
+            return False
+        d1 = waypoints[idx]['pos'] - waypoints[idx - 1]['pos']
+        d2 = waypoints[idx + 1]['pos'] - waypoints[idx]['pos']
+        n1 = np.linalg.norm(d1)
+        n2 = np.linalg.norm(d2)
+        if n1 < 1e-10 or n2 < 1e-10:
+            return False
+        cos_angle = np.dot(d1, d2) / (n1 * n2)
+        # 夹角大于 30° 视为拐角
+        return cos_angle < np.cos(np.radians(30))
+
     def add_route(self, waypoints):
         """显示航线和航点"""
         if not VTK_AVAILABLE or len(waypoints) == 0:
@@ -574,67 +643,70 @@ class VTKViewer(QWidget):
             self._actors.append(a)
             self._waypoint_actors.append(a)
 
-        # ─── 机头方向箭头（橙色，朝向目标）───
-        # 计算箭头长度：取航点平均间距的 25%，最小 0.3，最大 2.0
-        if n >= 2:
+        # ─── 机头方向箭头（可选显示）───
+        if getattr(self, 'show_heading', True) and n >= 2:
+            # 计算箭头长度
             dists = [np.linalg.norm(waypoints[i+1]['pos'] - waypoints[i]['pos']) for i in range(n-1)]
             avg_dist = np.mean(dists)
             arrow_len = np.clip(avg_dist * 0.25, 0.3, 2.0)
-        else:
-            arrow_len = 0.5
 
-        arrow_src = vtk.vtkArrowSource()
-        arrow_src.SetTipResolution(12)
-        arrow_src.SetShaftResolution(8)
-        arrow_src.SetShaftRadius(0.02)
-        arrow_src.SetTipLength(0.35)
-        arrow_src.SetTipRadius(0.06)
-        arrow_src.Update()
+            # 计算每个航点的垂直于航线方向（朝向桥面）
+            headings = self._compute_perpendicular_headings(waypoints)
 
-        for wp in waypoints:
-            pos = wp['pos']
-            fwd = quaternion_forward(wp['quat'])
+            arrow_src = vtk.vtkArrowSource()
+            arrow_src.SetTipResolution(12)
+            arrow_src.SetShaftResolution(8)
+            arrow_src.SetShaftRadius(0.02)
+            arrow_src.SetTipLength(0.35)
+            arrow_src.SetTipRadius(0.06)
+            arrow_src.Update()
 
-            # 构造旋转矩阵：箭头默认沿 X 轴，旋转到 fwd 方向
-            up_ref = np.array([0.0, 0.0, 1.0])
-            if abs(np.dot(fwd, up_ref)) > 0.99:
-                up_ref = np.array([0.0, 1.0, 0.0])
-            right = np.cross(fwd, up_ref)
-            right /= np.linalg.norm(right)
-            actual_up = np.cross(right, fwd)
-            actual_up /= np.linalg.norm(actual_up)
+            for i, wp in enumerate(waypoints):
+                pos = wp['pos']
+                fwd = headings[i]
 
-            # 用 vtkMatrix4x4 构造旋转+平移矩阵
-            mat = vtk.vtkMatrix4x4()
-            mat.Identity()
-            for c in range(3):
-                mat.SetElement(0, c, [fwd, right, actual_up][c][0])
-                mat.SetElement(1, c, [fwd, right, actual_up][c][1])
-                mat.SetElement(2, c, [fwd, right, actual_up][c][2])
-            mat.SetElement(0, 3, pos[0])
-            mat.SetElement(1, 3, pos[1])
-            mat.SetElement(2, 3, pos[2])
+                # 构造旋转矩阵：箭头默认沿 X 轴，旋转到 fwd 方向
+                up_ref = np.array([0.0, 0.0, 1.0])
+                if abs(np.dot(fwd, up_ref)) > 0.99:
+                    up_ref = np.array([0.0, 1.0, 0.0])
+                right = np.cross(fwd, up_ref)
+                right /= np.linalg.norm(right)
+                actual_up = np.cross(right, fwd)
+                actual_up /= np.linalg.norm(actual_up)
 
-            # PostMultiply: 先缩放箭头，再旋转+平移到位
-            # 应用顺序: RotateTranslate × Scale × point
-            transform = vtkTransform()
-            transform.PostMultiply()
-            transform.Concatenate(mat)  # 旋转+平移
-            transform.Scale(arrow_len, arrow_len, arrow_len)  # 缩放
+                mat = vtk.vtkMatrix4x4()
+                mat.Identity()
+                for c in range(3):
+                    mat.SetElement(0, c, [fwd, right, actual_up][c][0])
+                    mat.SetElement(1, c, [fwd, right, actual_up][c][1])
+                    mat.SetElement(2, c, [fwd, right, actual_up][c][2])
+                mat.SetElement(0, 3, pos[0])
+                mat.SetElement(1, 3, pos[1])
+                mat.SetElement(2, 3, pos[2])
 
-            tfilter = vtkTransformPolyDataFilter()
-            tfilter.SetInputConnection(arrow_src.GetOutputPort())
-            tfilter.SetTransform(transform)
-            tfilter.Update()
+                transform = vtkTransform()
+                transform.PostMultiply()
+                transform.Concatenate(mat)
+                transform.Scale(arrow_len, arrow_len, arrow_len)
 
-            mapper = vtkPolyDataMapper()
-            mapper.SetInputConnection(tfilter.GetOutputPort())
-            actor = vtkActor()
-            actor.SetMapper(mapper)
-            actor.GetProperty().SetColor(1.0, 0.6, 0.0)  # 橙色
-            actor.GetProperty().SetOpacity(0.9)
-            self.renderer.AddActor(actor)
-            self._actors.append(actor)
+                tfilter = vtkTransformPolyDataFilter()
+                tfilter.SetInputConnection(arrow_src.GetOutputPort())
+                tfilter.SetTransform(transform)
+                tfilter.Update()
+
+                mapper = vtkPolyDataMapper()
+                mapper.SetInputConnection(tfilter.GetOutputPort())
+                actor = vtkActor()
+                actor.SetMapper(mapper)
+                # 拐角处用黄色，直行段用青色
+                is_corner = self._is_corner(waypoints, i)
+                if is_corner:
+                    actor.GetProperty().SetColor(1.0, 0.9, 0.0)  # 黄色
+                else:
+                    actor.GetProperty().SetColor(0.0, 0.9, 1.0)  # 青色
+                actor.GetProperty().SetOpacity(0.9)
+                self.renderer.AddActor(actor)
+                self._actors.append(actor)
 
         self._update_view()
         print(f"[VTK] Route displayed: {n} waypoints")
@@ -1289,6 +1361,18 @@ class MainWindow(QMainWindow):
         rl.addWidget(self.btn_save)
         self.btn_load_route = QPushButton("Load Route (JSON)")
         rl.addWidget(self.btn_load_route)
+
+        # 机头方向显示开关
+        self.chk_show_heading = QCheckBox("Show Heading Arrows")
+        self.chk_show_heading.setChecked(True)
+        self.chk_show_heading.stateChanged.connect(self._toggle_heading)
+        rl.addWidget(self.chk_show_heading)
+
+        lbl_heading_hint = QLabel("Cyan=straight, Yellow=corner. Heading perpendicular to route.")
+        lbl_heading_hint.setStyleSheet("color: #888; font-size: 10px;")
+        lbl_heading_hint.setWordWrap(True)
+        rl.addWidget(lbl_heading_hint)
+
         ctrl_layout.addWidget(grp_route)
 
         # -- 快捷键提示 --
@@ -1759,6 +1843,13 @@ class MainWindow(QMainWindow):
         bridge_name = self.cmb_bridge_type.currentText()
         print(f"[Bridge] Applied: {bridge_name}, L={bridge_len}m, W={bridge_wid}m, Clearance={clearance}m, Span={span}m")
         self.lbl_info.setText(f"Bridge: {bridge_name}, {bridge_len}m x {bridge_wid}m")
+
+    def _toggle_heading(self, state):
+        """切换机头方向箭头显示"""
+        self.viewer.show_heading = (state == Qt.Checked)
+        if self.waypoints:
+            self.viewer.add_route(self.waypoints)
+            self._check_safety_distance()
 
     def _on_safe_dist_changed(self, text):
         """安全距离输入变更"""
