@@ -69,14 +69,16 @@ if VTK_AVAILABLE:
 
         def __init__(self):
             super().__init__()
-            self._vtk_viewer = None  # 由 VTKViewer 设置引用
+            self._vtk_viewer = None
+            self._rotating = False
+            self._last_x = 0
+            self._last_y = 0
 
         def set_viewer(self, viewer):
             self._vtk_viewer = viewer
 
         # ── 左键：平移（Pan）──
         def OnLeftButtonDown(self):
-            # 画框拖拽激活时不执行 Pan，交给观察者处理
             if self._vtk_viewer and getattr(self._vtk_viewer, '_pick_drag_active', False):
                 return
             self.StartPan()
@@ -84,12 +86,39 @@ if VTK_AVAILABLE:
         def OnLeftButtonUp(self):
             self.EndPan()
 
-        # ── 右键：旋转（Rotate）──
+        # ── 右键：旋转（手动实现，避免 VTK 事件冲突）──
         def OnRightButtonDown(self):
-            self.StartRotate()
+            rwi = self.GetInteractor()
+            self._last_x, self._last_y = rwi.GetEventPosition()
+            self._rotating = True
 
         def OnRightButtonUp(self):
-            self.EndRotate()
+            self._rotating = False
+
+        def OnMouseMove(self):
+            if self._rotating:
+                rwi = self.GetInteractor()
+                renderer = self.GetCurrentRenderer()
+                if renderer is None:
+                    self.FindPokedRenderer(rwi.GetEventPosition()[0], rwi.GetEventPosition()[1])
+                    renderer = self.GetCurrentRenderer()
+                if renderer is None:
+                    return
+
+                cur_x, cur_y = rwi.GetEventPosition()
+                dx = cur_x - self._last_x
+                dy = cur_y - self._last_y
+                self._last_x, self._last_y = cur_x, cur_y
+
+                camera = renderer.GetActiveCamera()
+                camera.Azimuth(-dx * 0.4)
+                camera.Elevation(dy * 0.4)
+                camera.OrthogonalizeViewUp()
+                renderer.ResetCameraClippingRange()
+                rwi.Render()
+                return
+
+            super().OnMouseMove()
 
 
 # ─── PCD 文件解析 ────────────────────────────────────────────
