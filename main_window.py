@@ -145,6 +145,15 @@ class MainWindow(QMainWindow):
         tk_row.addStretch()
         pk.addLayout(tk_row)
 
+        minz_row = QHBoxLayout()
+        minz_row.addWidget(QLabel("最低飞行Z值(m):"))
+        self.edt_min_z = QLineEdit("-999")
+        self.edt_min_z.setMaximumWidth(60)
+        minz_row.addWidget(self.edt_min_z)
+        minz_row.addWidget(QLabel("低于此值视为碰撞"))
+        minz_row.addStretch()
+        pk.addLayout(minz_row)
+
         btn_apply_safety = QPushButton("应用")
         btn_apply_safety.setStyleSheet("QPushButton { background: #d0d8e8; padding: 4px; } QPushButton:hover { background: #c0c8d8; }")
         btn_apply_safety.clicked.connect(self._apply_safety_settings)
@@ -527,10 +536,11 @@ class MainWindow(QMainWindow):
 
         y_center = (ymin + ymax) / 2
         y_half = (ymax - ymin) / 2 if ymax != ymin else 1.0
+        span = y_half * 2
 
         def curved_z(y):
-            t = (y - y_center) / y_half
-            return z + curvature * t * t
+            t = (y - y_center) / y_half  # -1 到 1
+            return z + curvature * span * (1 - t * t) / 4
 
         def point_in_polygon(x, y, polygon_xy):
             n = len(polygon_xy)
@@ -681,32 +691,33 @@ class MainWindow(QMainWindow):
                 })
 
         elif route_type == "Z字形":
-            num_layers = max(1, int(h / vstep))
             num_cols = max(1, int(360 / max(1, astep)))
+            num_layers = max(1, int(h / vstep))
 
-            for layer in range(num_layers + 1):
-                z = cz + layer * vstep
-                end_col = num_cols + 1 if layer == num_layers else num_cols
-                for col in range(end_col):
-                    if layer % 2 == 0:
-                        angle = start_angle + (col / num_cols) * 2 * np.pi
-                    else:
-                        angle = start_angle + (1 - col / num_cols) * 2 * np.pi
+            for col in range(num_cols + 1):
+                angle = start_angle + (col / num_cols) * 2 * np.pi
+                rx = cx + radius * np.cos(angle)
+                ry = cy + radius * np.sin(angle)
 
-                    rx = cx + radius * np.cos(angle)
-                    ry = cy + radius * np.sin(angle)
+                # 机头朝向圆柱中心
+                inward = np.array([cx - rx, cy - ry, 0.0])
+                inward_norm = np.linalg.norm(inward)
+                if inward_norm > 1e-10:
+                    heading = inward / inward_norm
+                else:
+                    heading = np.array([1.0, 0.0, 0.0])
+
+                # 偶数列：从下往上；奇数列：从上往下
+                if col % 2 == 0:
+                    layers_range = range(num_layers + 1)
+                else:
+                    layers_range = range(num_layers, -1, -1)
+
+                for layer in layers_range:
+                    z = cz + layer * vstep
                     pos = np.array([rx, ry, z])
-
-                    # 机头朝向圆柱中心（径向内法线）
-                    inward = np.array([cx - rx, cy - ry, 0.0])
-                    inward_norm = np.linalg.norm(inward)
-                    if inward_norm > 1e-10:
-                        heading = inward / inward_norm
-                    else:
-                        heading = np.array([1.0, 0.0, 0.0])
                     target = pos + heading
                     quat = look_at_quaternion(target, pos)
-
                     self.waypoints.append({
                         'pos': pos,
                         'quat': quat,
@@ -759,64 +770,54 @@ class MainWindow(QMainWindow):
 
         num_layers = max(1, int(dz / vstep))
 
-        # 矩形周长和每边步数
-        edge_lens = []
+        # 每条边独立按步距分布点
+        edge_points = []  # [边0的点列表, 边1的点列表, ...]
         for i in range(4):
-            ex = corners[(i + 1) % 4][0] - corners[i][0]
-            ey = corners[(i + 1) % 4][1] - corners[i][1]
-            edge_lens.append(np.sqrt(ex * ex + ey * ey))
-        perimeter = sum(edge_lens)
-        num_steps = max(4, int(perimeter / max(cstep, 0.1)))
+            c0 = corners[i]
+            c1 = corners[(i + 1) % 4]
+            ex = c1[0] - c0[0]
+            ey = c1[1] - c0[1]
+            edge_len = np.sqrt(ex * ex + ey * ey)
+            n_pts = max(2, int(edge_len / cstep) + 1)
+            pts = []
+            for j in range(n_pts):
+                ratio = j / (n_pts - 1)
+                px = c0[0] + ratio * ex
+                py = c0[1] + ratio * ey
+                # 机头垂直于边方向，朝矩形内侧
+                d_len = np.sqrt(ex * ex + ey * ey)
+                if d_len > 1e-10:
+                    heading = np.array([-ey / d_len, ex / d_len, 0.0])
+                else:
+                    heading = np.array([1.0, 0.0, 0.0])
+                pts.append((np.array([px, py]), heading))
+            edge_points.append(pts)
 
         self.waypoints = []
 
         for layer in range(num_layers + 1):
             z = cz + layer * vstep
             reverse = (layer % 2 == 1)
-            end_step = num_steps if layer == num_layers else num_steps - 1
 
-            for i in range(end_step):
-                idx = (num_steps - 1 - i) if reverse else i
-                t = idx / num_steps
-                s = t * perimeter
-
-                # 所在边
-                cum = 0.0
-                edge_idx = 0
-                for ei in range(4):
-                    if s <= cum + edge_lens[ei] or ei == 3:
-                        edge_idx = ei
-                        break
-                    cum += edge_lens[ei]
-
-                seg = s - cum
-                ratio = seg / edge_lens[edge_idx] if edge_lens[edge_idx] > 0 else 0
-                ratio = min(max(ratio, 0.0), 1.0)
-
-                c0 = corners[edge_idx]
-                c1 = corners[(edge_idx + 1) % 4]
-                px = c0[0] + ratio * (c1[0] - c0[0])
-                py = c0[1] + ratio * (c1[1] - c0[1])
-                pos = np.array([px, py, z])
-
-                # 机头垂直于边方向，朝矩形内侧（朝向结构）
-                dx_dir = c1[0] - c0[0]
-                dy_dir = c1[1] - c0[1]
-                d_len = np.sqrt(dx_dir * dx_dir + dy_dir * dy_dir)
-                if d_len > 1e-10:
-                    # CCW 矩形：(-dy, dx) 指向内侧
-                    heading = np.array([-dy_dir / d_len, dx_dir / d_len, 0.0])
-                else:
-                    heading = np.array([1.0, 0.0, 0.0])
-                target = pos + heading
-                quat = look_at_quaternion(target, pos)
-
-                self.waypoints.append({
-                    'pos': pos,
-                    'quat': quat,
-                    'speed': speed,
-                    'action': 'scan'
-                })
+            # 按顺序遍历4条边
+            edges_order = range(4) if not reverse else range(3, -1, -1)
+            for ei in edges_order:
+                pts = edge_points[ei]
+                pt_order = range(len(pts)) if not reverse else range(len(pts) - 1, -1, -1)
+                for pi in pt_order:
+                    # 跳过非最后一层的每条边最后一个点（避免与下一条边起点重复）
+                    if pi == (len(pts) - 1 if not reverse else 0) and ei != (3 if not reverse else 0) and layer < num_layers:
+                        continue
+                    pos_2d, heading = pts[pi]
+                    pos = np.array([pos_2d[0], pos_2d[1], z])
+                    target = pos + heading
+                    quat = look_at_quaternion(target, pos)
+                    self.waypoints.append({
+                        'pos': pos,
+                        'quat': quat,
+                        'speed': speed,
+                        'action': 'scan'
+                    })
 
         self._display_route()
 
@@ -992,11 +993,26 @@ class MainWindow(QMainWindow):
                     if i < len(self.viewer._waypoint_actors):
                         self.viewer._waypoint_actors[i].GetProperty().SetColor(1.0, 0.0, 1.0)
 
+        # 最低Z值检查
+        low_z_count = 0
+        try:
+            min_z = float(self.edt_min_z.text())
+        except ValueError:
+            min_z = -999
+        if min_z > -900:
+            for i, wp in enumerate(self.waypoints):
+                if wp['pos'][2] < min_z:
+                    low_z_count += 1
+                    if i < len(self.viewer._waypoint_actors):
+                        self.viewer._waypoint_actors[i].GetProperty().SetColor(1.0, 0.5, 0.0)
+
         msgs = [f"航点: {len(self.waypoints)}"]
         if violations:
             msgs.append(f"{len(violations)} 对过近 (<{safe_dist}m)")
         if collision_count:
             msgs.append(f"{collision_count} 个碰撞 (<{collision_dist:.1f}m)")
+        if low_z_count:
+            msgs.append(f"{low_z_count} 个低于Z={min_z}m")
         self.lbl_info.setText(" | ".join(msgs))
         self.viewer.vtk_widget.GetRenderWindow().Render()
 
@@ -1070,33 +1086,6 @@ class MainWindow(QMainWindow):
             }
 
         poses = []
-        # 第1个点：原点 (0,0,0)，方向为起飞偏航角
-        poses.append({
-            "header": {"stamp": {"sec": 0, "nsec": 0}, "frame_id": "map"},
-            "pose": {
-                "position": {"x": 0, "y": 0, "z": 0},
-                "orientation": {
-                    "x": round(float(takeoff_quat[1]), 6),
-                    "y": round(float(takeoff_quat[2]), 6),
-                    "z": round(float(takeoff_quat[3]), 6),
-                    "w": round(float(takeoff_quat[0]), 6)
-                }
-            }
-        })
-        # 第2个点：起飞点
-        poses.append({
-            "header": {"stamp": {"sec": 0, "nsec": 0}, "frame_id": "map"},
-            "pose": {
-                "position": {"x": 0, "y": 0, "z": round(takeoff_z, 4)},
-                "orientation": {
-                    "x": round(float(takeoff_quat[1]), 6),
-                    "y": round(float(takeoff_quat[2]), 6),
-                    "z": round(float(takeoff_quat[3]), 6),
-                    "w": round(float(takeoff_quat[0]), 6)
-                }
-            }
-        })
-        # 后续航点
         for wp in self.waypoints:
             poses.append(_wp_to_pose(wp))
 
