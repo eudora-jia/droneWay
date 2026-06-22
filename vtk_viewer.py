@@ -109,11 +109,9 @@ if VTK_AVAILABLE:
                 start = v._poly_click_start
                 v._poly_click_start = None
                 if abs(pos[0] - start[0]) < 5 and abs(pos[1] - start[1]) < 5:
-                    # 拾取点云表面最近点，然后投影到点云最高点Z平面
-                    p = v._pick_3d(pos[0], pos[1])
+                    # 射线与Z=0平面求交，直接得到鼠标位置
+                    p = v._pick_3d(pos[0], pos[1], z_plane=0.0)
                     if p is not None:
-                        if v.points_data is not None and len(v.points_data) > 0:
-                            p[2] = float(v.points_data[:, 2].max())
                         v._add_polygon_point(p)
                 self._mode = None
                 self._prev_pos = None
@@ -124,7 +122,8 @@ if VTK_AVAILABLE:
                 start = v._poly_click_start
                 v._poly_click_start = None
                 if abs(pos[0] - start[0]) < 5 and abs(pos[1] - start[1]) < 5:
-                    p = v._pick_3d(pos[0], pos[1])
+                    # 射线与Z=0平面求交
+                    p = v._pick_3d(pos[0], pos[1], z_plane=0.0)
                     if p is not None:
                         v._update_place_preview(p)
                 self._mode = None
@@ -558,7 +557,7 @@ class VTKViewer(QWidget):
 
         takeoff_sphere = vtkSphereSource()
         takeoff_sphere.SetCenter(takeoff_start)
-        takeoff_sphere.SetRadius(0.4)
+        takeoff_sphere.SetRadius(0.2)
         takeoff_sphere.Update()
         tm = vtkPolyDataMapper()
         tm.SetInputConnection(takeoff_sphere.GetOutputPort())
@@ -606,7 +605,7 @@ class VTKViewer(QWidget):
             glyph_poly.SetPoints(glyph_pts)
 
             glyph_src = vtkSphereSource()
-            glyph_src.SetRadius(0.3)
+            glyph_src.SetRadius(0.15)
             glyph_src.SetThetaResolution(8)
             glyph_src.SetPhiResolution(8)
 
@@ -629,7 +628,7 @@ class VTKViewer(QWidget):
             for wp in waypoints:
                 sphere = vtkSphereSource()
                 sphere.SetCenter(wp['pos'].tolist())
-                sphere.SetRadius(0.3)
+                sphere.SetRadius(0.15)
                 sphere.Update()
                 m = vtkPolyDataMapper()
                 m.SetInputConnection(sphere.GetOutputPort())
@@ -711,59 +710,39 @@ class VTKViewer(QWidget):
 
     def _pick_3d(self, screen_x, screen_y, z_plane=None):
         """屏幕坐标拾取3D点
-        z_plane=None: 找点云中离屏幕点击最近的点
-        z_plane=数值: 射线与指定Z平面求交（多边形选点用）
+        z_plane=数值: 射线与指定Z平面求交
+        z_plane=None: 用 VTK Picker 拾取点云表面
         """
-        ren = self.renderer
-
-        # 指定了 z_plane → 射线与Z平面求交
         if z_plane is not None:
             return self._ray_z_plane(screen_x, screen_y, z_plane)
 
-        # 未指定 z_plane → 找点云中离屏幕点击最近的点
-        if self.points_data is not None and len(self.points_data) > 0:
-            win_size = ren.GetRenderWindow().GetSize()
-            if win_size[0] == 0 or win_size[1] == 0:
-                return None
-
-            min_dist = float('inf')
-            best_point = None
-            for p in self.points_data:
-                ren.SetWorldPoint(p[0], p[1], p[2], 1.0)
-                ren.WorldToDisplay()
-                dp = ren.GetDisplayPoint()
-                dx = dp[0] - screen_x
-                dy = dp[1] - screen_y
-                dist = dx * dx + dy * dy
-                if dist < min_dist:
-                    min_dist = dist
-                    best_point = p
-
-            if best_point is not None and min_dist < 100 * 100:
-                return best_point.copy()
+        # 用 VTK PointPicker 拾取渲染表面最近点
+        picker = vtk.vtkPointPicker()
+        picker.PickFromListOn()
+        if self._cloud_actor:
+            picker.AddPickList(self._cloud_actor)
+        picker.SetTolerance(0.025)
+        picked = picker.Pick(screen_x, screen_y, 0, self.renderer)
+        if picked:
+            pos = picker.GetPickPosition()
+            return np.array(pos)
 
         # 回退：Z=0 平面
         return self._ray_z_plane(screen_x, screen_y, 0.0)
 
     def _ray_z_plane(self, screen_x, screen_y, z_plane):
-        """射线与Z平面求交"""
+        """射线与Z平面求交（用 DisplayToWorld，直接用屏幕像素坐标）"""
         ren = self.renderer
-        vp = ren.GetViewport()
-        win_size = ren.GetRenderWindow().GetSize()
-        if win_size[0] == 0 or win_size[1] == 0:
-            return None
-        vx = (screen_x / win_size[0] - vp[0]) / (vp[2] - vp[0])
-        vy = (screen_y / win_size[1] - vp[1]) / (vp[3] - vp[1])
 
-        ren.SetViewPoint(vx, vy, 0)
-        ren.ViewToWorld()
+        ren.SetDisplayPoint(screen_x, screen_y, 0)
+        ren.DisplayToWorld()
         near = np.array(ren.GetWorldPoint()[:3])
         w = ren.GetWorldPoint()[3]
         if abs(w) > 1e-10:
             near /= w
 
-        ren.SetViewPoint(vx, vy, 1)
-        ren.ViewToWorld()
+        ren.SetDisplayPoint(screen_x, screen_y, 1)
+        ren.DisplayToWorld()
         far = np.array(ren.GetWorldPoint()[:3])
         w = ren.GetWorldPoint()[3]
         if abs(w) > 1e-10:
@@ -773,8 +752,6 @@ class VTKViewer(QWidget):
         if abs(ray_dir[2]) < 1e-10:
             return None
         t = (z_plane - near[2]) / ray_dir[2]
-        if t < 0:
-            return None
         return near + t * ray_dir
 
     # ─── 航点编辑 ──────────────────────────────────────────────
@@ -1023,8 +1000,12 @@ class VTKViewer(QWidget):
         if not VTK_AVAILABLE:
             return
         cam = self.renderer.GetActiveCamera()
-        cam.SetPosition(50, -80, 60)
-        cam.SetFocalPoint(0, 0, 0)
+        # 用场景中心而非原点
+        bounds = self.renderer.ComputeVisiblePropBounds()
+        cx = (bounds[0] + bounds[1]) / 2
+        cy = (bounds[2] + bounds[3]) / 2
+        cz = (bounds[4] + bounds[5]) / 2
+        cam.SetFocalPoint(cx, cy, cz)
         cam.SetViewUp(0, 0, 1)
         self.renderer.ResetCamera()
         cam.Elevation(30)
