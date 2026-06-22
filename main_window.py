@@ -1086,6 +1086,19 @@ class MainWindow(QMainWindow):
             }
 
         poses = []
+        # 第1个点：原点 (0,0,0)，方向为起飞偏航角
+        poses.append({
+            "header": {"stamp": {"sec": 0, "nsec": 0}, "frame_id": "map"},
+            "pose": {
+                "position": {"x": 0, "y": 0, "z": 0},
+                "orientation": {
+                    "x": round(float(takeoff_quat[1]), 6),
+                    "y": round(float(takeoff_quat[2]), 6),
+                    "z": round(float(takeoff_quat[3]), 6),
+                    "w": round(float(takeoff_quat[0]), 6)
+                }
+            }
+        })
         for wp in self.waypoints:
             poses.append(_wp_to_pose(wp))
 
@@ -1131,19 +1144,21 @@ class MainWindow(QMainWindow):
                 all_poses = data['poses']
                 start_idx = 0
 
-                # 检测新格式：第1个点是(0,0,0)，第2个点是起飞点
-                if len(all_poses) >= 3:
+                # 检测格式：第1个点是(0,0,0)原点
+                if len(all_poses) >= 2:
                     p0 = all_poses[0]['pose']['position']
                     if abs(p0['x']) < 1e-6 and abs(p0['y']) < 1e-6 and abs(p0['z']) < 1e-6:
-                        # 提取起飞参数
-                        p1 = all_poses[1]['pose']
-                        self.edt_takeoff_z.setText(f"{p1['position']['z']:.1f}")
                         o0 = all_poses[0]['pose']['orientation']
-                        # 四元数 (w,x,y,z) 转偏航角
                         qw, qx, qy = o0['w'], o0['x'], o0['y']
                         yaw_rad = 2 * np.arctan2(o0['z'], qw)
                         self.edt_takeoff_yaw.setText(f"{np.degrees(yaw_rad):.1f}")
-                        start_idx = 2
+                        # 旧格式：第2个点也是(0,0,z)起飞点
+                        p1 = all_poses[1]['pose']['position']
+                        if abs(p1['x']) < 1e-6 and abs(p1['y']) < 1e-6:
+                            self.edt_takeoff_z.setText(f"{p1['z']:.1f}")
+                            start_idx = 2
+                        else:
+                            start_idx = 1
 
                 for ps in all_poses[start_idx:]:
                     pose = ps['pose']
