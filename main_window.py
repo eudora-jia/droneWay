@@ -7,7 +7,7 @@ import numpy as np
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QLabel, QLineEdit, QPushButton, QComboBox,
-    QFileDialog, QMessageBox, QSplitter, QButtonGroup,
+    QFileDialog, QMessageBox, QSplitter, QButtonGroup, QSlider,
     QProgressBar, QCheckBox, QGridLayout, QScrollArea, QTabWidget
 )
 from PyQt5.QtCore import Qt
@@ -183,7 +183,14 @@ class MainWindow(QMainWindow):
         self.edt_flat_speed = QLineEdit("3"); fl.addWidget(self.edt_flat_speed, 2, 3)
 
         fl.addWidget(QLabel("曲度:"), 3, 0)
-        self.edt_curvature = QLineEdit("0"); fl.addWidget(self.edt_curvature, 3, 1)
+        self.sld_curvature = QSlider(Qt.Horizontal)
+        self.sld_curvature.setRange(0, 100)
+        self.sld_curvature.setValue(0)
+        fl.addWidget(self.sld_curvature, 3, 1, 1, 2)
+        self.lbl_curvature_val = QLabel("0.00")
+        self.lbl_curvature_val.setMinimumWidth(30)
+        fl.addWidget(self.lbl_curvature_val, 3, 3)
+        self.sld_curvature.valueChanged.connect(lambda v: self.lbl_curvature_val.setText(f"{v/100:.2f}"))
 
         btn_apply_flat = QPushButton("应用")
         btn_apply_flat.setStyleSheet("QPushButton { background: #d0d8e8; padding: 4px; } QPushButton:hover { background: #c0c8d8; }")
@@ -219,18 +226,26 @@ class MainWindow(QMainWindow):
 
         cl.addWidget(QLabel("速度:"), 4, 0)
         self.edt_cspeed = QLineEdit("2"); cl.addWidget(self.edt_cspeed, 4, 1)
-        cl.addWidget(QLabel("起始角度(°):"), 4, 2)
-        self.edt_cube_start_angle = QLineEdit("0"); cl.addWidget(self.edt_cube_start_angle, 4, 3)
+
+        cl.addWidget(QLabel("起始角度(°):"), 5, 0)
+        self.sld_cube_start_angle = QSlider(Qt.Horizontal)
+        self.sld_cube_start_angle.setRange(0, 360)
+        self.sld_cube_start_angle.setValue(0)
+        cl.addWidget(self.sld_cube_start_angle, 5, 1, 1, 2)
+        self.lbl_cube_angle_val = QLabel("0°")
+        self.lbl_cube_angle_val.setMinimumWidth(30)
+        cl.addWidget(self.lbl_cube_angle_val, 5, 3)
+        self.sld_cube_start_angle.valueChanged.connect(lambda v: self.lbl_cube_angle_val.setText(f"{v}°"))
 
         btn_apply_cube = QPushButton("应用")
         btn_apply_cube.setStyleSheet("QPushButton { background: #d0d8e8; padding: 4px; } QPushButton:hover { background: #c0c8d8; }")
         btn_apply_cube.clicked.connect(self._apply_cube_params)
-        cl.addWidget(btn_apply_cube, 5, 0, 1, 2)
+        cl.addWidget(btn_apply_cube, 6, 0, 1, 2)
 
         self.btn_cube_place = QPushButton("点击放置（右键确认生成）")
         self.btn_cube_place.setStyleSheet("QPushButton { background: #d8e8d8; font-weight: bold; padding: 6px; } QPushButton:hover { background: #c8d8c8; }")
         self.btn_cube_place.clicked.connect(lambda: self._start_place_mode("cube"))
-        cl.addWidget(self.btn_cube_place, 5, 2, 1, 2)
+        cl.addWidget(self.btn_cube_place, 6, 2, 1, 2)
         route_tabs.addTab(tab_cube, "立方体航线")
 
         # -- Tab 3: 圆柱体航线 --
@@ -262,13 +277,25 @@ class MainWindow(QMainWindow):
         self.cbo_cyl_type = QComboBox()
         self.cbo_cyl_type.addItems(["螺旋线", "Z字形"])
         cyl.addWidget(self.cbo_cyl_type, 4, 1)
-        cyl.addWidget(QLabel("起始角度(°):"), 4, 2)
-        self.edt_cyl_start_angle = QLineEdit("0"); cyl.addWidget(self.edt_cyl_start_angle, 4, 3)
+
+        cyl.addWidget(QLabel("起始角度(°):"), 5, 0)
+        cyl_angle_row = QHBoxLayout()
+        self.sld_cyl_start_angle = QSlider(Qt.Horizontal)
+        self.sld_cyl_start_angle.setRange(0, 360)
+        self.sld_cyl_start_angle.setValue(0)
+        cyl_angle_row.addWidget(self.sld_cyl_start_angle)
+        self.lbl_cyl_angle_val = QLabel("0°")
+        self.lbl_cyl_angle_val.setMinimumWidth(30)
+        cyl_angle_row.addWidget(self.lbl_cyl_angle_val)
+        self.sld_cyl_start_angle.valueChanged.connect(lambda v: self.lbl_cyl_angle_val.setText(f"{v}°"))
+        cyl_angle_widget = QWidget()
+        cyl_angle_widget.setLayout(cyl_angle_row)
+        cyl.addWidget(cyl_angle_widget, 5, 1, 1, 3)
 
         btn_apply_cyl = QPushButton("应用")
         btn_apply_cyl.setStyleSheet("QPushButton { background: #d0d8e8; padding: 4px; } QPushButton:hover { background: #c0c8d8; }")
         btn_apply_cyl.clicked.connect(self._apply_cyl_params)
-        cyl.addWidget(btn_apply_cyl, 5, 0, 1, 2)
+        cyl.addWidget(btn_apply_cyl, 6, 0, 1, 2)
 
         self.btn_cyl_place = QPushButton("点击放置（右键确认生成）")
         self.btn_cyl_place.setStyleSheet("QPushButton { background: #d8e8d8; font-weight: bold; padding: 6px; } QPushButton:hover { background: #c8d8c8; }")
@@ -474,7 +501,7 @@ class MainWindow(QMainWindow):
             spacing = float(self.edt_spacing.text())
             wp_spacing = float(self.edt_wp_spacing.text())
             speed = float(self.edt_flat_speed.text())
-            curvature = float(self.edt_curvature.text())
+            curvature = self.sld_curvature.value() / 100.0
         except ValueError:
             QMessageBox.warning(self, "输入错误", "请输入有效数字")
             return
@@ -613,7 +640,7 @@ class MainWindow(QMainWindow):
             astep = float(self.edt_cyl_astep.text())
             vstep = float(self.edt_cyl_vstep.text())
             speed = float(self.edt_cyl_speed.text())
-            start_angle = np.radians(float(self.edt_cyl_start_angle.text()))
+            start_angle = np.radians(self.sld_cyl_start_angle.value())
         except ValueError:
             QMessageBox.warning(self, "输入错误", "请输入有效数字")
             return
@@ -707,7 +734,7 @@ class MainWindow(QMainWindow):
             vstep = float(self.edt_vstep.text())
             dist = float(self.edt_dist.text())
             speed = float(self.edt_cspeed.text())
-            start_angle = np.radians(float(self.edt_cube_start_angle.text()))
+            start_angle = np.radians(self.sld_cube_start_angle.value())
         except ValueError:
             QMessageBox.warning(self, "输入错误", "请输入有效数字")
             return
@@ -750,8 +777,9 @@ class MainWindow(QMainWindow):
         for layer in range(num_layers + 1):
             z = cz + layer * vstep
             reverse = (layer % 2 == 1)
+            end_step = num_steps if layer == num_layers else num_steps - 1
 
-            for i in range(num_steps):
+            for i in range(end_step):
                 idx = (num_steps - 1 - i) if reverse else i
                 t = idx / num_steps
                 s = t * perimeter

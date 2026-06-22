@@ -35,6 +35,10 @@ except ImportError:
         VTK_AVAILABLE = False
         print("[WARNING] VTK not installed. Run: pip install vtk")
 
+# 抑制 VTK 输出窗口弹出
+if VTK_AVAILABLE:
+    vtk.vtkOutputWindow.SetGlobalWarningDisplay(0)
+
 
 # ─── Foxglove 风格交互：左键平移，右键旋转 ───────────────────
 # 不继承任何 vtkInteractorStyle 子类，直接用 vtkObject 的 observer 机制绑定事件
@@ -276,24 +280,33 @@ class VTKViewer(QWidget):
         from PyQt5.QtWidgets import QFrame, QButtonGroup
         view_frame = QFrame(self.vtk_widget)
         view_frame.setStyleSheet("QFrame { background: rgba(240,240,238,200); border: 1px solid #ccc; border-radius: 6px; }")
-        view_frame.setFixedSize(180, 32)
+        view_frame.setFixedSize(260, 44)
         view_layout = QHBoxLayout(view_frame)
         view_layout.setContentsMargins(4, 2, 4, 2)
-        view_layout.setSpacing(2)
+        view_layout.setSpacing(4)
 
         self._view_btns = QButtonGroup(self)
-        views = [("俯", "top"), ("仰", "bottom"), ("正", "front"), ("侧", "side"), ("透", "persp")]
-        for i, (label, name) in enumerate(views):
-            btn = QPushButton(label)
-            btn.setFixedSize(28, 24)
-            btn.setStyleSheet("QPushButton { background: #e0e0de; border: 1px solid #bbb; border-radius: 3px; color: #000; font-size: 11px; } QPushButton:checked { background: #4a9eff; color: #fff; }")
+        # (图标, 标签, 名称, 颜色)
+        views = [
+            ("⬇", "俯", "top", "#5b9bd5"),
+            ("⬆", "仰", "bottom", "#70ad47"),
+            ("⬛", "前", "front", "#ed7d31"),
+            ("▐", "侧", "side", "#9b59b6"),
+            ("◆", "透", "persp", "#607d8b"),
+        ]
+        tooltips = ["从上往下看 (Top)", "从下往上看 (Bottom)", "从正面看 (Front)", "从侧面看 (Side)", "自由透视 (Perspective)"]
+        for i, (icon, label, name, color) in enumerate(views):
+            btn = QPushButton(f"{icon}\n{label}")
+            btn.setFixedSize(42, 32)
+            btn.setToolTip(tooltips[i])
+            btn.setStyleSheet(f"QPushButton {{ background: #e8e8e6; border: 1px solid #bbb; border-radius: 4px; color: #333; font-size: 11px; padding: 1px; }} QPushButton:checked {{ background: {color}; color: #fff; border-color: {color}; }}")
             btn.setCheckable(True)
             btn.clicked.connect(lambda checked, n=name: self._set_view(n))
             view_layout.addWidget(btn)
             self._view_btns.addButton(btn, i)
 
         self._view_btns.button(0).setChecked(True)
-        QTimer.singleShot(100, lambda: view_frame.move(self.vtk_widget.width() - 190, 8))
+        QTimer.singleShot(100, lambda: view_frame.move(self.vtk_widget.width() - 270, 8))
 
         self.renderer = vtkRenderer()
         self.vtk_widget.GetRenderWindow().AddRenderer(self.renderer)
@@ -1022,28 +1035,36 @@ class VTKViewer(QWidget):
         if not VTK_AVAILABLE:
             return
         cam = self.renderer.GetActiveCamera()
-        cam.SetFocalPoint(0, 0, 0)
-        cam.SetViewUp(0, 1, 0)
+        # 获取场景中心
+        bounds = self.renderer.ComputeVisiblePropBounds()
+        cx = (bounds[0] + bounds[1]) / 2
+        cy = (bounds[2] + bounds[3]) / 2
+        cz = (bounds[4] + bounds[5]) / 2
+        # 计算场景范围
+        dx = max(bounds[1] - bounds[0], 1)
+        dy = max(bounds[3] - bounds[2], 1)
+        dz = max(bounds[5] - bounds[4], 1)
+        dist = max(dx, dy, dz) * 1.5
+
+        cam.SetFocalPoint(cx, cy, cz)
 
         if name == "top":
-            cam.SetPosition(0, 0, 100)
+            cam.SetPosition(cx, cy, cz + dist)
+            cam.SetViewUp(0, 1, 0)
         elif name == "bottom":
-            cam.SetPosition(0, 0, -100)
+            cam.SetPosition(cx, cy, cz - dist)
             cam.SetViewUp(0, -1, 0)
         elif name == "front":
-            cam.SetPosition(0, -100, 0)
-        elif name == "side":
-            cam.SetPosition(100, 0, 0)
-        elif name == "persp":
-            cam.SetPosition(50, -80, 60)
+            cam.SetPosition(cx, cy - dist, cz)
             cam.SetViewUp(0, 0, 1)
-            self.renderer.ResetCamera()
-            cam.Elevation(30)
-            cam.Azimuth(-45)
-            self.vtk_widget.GetRenderWindow().Render()
-            return
+        elif name == "side":
+            cam.SetPosition(cx + dist, cy, cz)
+            cam.SetViewUp(0, 0, 1)
+        elif name == "persp":
+            cam.SetPosition(cx + dist * 0.6, cy - dist * 0.8, cz + dist * 0.6)
+            cam.SetViewUp(0, 0, 1)
 
-        self.renderer.ResetCamera()
+        self.renderer.ResetCameraClippingRange()
         self.vtk_widget.GetRenderWindow().Render()
 
     def _on_global_key_press(self, obj, event):
