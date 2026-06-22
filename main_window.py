@@ -609,24 +609,8 @@ class MainWindow(QMainWindow):
                     'action': 'fly'
                 })
 
-            # 转折到下一条扫描线
+            # 下一条扫描线
             y += y_step
-            has_next = (y_step > 0 and y <= ymax) or (y_step < 0 and y >= ymin)
-            if has_next:
-                z_next = curved_z(y)
-                next_x = xmin if direction == 1 else xmax
-                # 转折段机头朝向目标点
-                target = np.array([next_x, y, z_next])
-                quat = look_at_quaternion(
-                    target,
-                    np.array([x_end, y, z_next])
-                )
-                self.waypoints.append({
-                    'pos': np.array([x_end, y, z_next]),
-                    'quat': quat,
-                    'speed': speed,
-                    'action': 'fly'
-                })
             direction *= -1
 
         if not self.waypoints:
