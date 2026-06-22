@@ -646,7 +646,7 @@ class VTKViewer(QWidget):
         if getattr(self, 'show_heading', True) and n >= 2:
             dists = [np.linalg.norm(waypoints[i+1]['pos'] - waypoints[i]['pos']) for i in range(n-1)]
             avg_dist = np.mean(dists)
-            line_len = np.clip(avg_dist * 0.3, 0.3, 2.0)
+            line_len = np.clip(avg_dist * 0.6, 0.5, 4.0)
             headings = self._compute_forward_headings(waypoints)
 
             if n > BATCH_THRESHOLD:
@@ -671,7 +671,7 @@ class VTKViewer(QWidget):
                 la = vtkActor()
                 la.SetMapper(lm)
                 la.GetProperty().SetColor(0.0, 0.9, 1.0)
-                la.GetProperty().SetLineWidth(3)
+                la.GetProperty().SetLineWidth(5)
                 self.renderer.AddActor(la)
                 self._actors.append(la)
             else:
@@ -685,7 +685,7 @@ class VTKViewer(QWidget):
                     mapper.SetInputConnection(line.GetOutputPort())
                     actor = vtkActor()
                     actor.SetMapper(mapper)
-                    actor.GetProperty().SetLineWidth(3)
+                    actor.GetProperty().SetLineWidth(5)
                     if self._is_corner(waypoints, i):
                         actor.GetProperty().SetColor(1.0, 0.9, 0.0)
                     else:
