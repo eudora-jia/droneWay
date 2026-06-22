@@ -94,25 +94,29 @@ class MainWindow(QMainWindow):
         bp = QGridLayout(grp_bridge)
         bp.setSpacing(4)
 
-        bp.addWidget(QLabel("桥型:"), 0, 0)
+        bp.addWidget(QLabel("桥梁名称:"), 0, 0)
+        self.edt_bridge_name = QLineEdit("我的桥梁")
+        bp.addWidget(self.edt_bridge_name, 0, 1, 1, 3)
+
+        bp.addWidget(QLabel("桥型:"), 1, 0)
         self.cmb_bridge_type = QComboBox()
         self.cmb_bridge_type.addItems(["跨河桥", "跨线桥", "高架桥"])
-        bp.addWidget(self.cmb_bridge_type, 0, 1, 1, 3)
+        bp.addWidget(self.cmb_bridge_type, 1, 1, 1, 3)
 
-        bp.addWidget(QLabel("桥长(m):"), 1, 0)
-        self.edt_bridge_len = QLineEdit("100"); bp.addWidget(self.edt_bridge_len, 1, 1)
-        bp.addWidget(QLabel("桥宽(m):"), 1, 2)
-        self.edt_bridge_wid = QLineEdit("15"); bp.addWidget(self.edt_bridge_wid, 1, 3)
+        bp.addWidget(QLabel("桥长(m):"), 2, 0)
+        self.edt_bridge_len = QLineEdit("100"); bp.addWidget(self.edt_bridge_len, 2, 1)
+        bp.addWidget(QLabel("桥宽(m):"), 2, 2)
+        self.edt_bridge_wid = QLineEdit("15"); bp.addWidget(self.edt_bridge_wid, 2, 3)
 
-        bp.addWidget(QLabel("净空(m):"), 2, 0)
-        self.edt_bridge_clr = QLineEdit("8"); bp.addWidget(self.edt_bridge_clr, 2, 1)
-        bp.addWidget(QLabel("跨距(m):"), 2, 2)
-        self.edt_bridge_span = QLineEdit("30"); bp.addWidget(self.edt_bridge_span, 2, 3)
+        bp.addWidget(QLabel("净空(m):"), 3, 0)
+        self.edt_bridge_clr = QLineEdit("8"); bp.addWidget(self.edt_bridge_clr, 3, 1)
+        bp.addWidget(QLabel("跨距(m):"), 3, 2)
+        self.edt_bridge_span = QLineEdit("30"); bp.addWidget(self.edt_bridge_span, 3, 3)
 
-        btn_apply_bridge = QPushButton("应用到航线默认值")
+        btn_apply_bridge = QPushButton("应用")
         btn_apply_bridge.setStyleSheet("QPushButton { background: #d0d8e8; padding: 6px; } QPushButton:hover { background: #c0c8d8; }")
         btn_apply_bridge.clicked.connect(self._apply_bridge_params)
-        bp.addWidget(btn_apply_bridge, 3, 0, 1, 4)
+        bp.addWidget(btn_apply_bridge, 4, 0, 1, 4)
 
         ctrl_layout.addWidget(grp_bridge)
         self._route_widgets.append(grp_bridge)
@@ -134,12 +138,17 @@ class MainWindow(QMainWindow):
         self.edt_takeoff_z = QLineEdit("1.0")
         self.edt_takeoff_z.setMaximumWidth(60)
         tk_row.addWidget(self.edt_takeoff_z)
-        tk_row.addWidget(QLabel("偏航角(°):"))
+        tk_row.addWidget(QLabel("初始偏航角(°):"))
         self.edt_takeoff_yaw = QLineEdit("0")
         self.edt_takeoff_yaw.setMaximumWidth(60)
         tk_row.addWidget(self.edt_takeoff_yaw)
         tk_row.addStretch()
         pk.addLayout(tk_row)
+
+        btn_apply_safety = QPushButton("应用")
+        btn_apply_safety.setStyleSheet("QPushButton { background: #d0d8e8; padding: 4px; } QPushButton:hover { background: #c0c8d8; }")
+        btn_apply_safety.clicked.connect(self._apply_safety_settings)
+        pk.addWidget(btn_apply_safety)
 
         lbl_wp_hint = QLabel("Ctrl+左键点击航点可拖动编辑位置")
         lbl_wp_hint.setStyleSheet("color: #888; font-size: 10px;")
@@ -176,6 +185,11 @@ class MainWindow(QMainWindow):
         fl.addWidget(QLabel("曲度:"), 3, 0)
         self.edt_curvature = QLineEdit("0"); fl.addWidget(self.edt_curvature, 3, 1)
 
+        btn_apply_flat = QPushButton("应用")
+        btn_apply_flat.setStyleSheet("QPushButton { background: #d0d8e8; padding: 4px; } QPushButton:hover { background: #c0c8d8; }")
+        btn_apply_flat.clicked.connect(self._apply_flat_params)
+        fl.addWidget(btn_apply_flat, 4, 0, 1, 4)
+
         route_tabs.addTab(tab_flat, "面状航线")
 
         # -- Tab 2: 立方体航线 --
@@ -208,12 +222,15 @@ class MainWindow(QMainWindow):
         cl.addWidget(QLabel("起始角度(°):"), 4, 2)
         self.edt_cube_start_angle = QLineEdit("0"); cl.addWidget(self.edt_cube_start_angle, 4, 3)
 
-        cube_btn_row = QHBoxLayout()
+        btn_apply_cube = QPushButton("应用")
+        btn_apply_cube.setStyleSheet("QPushButton { background: #d0d8e8; padding: 4px; } QPushButton:hover { background: #c0c8d8; }")
+        btn_apply_cube.clicked.connect(self._apply_cube_params)
+        cl.addWidget(btn_apply_cube, 5, 0, 1, 2)
+
         self.btn_cube_place = QPushButton("点击放置（右键确认生成）")
         self.btn_cube_place.setStyleSheet("QPushButton { background: #d8e8d8; font-weight: bold; padding: 6px; } QPushButton:hover { background: #c8d8c8; }")
         self.btn_cube_place.clicked.connect(lambda: self._start_place_mode("cube"))
-        cube_btn_row.addWidget(self.btn_cube_place)
-        cl.addLayout(cube_btn_row, 5, 0, 1, 4)
+        cl.addWidget(self.btn_cube_place, 5, 2, 1, 2)
         route_tabs.addTab(tab_cube, "立方体航线")
 
         # -- Tab 3: 圆柱体航线 --
@@ -248,12 +265,15 @@ class MainWindow(QMainWindow):
         cyl.addWidget(QLabel("起始角度(°):"), 4, 2)
         self.edt_cyl_start_angle = QLineEdit("0"); cyl.addWidget(self.edt_cyl_start_angle, 4, 3)
 
-        cyl_btn_row = QHBoxLayout()
+        btn_apply_cyl = QPushButton("应用")
+        btn_apply_cyl.setStyleSheet("QPushButton { background: #d0d8e8; padding: 4px; } QPushButton:hover { background: #c0c8d8; }")
+        btn_apply_cyl.clicked.connect(self._apply_cyl_params)
+        cyl.addWidget(btn_apply_cyl, 5, 0, 1, 2)
+
         self.btn_cyl_place = QPushButton("点击放置（右键确认生成）")
         self.btn_cyl_place.setStyleSheet("QPushButton { background: #d8e8d8; font-weight: bold; padding: 6px; } QPushButton:hover { background: #c8d8c8; }")
         self.btn_cyl_place.clicked.connect(lambda: self._start_place_mode("cylinder"))
-        cyl_btn_row.addWidget(self.btn_cyl_place)
-        cyl.addLayout(cyl_btn_row, 5, 0, 1, 4)
+        cyl.addWidget(self.btn_cyl_place, 5, 2, 1, 2)
         route_tabs.addTab(tab_cyl, "圆柱体航线")
 
         ctrl_layout.addWidget(route_tabs)
@@ -823,9 +843,46 @@ class MainWindow(QMainWindow):
         spacing = max(span / 5, 2.0)
         self.edt_spacing.setText(f"{spacing:.1f}")
 
-        bridge_name = self.cmb_bridge_type.currentText()
+        bridge_name = self.edt_bridge_name.text().strip()
+        if not bridge_name:
+            bridge_name = self.cmb_bridge_type.currentText()
+        self._bridge_name = bridge_name
         print(f"[Bridge] Applied: {bridge_name}, L={bridge_len}m, W={bridge_wid}m, Clearance={clearance}m, Span={span}m")
         self.lbl_info.setText(f"桥梁: {bridge_name}, {bridge_len}m x {bridge_wid}m")
+
+    def _apply_safety_settings(self):
+        """应用安全设置（起飞高度、初始偏航角）并刷新航线显示"""
+        if self.waypoints:
+            try:
+                self.viewer._takeoff_z = float(self.edt_takeoff_z.text())
+            except ValueError:
+                self.viewer._takeoff_z = 1.0
+            try:
+                self.viewer._takeoff_yaw = float(self.edt_takeoff_yaw.text())
+            except ValueError:
+                self.viewer._takeoff_yaw = 0.0
+            self.viewer.add_route(self.waypoints)
+            self._check_safety_distance()
+        print(f"[Safety] 起飞高度={self.edt_takeoff_z.text()}m, 初始偏航角={self.edt_takeoff_yaw.text()}°")
+
+    def _apply_flat_params(self):
+        """应用面状航线参数并重新生成航线"""
+        if hasattr(self, '_polygon_vertices') and self._polygon_vertices:
+            self.generate_flat_route()
+        elif self.points is not None and len(self.points) > 0:
+            self.generate_flat_route()
+        else:
+            print("[Flat] 请先加载点云或多边形选择区域")
+
+    def _apply_cube_params(self):
+        """应用立方体航线参数并重新生成航线"""
+        if self.waypoints:
+            self.generate_cube_route()
+
+    def _apply_cyl_params(self):
+        """应用圆柱体航线参数并重新生成航线"""
+        if self.waypoints:
+            self.generate_cylinder_route()
 
     def _toggle_heading(self, state):
         self.viewer.show_heading = (state == Qt.Checked)
@@ -947,8 +1004,11 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "提示", "没有航线可保存")
             return
 
+        from datetime import datetime
+        ts = datetime.now().strftime("%y%m%d%H%M")
+        default_name = f"{getattr(self, '_bridge_name', '航线')}_{ts}.json"
         path, _ = QFileDialog.getSaveFileName(
-            self, "保存航线", "", "JSON 文件 (*.json)"
+            self, "保存航线", default_name, "JSON 文件 (*.json)"
         )
         if not path:
             return
