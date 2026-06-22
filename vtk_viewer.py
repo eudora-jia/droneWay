@@ -68,10 +68,9 @@ if VTK_AVAILABLE:
             rwi.AddObserver("MouseMoveEvent", self._on_move)
             rwi.AddObserver("MouseWheelForwardEvent", self._on_wheel_fwd)
             rwi.AddObserver("MouseWheelBackwardEvent", self._on_wheel_bwd)
-            print("[Style] Observers registered on interactor")
+            pass  # observers registered
 
         def _on_left_down(self, obj, event):
-            print(f"[Style] LeftDown event={event}")
             v = self._vtk_viewer
             rwi = self._rwi
             if v is None:
@@ -98,7 +97,6 @@ if VTK_AVAILABLE:
 
             self._mode = 'pan'
             self._prev_pos = pos
-            print(f"[Style] LeftDown -> mode=pan")
 
         def _on_left_up(self, obj, event):
             v = self._vtk_viewer
@@ -138,7 +136,6 @@ if VTK_AVAILABLE:
 
             self._mode = None
             self._prev_pos = None
-            print(f"[Style] LeftUp -> mode=None")
 
         def _on_right_down(self, obj, event):
             v = self._vtk_viewer
@@ -160,12 +157,10 @@ if VTK_AVAILABLE:
                 return
             self._mode = 'rotate'
             self._prev_pos = rwi.GetEventPosition()
-            print(f"[Style] RightDown -> mode=rotate")
 
         def _on_right_up(self, obj, event):
             self._mode = None
             self._prev_pos = None
-            print(f"[Style] RightUp -> mode=None")
 
         def _on_mid_down(self, obj, event):
             self._mode = 'dolly'
@@ -197,7 +192,6 @@ if VTK_AVAILABLE:
         def _on_move(self, obj, event):
             v = self._vtk_viewer
             rwi = self._rwi
-            print(f"[Style] Move fired, mode={self._mode}")
 
             if v and v._wp_editing:
                 pos = rwi.GetEventPosition()
@@ -206,8 +200,6 @@ if VTK_AVAILABLE:
 
             if self._mode is None or self._prev_pos is None:
                 return
-
-            print(f"[Style] Move mode={self._mode}")
 
             pos = rwi.GetEventPosition()
             dx = pos[0] - self._prev_pos[0]
@@ -365,7 +357,6 @@ class VTKViewer(QWidget):
         if len(points) > MAX_RENDER_POINTS:
             voxel_size = self._estimate_voxel_size(points, MAX_RENDER_POINTS)
             render_points = self._voxel_downsample(points, voxel_size)
-            print(f"[VTK] Downsampled {len(points)} -> {len(render_points)} points (voxel={voxel_size:.2f})")
         else:
             render_points = points
 
@@ -427,7 +418,6 @@ class VTKViewer(QWidget):
 
         self.renderer.ResetCamera()
         self._update_view()
-        print(f"[VTK] Point cloud loaded: {len(points)} points (rendered: {len(render_points)})")
 
     @staticmethod
     def _estimate_voxel_size(points, target_count):
@@ -706,7 +696,6 @@ class VTKViewer(QWidget):
                     self._actors.append(actor)
 
         self._update_view()
-        print(f"[VTK] Route displayed: {n} waypoints")
 
     def _pick_3d(self, screen_x, screen_y, z_plane=None):
         """屏幕坐标拾取3D点
@@ -836,8 +825,6 @@ class VTKViewer(QWidget):
         if idx < len(self._waypoint_actors):
             self._waypoint_actors[idx].GetProperty().SetColor(1.0, 1.0, 0.0)
 
-        print(f"[WP Edit] Selected waypoint #{idx} at ({wp['pos'][0]:.2f}, {wp['pos'][1]:.2f}, {wp['pos'][2]:.2f})")
-
     def _update_wp_edit(self, screen_x, screen_y):
         if not self._wp_editing:
             return
@@ -871,7 +858,6 @@ class VTKViewer(QWidget):
         self._wp_edit_idx = -1
 
         self.waypoint_edited.emit(idx, new_pos, None)
-        print(f"[WP Edit] Waypoint #{idx} moved to ({new_pos[0]:.2f}, {new_pos[1]:.2f}, {new_pos[2]:.2f})")
 
     # ─── 多边形选择模式 ─────────────────────────────────────
     def enter_polygon_mode(self):
@@ -902,7 +888,6 @@ class VTKViewer(QWidget):
         self.place_mode = True
         self._place_preview_pos = None
         self._place_preview_actor = None
-        print(f"[Place] 进入放置模式, place_mode={self.place_mode}")
 
     def exit_place_mode(self, clear_marker=True):
         self.place_mode = False

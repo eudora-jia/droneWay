@@ -51,6 +51,7 @@ class MainWindow(QMainWindow):
         self.viewer.polygon_finished.connect(self._on_polygon_finished)
         self.viewer.place_picked.connect(self._on_place_picked)
         self._place_target = None  # "cube" or "cylinder"
+        self._polygon_vertices = None
 
         # ─── 右侧控制面板 ───
         ctrl = QWidget()
@@ -897,7 +898,7 @@ class MainWindow(QMainWindow):
         elif self.points is not None and len(self.points) > 0:
             self.generate_flat_route()
         else:
-            print("[Flat] 请先加载点云或多边形选择区域")
+            QMessageBox.warning(self, "提示", "请先加载点云或多边形选择区域")
 
     def _apply_cube_params(self):
         """应用立方体航线参数并重新生成航线"""
