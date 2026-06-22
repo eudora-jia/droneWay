@@ -1,6 +1,7 @@
 """VTK 3D 点云/航线可视化组件"""
 
 import numpy as np
+from quaternion_utils import quaternion_forward
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QHBoxLayout, QPushButton, QSizePolicy
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 
@@ -36,27 +37,44 @@ except ImportError:
 
 
 # ─── Foxglove 风格交互：左键平移，右键旋转 ───────────────────
+# 不继承任何 vtkInteractorStyle 子类，直接用 vtkObject 的 observer 机制绑定事件
 if VTK_AVAILABLE:
-    from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
-
-    class FoxgloveInteractorStyle(vtkInteractorStyleTrackballCamera):
-        """仿 Foxglove 交互风格：左键=平移，右键=旋转，滚轮=缩放"""
+    class FoxgloveInteractorStyle(object):
+        """通过 VTK observer 机制实现：左键=平移，右键=旋转，滚轮=缩放"""
 
         def __init__(self):
-            super().__init__()
             self._vtk_viewer = None
+            self._rwi = None
+            self._mode = None
+            self._prev_pos = None
+            self._renderer = None
 
         def set_viewer(self, viewer):
             self._vtk_viewer = viewer
+            self._renderer = viewer.renderer
 
-        # ── 左键 ──
-        def OnLeftButtonDown(self):
+        def set_interactor(self, rwi):
+            self._rwi = rwi
+            rwi.AddObserver("LeftButtonPressEvent", self._on_left_down)
+            rwi.AddObserver("LeftButtonReleaseEvent", self._on_left_up)
+            rwi.AddObserver("RightButtonPressEvent", self._on_right_down)
+            rwi.AddObserver("RightButtonReleaseEvent", self._on_right_up)
+            rwi.AddObserver("MiddleButtonPressEvent", self._on_mid_down)
+            rwi.AddObserver("MiddleButtonReleaseEvent", self._on_mid_up)
+            rwi.AddObserver("MouseMoveEvent", self._on_move)
+            rwi.AddObserver("MouseWheelForwardEvent", self._on_wheel_fwd)
+            rwi.AddObserver("MouseWheelBackwardEvent", self._on_wheel_bwd)
+            print("[Style] Observers registered on interactor")
+
+        def _on_left_down(self, obj, event):
+            print(f"[Style] LeftDown event={event}")
             v = self._vtk_viewer
+            rwi = self._rwi
             if v is None:
-                self.StartPan()
+                self._mode = 'pan'
+                self._prev_pos = rwi.GetEventPosition()
                 return
 
-            rwi = self.GetInteractor()
             ctrl = rwi.GetControlKey()
             pos = rwi.GetEventPosition()
 
@@ -74,24 +92,30 @@ if VTK_AVAILABLE:
                     v._start_wp_edit(wp_idx, pos[0], pos[1])
                     return
 
-            self.StartPan()
+            self._mode = 'pan'
+            self._prev_pos = pos
+            print(f"[Style] LeftDown -> mode=pan")
 
-        def OnLeftButtonUp(self):
+        def _on_left_up(self, obj, event):
             v = self._vtk_viewer
+            rwi = self._rwi
 
             if v and v.polygon_mode and v._poly_click_start is not None:
-                rwi = self.GetInteractor()
                 pos = rwi.GetEventPosition()
                 start = v._poly_click_start
                 v._poly_click_start = None
                 if abs(pos[0] - start[0]) < 5 and abs(pos[1] - start[1]) < 5:
+                    # 拾取点云表面最近点，然后投影到点云最高点Z平面
                     p = v._pick_3d(pos[0], pos[1])
                     if p is not None:
+                        if v.points_data is not None and len(v.points_data) > 0:
+                            p[2] = float(v.points_data[:, 2].max())
                         v._add_polygon_point(p)
+                self._mode = None
+                self._prev_pos = None
                 return
 
             if v and v.place_mode and v._poly_click_start is not None:
-                rwi = self.GetInteractor()
                 pos = rwi.GetEventPosition()
                 start = v._poly_click_start
                 v._poly_click_start = None
@@ -99,16 +123,23 @@ if VTK_AVAILABLE:
                     p = v._pick_3d(pos[0], pos[1])
                     if p is not None:
                         v._update_place_preview(p)
+                self._mode = None
+                self._prev_pos = None
                 return
 
             if v and v._wp_editing:
                 v._end_wp_edit()
+                self._mode = None
+                self._prev_pos = None
                 return
-            self.EndPan()
 
-        # ── 右键：翻滚 / 多边形模式下结束绘制 ──
-        def OnRightButtonDown(self):
+            self._mode = None
+            self._prev_pos = None
+            print(f"[Style] LeftUp -> mode=None")
+
+        def _on_right_down(self, obj, event):
             v = self._vtk_viewer
+            rwi = self._rwi
             if v and v.polygon_mode:
                 if len(v._poly_points) >= 3:
                     pts = [p.tolist() for p in v._poly_points]
@@ -124,22 +155,99 @@ if VTK_AVAILABLE:
                 else:
                     v.exit_place_mode()
                 return
-            self.StartRotate()
+            self._mode = 'rotate'
+            self._prev_pos = rwi.GetEventPosition()
+            print(f"[Style] RightDown -> mode=rotate")
 
-        def OnRightButtonUp(self):
-            self.EndRotate()
+        def _on_right_up(self, obj, event):
+            self._mode = None
+            self._prev_pos = None
+            print(f"[Style] RightUp -> mode=None")
 
-        # ── 移动 ──
-        def OnMouseMove(self):
+        def _on_mid_down(self, obj, event):
+            self._mode = 'dolly'
+            self._prev_pos = self._rwi.GetEventPosition()
+
+        def _on_mid_up(self, obj, event):
+            self._mode = None
+            self._prev_pos = None
+
+        def _on_wheel_fwd(self, obj, event):
+            self._dolly(1.1)
+            self._rwi.Render()
+
+        def _on_wheel_bwd(self, obj, event):
+            self._dolly(0.9)
+            self._rwi.Render()
+
+        def _dolly(self, factor):
+            ren = self._renderer
+            if ren is None:
+                return
+            cam = ren.GetActiveCamera()
+            if cam.GetParallelProjection():
+                cam.SetParallelScale(cam.GetParallelScale() / factor)
+            else:
+                cam.Dolly(factor)
+            ren.ResetCameraClippingRange()
+
+        def _on_move(self, obj, event):
             v = self._vtk_viewer
-            rwi = self.GetInteractor()
+            rwi = self._rwi
+            print(f"[Style] Move fired, mode={self._mode}")
 
             if v and v._wp_editing:
                 pos = rwi.GetEventPosition()
                 v._update_wp_edit(pos[0], pos[1])
                 return
 
-            super().OnMouseMove()
+            if self._mode is None or self._prev_pos is None:
+                return
+
+            print(f"[Style] Move mode={self._mode}")
+
+            pos = rwi.GetEventPosition()
+            dx = pos[0] - self._prev_pos[0]
+            dy = pos[1] - self._prev_pos[1]
+            self._prev_pos = pos
+
+            ren = self._renderer
+            if ren is None:
+                return
+            cam = ren.GetActiveCamera()
+
+            if self._mode == 'pan':
+                view_focus = cam.GetFocalPoint()
+                ren.SetWorldPoint(view_focus[0], view_focus[1], view_focus[2], 1.0)
+                ren.WorldToDisplay()
+                fd = ren.GetDisplayPoint()
+                ren.SetDisplayPoint(fd[0] + dx, fd[1] + dy, fd[2])
+                ren.DisplayToWorld()
+                nf = ren.GetWorldPoint()
+                w = nf[3]
+                if abs(w) > 1e-10:
+                    nf = [nf[0]/w, nf[1]/w, nf[2]/w]
+                else:
+                    nf = list(view_focus)
+                cam.SetFocalPoint(nf[0], nf[1], nf[2])
+                cp = cam.GetPosition()
+                cam.SetPosition(
+                    cp[0] + nf[0] - view_focus[0],
+                    cp[1] + nf[1] - view_focus[1],
+                    cp[2] + nf[2] - view_focus[2])
+
+            elif self._mode == 'rotate':
+                cam.Azimuth(-dx * 0.5)
+                cam.Elevation(-dy * 0.5)
+                cam.OrthogonalizeViewUp()
+
+            elif self._mode == 'dolly':
+                factor = 1.0 + dy * 0.01
+                if factor > 0.01:
+                    self._dolly(factor)
+
+            ren.ResetCameraClippingRange()
+            rwi.Render()
 
 
 # ─── 3D 可视化组件 ───────────────────────────────────────────
@@ -199,6 +307,8 @@ class VTKViewer(QWidget):
 
         # ─── 点击放置模式 ───
         self.place_mode = False
+        self._place_preview_pos = None
+        self._place_preview_actor = None
 
         # ─── 航点编辑状态 ───
         self._wp_editing = False
@@ -344,6 +454,12 @@ class VTKViewer(QWidget):
             return [np.array([1.0, 0.0, 0.0])]
         headings = []
         for i in range(n):
+            # 优先使用航点自带的四元数计算航向
+            quat = waypoints[i].get('quat')
+            if quat is not None:
+                h = quaternion_forward(quat)
+                headings.append(h)
+                continue
             if i < n - 1:
                 d = waypoints[i + 1]['pos'] - waypoints[i]['pos']
             else:
@@ -581,7 +697,43 @@ class VTKViewer(QWidget):
         print(f"[VTK] Route displayed: {n} waypoints")
 
     def _pick_3d(self, screen_x, screen_y, z_plane=None):
-        """屏幕坐标拾取3D点：射线与Z平面求交"""
+        """屏幕坐标拾取3D点
+        z_plane=None: 找点云中离屏幕点击最近的点
+        z_plane=数值: 射线与指定Z平面求交（多边形选点用）
+        """
+        ren = self.renderer
+
+        # 指定了 z_plane → 射线与Z平面求交
+        if z_plane is not None:
+            return self._ray_z_plane(screen_x, screen_y, z_plane)
+
+        # 未指定 z_plane → 找点云中离屏幕点击最近的点
+        if self.points_data is not None and len(self.points_data) > 0:
+            win_size = ren.GetRenderWindow().GetSize()
+            if win_size[0] == 0 or win_size[1] == 0:
+                return None
+
+            min_dist = float('inf')
+            best_point = None
+            for p in self.points_data:
+                ren.SetWorldPoint(p[0], p[1], p[2], 1.0)
+                ren.WorldToDisplay()
+                dp = ren.GetDisplayPoint()
+                dx = dp[0] - screen_x
+                dy = dp[1] - screen_y
+                dist = dx * dx + dy * dy
+                if dist < min_dist:
+                    min_dist = dist
+                    best_point = p
+
+            if best_point is not None and min_dist < 100 * 100:
+                return best_point.copy()
+
+        # 回退：Z=0 平面
+        return self._ray_z_plane(screen_x, screen_y, 0.0)
+
+    def _ray_z_plane(self, screen_x, screen_y, z_plane):
+        """射线与Z平面求交"""
         ren = self.renderer
         vp = ren.GetViewport()
         win_size = ren.GetRenderWindow().GetSize()
@@ -605,20 +757,12 @@ class VTKViewer(QWidget):
             far /= w
 
         ray_dir = far - near
-
-        if z_plane is None:
-            if self.points_data is not None and len(self.points_data) > 0:
-                z_plane = self.points_data[:, 2].max()
-            else:
-                z_plane = 0.0
-
         if abs(ray_dir[2]) < 1e-10:
             return None
         t = (z_plane - near[2]) / ray_dir[2]
         if t < 0:
             return None
-        result = near + t * ray_dir
-        return result
+        return near + t * ray_dir
 
     # ─── 航点编辑 ──────────────────────────────────────────────
     def _find_nearest_waypoint(self, screen_x, screen_y):
@@ -1006,8 +1150,15 @@ class VTKViewer(QWidget):
         self._update_view()
         self.interactor.Initialize()
 
+        # 用空 style 替换默认的 TrackballCamera，避免它抢先处理鼠标事件
+        try:
+            from vtkmodules.vtkInteractionStyle import vtkInteractorStyleUser
+        except ImportError:
+            from vtk import vtkInteractorStyleUser
+        self.interactor.SetInteractorStyle(vtkInteractorStyleUser())
+
         style = FoxgloveInteractorStyle()
         style.set_viewer(self)
-        self.interactor.SetInteractorStyle(style)
+        style.set_interactor(self.interactor)
 
         self.interactor.AddObserver("KeyPressEvent", self._on_global_key_press)

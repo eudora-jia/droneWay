@@ -158,7 +158,7 @@ class MainWindow(QMainWindow):
         fl = QGridLayout(tab_flat)
         fl.setSpacing(4)
 
-        self.btn_poly_select = QPushButton("多边形选择区域")
+        self.btn_poly_select = QPushButton("多边形选择区域（右键确认生成）")
         self.btn_poly_select.setStyleSheet("QPushButton { background: #d8e8d8; font-weight: bold; padding: 6px; } QPushButton:hover { background: #c8d8c8; }")
         self.btn_poly_select.clicked.connect(self._start_polygon_select)
         fl.addWidget(self.btn_poly_select, 0, 0, 1, 4)
@@ -176,8 +176,6 @@ class MainWindow(QMainWindow):
         fl.addWidget(QLabel("曲度:"), 3, 0)
         self.edt_curvature = QLineEdit("0"); fl.addWidget(self.edt_curvature, 3, 1)
 
-        self.btn_flat = QPushButton("生成面状航线")
-        fl.addWidget(self.btn_flat, 4, 0, 1, 4)
         route_tabs.addTab(tab_flat, "面状航线")
 
         # -- Tab 2: 立方体航线 --
@@ -211,12 +209,10 @@ class MainWindow(QMainWindow):
         self.edt_cube_start_angle = QLineEdit("0"); cl.addWidget(self.edt_cube_start_angle, 4, 3)
 
         cube_btn_row = QHBoxLayout()
-        self.btn_cube_place = QPushButton("点击放置")
+        self.btn_cube_place = QPushButton("点击放置（右键确认生成）")
         self.btn_cube_place.setStyleSheet("QPushButton { background: #d8e8d8; font-weight: bold; padding: 6px; } QPushButton:hover { background: #c8d8c8; }")
         self.btn_cube_place.clicked.connect(lambda: self._start_place_mode("cube"))
         cube_btn_row.addWidget(self.btn_cube_place)
-        self.btn_cube = QPushButton("生成立方体航线")
-        cube_btn_row.addWidget(self.btn_cube)
         cl.addLayout(cube_btn_row, 5, 0, 1, 4)
         route_tabs.addTab(tab_cube, "立方体航线")
 
@@ -253,12 +249,10 @@ class MainWindow(QMainWindow):
         self.edt_cyl_start_angle = QLineEdit("0"); cyl.addWidget(self.edt_cyl_start_angle, 4, 3)
 
         cyl_btn_row = QHBoxLayout()
-        self.btn_cyl_place = QPushButton("点击放置")
+        self.btn_cyl_place = QPushButton("点击放置（右键确认生成）")
         self.btn_cyl_place.setStyleSheet("QPushButton { background: #d8e8d8; font-weight: bold; padding: 6px; } QPushButton:hover { background: #c8d8c8; }")
         self.btn_cyl_place.clicked.connect(lambda: self._start_place_mode("cylinder"))
         cyl_btn_row.addWidget(self.btn_cyl_place)
-        self.btn_cylinder = QPushButton("生成圆柱体航线")
-        cyl_btn_row.addWidget(self.btn_cylinder)
         cyl.addLayout(cyl_btn_row, 5, 0, 1, 4)
         route_tabs.addTab(tab_cyl, "圆柱体航线")
 
@@ -306,9 +300,6 @@ class MainWindow(QMainWindow):
 
         # -- 信号连接 --
         self.btn_load.clicked.connect(self.load_point_cloud)
-        self.btn_flat.clicked.connect(self.generate_flat_route)
-        self.btn_cube.clicked.connect(self.generate_cube_route)
-        self.btn_cylinder.clicked.connect(self.generate_cylinder_route)
         self.btn_clear.clicked.connect(self.clear_route)
         self.btn_save.clicked.connect(self.save_route)
         self.btn_load_route.clicked.connect(self.load_route)
@@ -550,12 +541,12 @@ class MainWindow(QMainWindow):
             for j in range(n_pts):
                 x = x_start + (x_end - x_start) * j / (n_pts - 1)
                 pos = np.array([x, y, z_line])
-                # 机头朝向飞行方向（沿扫描线X方向）
-                if j < n_pts - 1:
-                    x_next = x_start + (x_end - x_start) * (j + 1) / (n_pts - 1)
-                    target = np.array([x_next, y, z_line])
+                # 机头垂直于航线方向，朝扫描区域中心
+                if y >= y_center:
+                    heading = np.array([0.0, -1.0, 0.0])
                 else:
-                    target = np.array([x_end, y, z_line])
+                    heading = np.array([0.0, 1.0, 0.0])
+                target = pos + heading
                 quat = look_at_quaternion(target, pos)
                 self.waypoints.append({
                     'pos': pos,
@@ -570,8 +561,10 @@ class MainWindow(QMainWindow):
             if has_next:
                 z_next = curved_z(y)
                 next_x = xmin if direction == 1 else xmax
+                # 转折段机头朝向目标点
+                target = np.array([next_x, y, z_next])
                 quat = look_at_quaternion(
-                    np.array([next_x, y, z_next]),
+                    target,
                     np.array([x_end, y, z_next])
                 )
                 self.waypoints.append({
@@ -627,8 +620,14 @@ class MainWindow(QMainWindow):
                 ry = cy + radius * np.sin(angle)
                 pos = np.array([rx, ry, z])
 
-                tangent = np.array([-np.sin(angle), np.cos(angle), 0])
-                target = pos + tangent
+                # 机头朝向圆柱中心（径向内法线）
+                inward = np.array([cx - rx, cy - ry, 0.0])
+                inward_norm = np.linalg.norm(inward)
+                if inward_norm > 1e-10:
+                    heading = inward / inward_norm
+                else:
+                    heading = np.array([1.0, 0.0, 0.0])
+                target = pos + heading
                 quat = look_at_quaternion(target, pos)
 
                 self.waypoints.append({
@@ -655,12 +654,14 @@ class MainWindow(QMainWindow):
                     ry = cy + radius * np.sin(angle)
                     pos = np.array([rx, ry, z])
 
-                    # 机头沿圆弧切线方向
-                    if layer % 2 == 0:
-                        tangent = np.array([-np.sin(angle), np.cos(angle), 0])
+                    # 机头朝向圆柱中心（径向内法线）
+                    inward = np.array([cx - rx, cy - ry, 0.0])
+                    inward_norm = np.linalg.norm(inward)
+                    if inward_norm > 1e-10:
+                        heading = inward / inward_norm
                     else:
-                        tangent = np.array([np.sin(angle), -np.cos(angle), 0])
-                    target = pos + tangent
+                        heading = np.array([1.0, 0.0, 0.0])
+                    target = pos + heading
                     quat = look_at_quaternion(target, pos)
 
                     self.waypoints.append({
@@ -697,48 +698,81 @@ class MainWindow(QMainWindow):
 
         half_x = dx / 2
         half_y = dy / 2
-        pillars = [
-            {'cx': cx - half_x, 'cy': cy, 'face': '-x'},
-            {'cx': cx + half_x, 'cy': cy, 'face': '+x'},
-            {'cx': cx, 'cy': cy - half_y, 'face': '-y'},
-            {'cx': cx, 'cy': cy + half_y, 'face': '+y'},
+
+        # 矩形四个角（逆时针），起始角决定从哪个角开始
+        cos_a = np.cos(start_angle)
+        sin_a = np.sin(start_angle)
+        corners_raw = [
+            (-half_x, -half_y),
+            ( half_x, -half_y),
+            ( half_x,  half_y),
+            (-half_x,  half_y),
         ]
+        corners = []
+        for rx, ry in corners_raw:
+            lx = rx * cos_a - ry * sin_a
+            ly = rx * sin_a + ry * cos_a
+            corners.append((cx + lx, cy + ly))
+
+        num_layers = max(1, int(dz / vstep))
+
+        # 矩形周长和每边步数
+        edge_lens = []
+        for i in range(4):
+            ex = corners[(i + 1) % 4][0] - corners[i][0]
+            ey = corners[(i + 1) % 4][1] - corners[i][1]
+            edge_lens.append(np.sqrt(ex * ex + ey * ey))
+        perimeter = sum(edge_lens)
+        num_steps = max(4, int(perimeter / max(cstep, 0.1)))
 
         self.waypoints = []
 
-        for pillar in pillars:
-            px, py = pillar['cx'], pillar['cy']
+        for layer in range(num_layers + 1):
+            z = cz + layer * vstep
+            reverse = (layer % 2 == 1)
 
-            num_layers = max(1, int(dz / vstep))
-            num_cols = max(1, int(360 / max(1, cstep)))
+            for i in range(num_steps):
+                idx = (num_steps - 1 - i) if reverse else i
+                t = idx / num_steps
+                s = t * perimeter
 
-            for layer in range(num_layers + 1):
-                z = cz + layer * vstep
-                end_col = num_cols + 1 if layer == num_layers else num_cols
-                for col in range(end_col):
-                    if layer % 2 == 0:
-                        angle = start_angle + (col / num_cols) * 2 * np.pi
-                    else:
-                        angle = start_angle + (1 - col / num_cols) * 2 * np.pi
+                # 所在边
+                cum = 0.0
+                edge_idx = 0
+                for ei in range(4):
+                    if s <= cum + edge_lens[ei] or ei == 3:
+                        edge_idx = ei
+                        break
+                    cum += edge_lens[ei]
 
-                    rx = px + dist * np.cos(angle)
-                    ry = py + dist * np.sin(angle)
-                    pos = np.array([rx, ry, z])
+                seg = s - cum
+                ratio = seg / edge_lens[edge_idx] if edge_lens[edge_idx] > 0 else 0
+                ratio = min(max(ratio, 0.0), 1.0)
 
-                    # 机头沿圆弧切线方向
-                    if layer % 2 == 0:
-                        tangent = np.array([-np.sin(angle), np.cos(angle), 0])
-                    else:
-                        tangent = np.array([np.sin(angle), -np.cos(angle), 0])
-                    target = pos + tangent
-                    quat = look_at_quaternion(target, pos)
+                c0 = corners[edge_idx]
+                c1 = corners[(edge_idx + 1) % 4]
+                px = c0[0] + ratio * (c1[0] - c0[0])
+                py = c0[1] + ratio * (c1[1] - c0[1])
+                pos = np.array([px, py, z])
 
-                    self.waypoints.append({
-                        'pos': pos,
-                        'quat': quat,
-                        'speed': speed,
-                        'action': 'scan'
-                    })
+                # 机头垂直于边方向，朝矩形内侧（朝向结构）
+                dx_dir = c1[0] - c0[0]
+                dy_dir = c1[1] - c0[1]
+                d_len = np.sqrt(dx_dir * dx_dir + dy_dir * dy_dir)
+                if d_len > 1e-10:
+                    # CCW 矩形：(-dy, dx) 指向内侧
+                    heading = np.array([-dy_dir / d_len, dx_dir / d_len, 0.0])
+                else:
+                    heading = np.array([1.0, 0.0, 0.0])
+                target = pos + heading
+                quat = look_at_quaternion(target, pos)
+
+                self.waypoints.append({
+                    'pos': pos,
+                    'quat': quat,
+                    'speed': speed,
+                    'action': 'scan'
+                })
 
         self._display_route()
 
@@ -904,6 +938,7 @@ class MainWindow(QMainWindow):
 
         # 恢复坐标轴和网格
         self.viewer._add_scene_axes()
+        self.viewer.vtk_widget.GetRenderWindow().Render()
         self.lbl_info.setText("航点: 0")
 
     # ─── 保存航线（nav_msgs/Path 格式）───
