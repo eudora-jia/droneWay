@@ -79,11 +79,13 @@ def quaternion_forward(quat):
     return v / n if n > 1e-10 else np.array([1.0, 0.0, 0.0])
 
 
-# 雷达 IMU 到 Airy IMU 的旋转矩阵
-AIRY_LIDAR_TO_IMU_R = np.array([
-    [0.0, -1.0, 0.0],
-    [-0.9996573, 0.0, -0.0261769],
-    [0.0261769, 0.0, -0.9996573]
+# 地图坐标系到里程计(Airy IMU)坐标系的固定旋转矩阵
+# 由实测4组数据拟合: R_odom = Rz(map_yaw) @ R_FIXED
+# R_FIXED 的 RPY: roll=-145.28°, pitch=-0.04°, yaw=90.53°
+R_FIXED = np.array([
+    [-0.00929909, 0.82193610, -0.56950380],
+    [0.99995657, 0.00799736, -0.00478551],
+    [0.00062114, -0.56952357, -0.82197477],
 ])
 
 
@@ -97,12 +99,12 @@ def quat_to_matrix(q):
     ])
 
 
-def quat_map_to_lidar(quat_map):
-    """将四元数从地图坐标系转换到雷达 IMU 坐标系
-    R_lidar = airy_lidar_to_airy_imu_R^-1 @ R_map
+def quat_map_to_odom(quat_map):
+    """将四元数从地图坐标系转换到里程计(Airy IMU)坐标系
+    R_odom = R_map @ R_FIXED
     参数: quat_map - [w, x, y, z] 地图坐标系四元数
-    返回: [w, x, y, z] 雷达 IMU 坐标系四元数
+    返回: [w, x, y, z] 里程计坐标系四元数
     """
     R_map = quat_to_matrix(quat_map)
-    R_lidar = np.linalg.inv(AIRY_LIDAR_TO_IMU_R) @ R_map
-    return rotation_matrix_to_quaternion(R_lidar)
+    R_odom = R_map @ R_FIXED
+    return rotation_matrix_to_quaternion(R_odom)

@@ -14,7 +14,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont, QFontDatabase
 
 from pcd_parser import parse_pcd
-from quaternion_utils import look_at_quaternion, quat_map_to_lidar
+from quaternion_utils import look_at_quaternion, quat_map_to_odom
 from vtk_viewer import VTKViewer
 
 
@@ -1049,12 +1049,12 @@ class MainWindow(QMainWindow):
 
         # 起飞偏航角转四元数，再转换到雷达 IMU 坐标系
         yaw_rad = np.radians(takeoff_yaw)
-        takeoff_quat = quat_map_to_lidar(np.array([np.cos(yaw_rad / 2), 0, 0, np.sin(yaw_rad / 2)]))
+        takeoff_quat = quat_map_to_odom(np.array([np.cos(yaw_rad / 2), 0, 0, np.sin(yaw_rad / 2)]))
 
         def _wp_to_pose(wp):
-            q = quat_map_to_lidar(wp['quat'])
+            q = quat_map_to_odom(wp['quat'])
             return {
-                "header": {"stamp": {"sec": 0, "nsec": 0}, "frame_id": "map"},
+                "header": {"stamp": {"sec": 0, "nsec": 0}, "frame_id": "camera_init"},
                 "pose": {
                     "position": {
                         "x": round(float(wp['pos'][0]), 4),
@@ -1073,7 +1073,7 @@ class MainWindow(QMainWindow):
         poses = []
         # 第1个点：原点 (0,0,0)，方向为起飞偏航角
         poses.append({
-            "header": {"stamp": {"sec": 0, "nsec": 0}, "frame_id": "map"},
+            "header": {"stamp": {"sec": 0, "nsec": 0}, "frame_id": "camera_init"},
             "pose": {
                 "position": {"x": 0, "y": 0, "z": 0},
                 "orientation": {
@@ -1090,7 +1090,7 @@ class MainWindow(QMainWindow):
         data = {
             "header": {
                 "stamp": {"sec": 0, "nsec": 0},
-                "frame_id": "map"
+                "frame_id": "camera_init"
             },
             "poses": poses,
             "bridge": {

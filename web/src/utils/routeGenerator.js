@@ -2,11 +2,12 @@
  * 航线生成算法 - 从 main_window.py 移植
  */
 
-// 雷达 IMU 到 DJI IMU 的旋转矩阵（从配置文件读取）
-const LIDAR_TO_DJI_R = [
-  [-0.839384, 0.0720621, 0.538741],
-  [0.0487258, 0.997158, -0.0574631],
-  [-0.541351, -0.021983, -0.840509]
+// 地图坐标系到里程计(Airy IMU)坐标系的固定旋转矩阵
+// 由实测4组数据拟合: R_odom = Rz(map_yaw) @ R_FIXED
+const R_FIXED = [
+  [-0.00929909, 0.82193610, -0.56950380],
+  [0.99995657, 0.00799736, -0.00478551],
+  [0.00062114, -0.56952357, -0.82197477]
 ]
 
 // 四元数工具
@@ -78,15 +79,15 @@ function matrixToQuat(m) {
 }
 
 /**
- * 将四元数从地图坐标系转换到雷达 IMU 坐标系
- * R_lidar = R_map @ lidar_to_dji_R^T
+ * 将四元数从地图坐标系转换到里程计(Airy IMU)坐标系
+ * R_odom = R_map @ R_FIXED
  * @param {number[]} quatMap - [w, x, y, z] 地图坐标系四元数
- * @returns {number[]} [w, x, y, z] 雷达 IMU 坐标系四元数
+ * @returns {number[]} [w, x, y, z] 里程计坐标系四元数
  */
-export function quatMapToLidar(quatMap) {
+export function quatMapToOdom(quatMap) {
   const R_map = quatToMatrix(quatMap)
-  const R_lidar = matMul(R_map, matTranspose(LIDAR_TO_DJI_R))
-  return matrixToQuat(R_lidar)
+  const R_odom = matMul(R_map, R_FIXED)
+  return matrixToQuat(R_odom)
 }
 
 function lookAtQuaternion(target, pos) {
