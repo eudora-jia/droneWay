@@ -80,20 +80,20 @@ pyinstaller --onefile --windowed --name "BridgeRoutePlanner" main.py
 
 ```json
 {
-  "lidar_to_dji_imu_rotation": [
-    [-0.839384, 0.0720621, 0.538741],
-    [0.0487258, 0.997158, -0.0574631],
-    [-0.541351, -0.021983, -0.840509]
+  "airy_lidar_to_airy_imu_rotation": [
+    [0.0, -1.0, 0.0],
+    [-0.9996573, 0.0, -0.0261769],
+    [0.0261769, 0.0, -0.9996573]
   ]
 }
 ```
 
 | 参数 | 说明 |
 |------|------|
-| `lidar_to_dji_imu_rotation` | 3x3 旋转矩阵，雷达 IMU 到 DJI IMU 的坐标变换 |
+| `airy_lidar_to_airy_imu_rotation` | 3x3 旋转矩阵，雷达 IMU 到 Airy IMU 的坐标变换 |
 
 ### 坐标系说明
 
 - 界面展示使用**地图坐标系**（方便预览）
 - 导出 JSON 中的四元数使用**雷达 IMU 坐标系**（供飞控使用）
-- 转换公式：`R_lidar = R_map @ lidar_to_dji_imu_R.T`
+- 转换公式：`R_lidar = inv(airy_lidar_to_airy_imu_R) @ R_map`

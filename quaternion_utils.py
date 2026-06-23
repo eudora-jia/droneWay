@@ -86,8 +86,8 @@ def quaternion_forward(quat):
     return v / n if n > 1e-10 else np.array([1.0, 0.0, 0.0])
 
 
-# 雷达 IMU 到 DJI IMU 的旋转矩阵（从 config.json 读取）
-LIDAR_TO_DJI_R = np.array(_config['lidar_to_dji_imu_rotation'])
+# 雷达 IMU 到 Airy IMU 的旋转矩阵（从 config.json 读取）
+AIRY_LIDAR_TO_IMU_R = np.array(_config['airy_lidar_to_airy_imu_rotation'])
 
 
 def quat_to_matrix(q):
@@ -102,10 +102,10 @@ def quat_to_matrix(q):
 
 def quat_map_to_lidar(quat_map):
     """将四元数从地图坐标系转换到雷达 IMU 坐标系
-    R_lidar = R_map @ LIDAR_TO_DJI_R^T
+    R_lidar = airy_lidar_to_airy_imu_R^-1 @ R_map
     参数: quat_map - [w, x, y, z] 地图坐标系四元数
     返回: [w, x, y, z] 雷达 IMU 坐标系四元数
     """
     R_map = quat_to_matrix(quat_map)
-    R_lidar = R_map @ LIDAR_TO_DJI_R.T
+    R_lidar = np.linalg.inv(AIRY_LIDAR_TO_IMU_R) @ R_map
     return rotation_matrix_to_quaternion(R_lidar)
