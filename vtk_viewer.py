@@ -1043,44 +1043,17 @@ class VTKViewer(QWidget):
 
     def _on_global_key_press(self, obj, event):
         key = self.interactor.GetKeyCode()
-        cam = self.renderer.GetActiveCamera()
-
-        if key == '1':
-            cam.SetPosition(0, 0, 100)
-            cam.SetFocalPoint(0, 0, 0)
-            cam.SetViewUp(0, 1, 0)
-            self.renderer.ResetCamera()
-            print("[View] Top View")
-        elif key == '2':
-            cam.SetPosition(0, -100, 0)
-            cam.SetFocalPoint(0, 0, 0)
-            cam.SetViewUp(0, 0, 1)
-            self.renderer.ResetCamera()
-            print("[View] Front View")
-        elif key == '3':
-            cam.SetPosition(100, 0, 0)
-            cam.SetFocalPoint(0, 0, 0)
-            cam.SetViewUp(0, 0, 1)
-            self.renderer.ResetCamera()
-            print("[View] Side View")
-        elif key == '4':
-            self.renderer.ResetCamera()
-            cam.Elevation(30)
-            cam.Azimuth(-45)
-            print("[View] Perspective")
-        elif key == '5':
-            cam.SetPosition(0, 0, -100)
-            cam.SetFocalPoint(0, 0, 0)
-            cam.SetViewUp(0, 1, 0)
-            self.renderer.ResetCamera()
-            print("[View] Bottom View (looking up)")
+        key_view_map = {
+            '1': 'top', '2': 'front', '3': 'side', '4': 'persp', '5': 'bottom',
+        }
+        if key in key_view_map:
+            self._set_view(key_view_map[key])
         elif key == '\x1b':
             if self.polygon_mode:
                 self.exit_polygon_mode()
             elif self.place_mode:
                 self.exit_place_mode()
-
-        self.vtk_widget.GetRenderWindow().Render()
+            self.vtk_widget.GetRenderWindow().Render()
 
     def _add_scene_axes(self):
         """添加坐标轴（带箭头）和网格到场景"""
@@ -1098,26 +1071,17 @@ class VTKViewer(QWidget):
             arrow.SetTipLength(0.25)
             arrow.Update()
 
+            transform = vtkTransform()
             if rot:
                 angle, ax_x, ax_y, ax_z = rot
-                transform = vtkTransform()
                 transform.RotateWXYZ(angle, ax_x, ax_y, ax_z)
-                transform.Scale(arrow_len, arrow_len, arrow_len)
-                filt = vtkTransformPolyDataFilter()
-                filt.SetInputConnection(arrow.GetOutputPort())
-                filt.SetTransform(transform)
-                filt.Update()
-                m = vtkPolyDataMapper()
-                m.SetInputConnection(filt.GetOutputPort())
-            else:
-                transform = vtkTransform()
-                transform.Scale(arrow_len, arrow_len, arrow_len)
-                filt = vtkTransformPolyDataFilter()
-                filt.SetInputConnection(arrow.GetOutputPort())
-                filt.SetTransform(transform)
-                filt.Update()
-                m = vtkPolyDataMapper()
-                m.SetInputConnection(filt.GetOutputPort())
+            transform.Scale(arrow_len, arrow_len, arrow_len)
+            filt = vtkTransformPolyDataFilter()
+            filt.SetInputConnection(arrow.GetOutputPort())
+            filt.SetTransform(transform)
+            filt.Update()
+            m = vtkPolyDataMapper()
+            m.SetInputConnection(filt.GetOutputPort())
 
             a = vtkActor()
             a.SetMapper(m)

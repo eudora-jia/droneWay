@@ -21,10 +21,12 @@ python main.py
 
 ```bash
 pip install pyinstaller
-pyinstaller --onefile --windowed --name "BridgeRoutePlanner" main.py
+pyinstaller --onedir --windowed --name "BridgeRoutePlanner" main.py
 ```
 
-生成的 exe 文件在 `dist/BridgeRoutePlanner.exe`
+生成的文件夹在 `dist/BridgeRoutePlanner/`，运行其中的 `BridgeRoutePlanner.exe` 即可。
+
+> 使用 `--onedir` 模式启动更快（无需每次解压），分发时压缩整个文件夹即可。
 
 ## 功能说明
 

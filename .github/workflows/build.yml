@@ -26,16 +26,20 @@ jobs:
 
       - name: Build exe
         run: |
-          pyinstaller --onefile --windowed --name BridgeRoutePlanner main.py
+          pyinstaller --onedir --windowed --name BridgeRoutePlanner main.py
+
+      - name: Zip output folder
+        run: |
+          Compress-Archive -Path dist\BridgeRoutePlanner\* -DestinationPath dist\BridgeRoutePlanner.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: BridgeRoutePlanner
-          path: dist/BridgeRoutePlanner.exe
+          path: dist/BridgeRoutePlanner.zip
 
       - name: Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/BridgeRoutePlanner.exe
+          files: dist/BridgeRoutePlanner.zip

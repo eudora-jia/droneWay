@@ -560,21 +560,7 @@ class MainWindow(QMainWindow):
                     self.edt_dz.setText(f"{mx[2] - mn[2]:.1f}")
 
                 # 圆柱体高度受限于圆周上四点最近点Z - 0.5
-                cyl_radius = 2.0  # 默认直径4
-                cyl_dist = 3.0
-                try:
-                    cyl_radius = float(self.edt_cyl_diam.text()) / 2
-                    cyl_dist = float(self.edt_cyl_dist.text())
-                except ValueError:
-                    pass
-                R = cyl_radius + cyl_dist
-                cyl_circle_pts = [
-                    (center[0] + R, center[1]),
-                    (center[0], center[1] + R),
-                    (center[0] - R, center[1]),
-                    (center[0], center[1] - R),
-                ]
-                max_z_cyl = self._compute_max_z_for_area(cyl_circle_pts)
+                max_z_cyl = self._compute_max_z_for_area(cyl_corners)
                 if max_z_cyl is not None:
                     max_h = max(1.0, max_z_cyl - cyl_cz)
                     self.edt_cyl_h.setText(f"{min(mx[2] - mn[2], max_h):.1f}")
@@ -1012,14 +998,9 @@ class MainWindow(QMainWindow):
     def _apply_safety_settings(self):
         """应用安全设置（起飞高度、初始偏航角）并刷新航线显示"""
         if self.waypoints:
-            try:
-                self.viewer._takeoff_z = float(self.edt_takeoff_z.text())
-            except ValueError:
-                self.viewer._takeoff_z = 1.0
-            try:
-                self.viewer._takeoff_yaw = float(self.edt_takeoff_yaw.text())
-            except ValueError:
-                self.viewer._takeoff_yaw = 0.0
+            takeoff_z, takeoff_yaw = self._get_takeoff_params()
+            self.viewer._takeoff_z = takeoff_z
+            self.viewer._takeoff_yaw = takeoff_yaw
             self.viewer.add_route(self.waypoints)
             self._check_safety_distance()
         print(f"[Safety] 起飞高度={self.edt_takeoff_z.text()}m, 初始偏航角={self.edt_takeoff_yaw.text()}°")
@@ -1089,14 +1070,9 @@ class MainWindow(QMainWindow):
     def _toggle_heading(self, state):
         self.viewer.show_heading = (state == Qt.Checked)
         if self.waypoints:
-            try:
-                self.viewer._takeoff_z = float(self.edt_takeoff_z.text())
-            except ValueError:
-                self.viewer._takeoff_z = 1.0
-            try:
-                self.viewer._takeoff_yaw = float(self.edt_takeoff_yaw.text())
-            except ValueError:
-                self.viewer._takeoff_yaw = 0.0
+            takeoff_z, takeoff_yaw = self._get_takeoff_params()
+            self.viewer._takeoff_z = takeoff_z
+            self.viewer._takeoff_yaw = takeoff_yaw
             self.viewer.add_route(self.waypoints)
             self._check_safety_distance()
 
@@ -1169,13 +1145,14 @@ class MainWindow(QMainWindow):
                 self.edt_cyl_h.setText(f"{max_h:.1f}")
 
     def _compute_default_cz(self, corners, takeoff_z):
-        """计算底面中心默认Z值：>= takeoff_z+0.5 且 >= 四个角附近点云最低Z+0.5"""
+        """计算底面中心默认Z值：>= takeoff_z+0.5 且 >= 四个角附近点云最低Z+0.5
+        使用 XY 平面距离（2D），不依赖 KDTree（因为 KDTree 是 3D 的）"""
         cz_min = takeoff_z + 0.5
         if self.points is not None and len(self.points) > 0:
+            xy = self.points[:, :2]
             for cx, cy in corners:
-                dx = self.points[:, 0] - cx
-                dy = self.points[:, 1] - cy
-                dist_sq = dx * dx + dy * dy
+                diff = xy - [cx, cy]
+                dist_sq = diff[:, 0] ** 2 + diff[:, 1] ** 2
                 mask = dist_sq < 4.0  # 半径2m内的点
                 if np.any(mask):
                     nearby_z = np.min(self.points[mask, 2])
@@ -1199,54 +1176,97 @@ class MainWindow(QMainWindow):
 
     def _on_takeoff_z_changed(self, text):
         try:
-            takeoff_z = float(text)
-            # 立方体四角
-            try:
-                cx = float(self.edt_cx.text())
-                cy = float(self.edt_cy.text())
-                dx = float(self.edt_dx.text())
-                dy = float(self.edt_dy.text())
-            except ValueError:
-                cx, cy, dx, dy = 0.0, 0.0, 4.0, 4.0
-            half_x, half_y = dx / 2, dy / 2
-            cube_corners = [
-                (cx - half_x, cy - half_y), (cx + half_x, cy - half_y),
-                (cx + half_x, cy + half_y), (cx - half_x, cy + half_y),
-            ]
-            cz = self._compute_default_cz(cube_corners, takeoff_z)
-            self.edt_cz.setText(f"{cz:.1f}")
-
-            # 圆柱体圆周四点
-            try:
-                cyl_cx = float(self.edt_cyl_cx.text())
-                cyl_cy = float(self.edt_cyl_cy.text())
-                cyl_diam = float(self.edt_cyl_diam.text())
-                cyl_dist = float(self.edt_cyl_dist.text())
-            except ValueError:
-                cyl_cx, cyl_cy = cx, cy
-                cyl_diam, cyl_dist = 4.0, 3.0
-            R = cyl_diam / 2 + cyl_dist
-            cyl_corners = [
-                (cyl_cx + R, cyl_cy), (cyl_cx, cyl_cy + R),
-                (cyl_cx - R, cyl_cy), (cyl_cx, cyl_cy - R),
-            ]
-            cyl_cz = self._compute_default_cz(cyl_corners, takeoff_z)
-            self.edt_cyl_cz.setText(f"{cyl_cz:.1f}")
+            float(text)
         except ValueError:
-            pass
+            return
+        self._update_cube_cz_and_dz()
+        self._update_cyl_cz_and_h()
+
+    def _update_cube_cz_and_dz(self):
+        """重新计算立方体的 cz 和 dz 上限"""
+        if self.points is None or len(self.points) == 0:
+            return
+        try:
+            cx = float(self.edt_cx.text())
+            cy = float(self.edt_cy.text())
+            takeoff_z = float(self.edt_takeoff_z.text())
+            dx = float(self.edt_dx.text())
+            dy = float(self.edt_dy.text())
+        except ValueError:
+            return
+        half_x, half_y = dx / 2, dy / 2
+        corners = [
+            (cx - half_x, cy - half_y), (cx + half_x, cy - half_y),
+            (cx + half_x, cy + half_y), (cx - half_x, cy + half_y),
+        ]
+        cz = self._compute_default_cz(corners, takeoff_z)
+        self.edt_cz.setText(f"{cz:.1f}")
+        max_z = self._compute_max_z_for_area(corners)
+        if max_z is not None:
+            max_dz = max(1.0, max_z - cz)
+            try:
+                cur_dz = float(self.edt_dz.text())
+                if cur_dz > max_dz:
+                    self.edt_dz.setText(f"{max_dz:.1f}")
+            except ValueError:
+                self.edt_dz.setText(f"{max_dz:.1f}")
+
+    def _update_cyl_cz_and_h(self):
+        """重新计算圆柱体的 cz 和 h 上限"""
+        if self.points is None or len(self.points) == 0:
+            return
+        try:
+            cx = float(self.edt_cyl_cx.text())
+            cy = float(self.edt_cyl_cy.text())
+            takeoff_z = float(self.edt_takeoff_z.text())
+            diam = float(self.edt_cyl_diam.text())
+            dist = float(self.edt_cyl_dist.text())
+        except ValueError:
+            return
+        R = diam / 2 + dist
+        corners = [
+            (cx + R, cy), (cx, cy + R),
+            (cx - R, cy), (cx, cy - R),
+        ]
+        cz = self._compute_default_cz(corners, takeoff_z)
+        self.edt_cyl_cz.setText(f"{cz:.1f}")
+        max_z = self._compute_max_z_for_area(corners)
+        if max_z is not None:
+            max_h = max(1.0, max_z - cz)
+            try:
+                cur_h = float(self.edt_cyl_h.text())
+                if cur_h > max_h:
+                    self.edt_cyl_h.setText(f"{max_h:.1f}")
+            except ValueError:
+                self.edt_cyl_h.setText(f"{max_h:.1f}")
+
+    def _on_cube_area_changed(self):
+        """立方体区域参数变化时重新计算cz和dz"""
+        self._update_cube_cz_and_dz()
+
+    def _on_cyl_area_changed(self):
+        """圆柱体区域参数变化时重新计算cz和h"""
+        self._update_cyl_cz_and_h()
 
     def _display_route(self):
-        try:
-            self.viewer._takeoff_z = float(self.edt_takeoff_z.text())
-        except ValueError:
-            self.viewer._takeoff_z = 1.0
-        try:
-            self.viewer._takeoff_yaw = float(self.edt_takeoff_yaw.text())
-        except ValueError:
-            self.viewer._takeoff_yaw = 0.0
+        takeoff_z, takeoff_yaw = self._get_takeoff_params()
+        self.viewer._takeoff_z = takeoff_z
+        self.viewer._takeoff_yaw = takeoff_yaw
         self.viewer.add_route(self.waypoints)
         self.lbl_info.setText(f"航点: {len(self.waypoints)}")
         self._check_safety_distance()
+
+    def _get_takeoff_params(self):
+        """解析起飞高度和初始偏航角，返回 (takeoff_z, takeoff_yaw)"""
+        try:
+            takeoff_z = float(self.edt_takeoff_z.text())
+        except ValueError:
+            takeoff_z = 1.0
+        try:
+            takeoff_yaw = float(self.edt_takeoff_yaw.text())
+        except ValueError:
+            takeoff_yaw = 0.0
+        return takeoff_z, takeoff_yaw
 
     def _on_waypoint_edited(self, idx, new_pos, new_quat):
         if idx < len(self.waypoints):
@@ -1271,11 +1291,7 @@ class MainWindow(QMainWindow):
         if len(self.waypoints) < 2:
             return
         safe_dist = self.viewer._safe_distance
-        violations = []
-        for i in range(len(self.waypoints) - 1):
-            d = np.linalg.norm(self.waypoints[i+1]['pos'] - self.waypoints[i]['pos'])
-            if d < safe_dist:
-                violations.append((i, i+1, d))
+        violations, collisions, low_z = self._collect_collision_warnings()
 
         for i, j, d in violations:
             if i < len(self.viewer._waypoint_actors):
@@ -1283,20 +1299,54 @@ class MainWindow(QMainWindow):
             if j < len(self.viewer._waypoint_actors):
                 self.viewer._waypoint_actors[j].GetProperty().SetColor(1.0, 0.0, 0.0)
 
-        collision_count = 0
+        for idx, dist in collisions:
+            if idx < len(self.viewer._waypoint_actors):
+                self.viewer._waypoint_actors[idx].GetProperty().SetColor(1.0, 0.0, 1.0)
+
+        try:
+            min_z = float(self.edt_min_z.text())
+        except ValueError:
+            min_z = -999
+        for idx, z_val in low_z:
+            if idx < len(self.viewer._waypoint_actors):
+                self.viewer._waypoint_actors[idx].GetProperty().SetColor(1.0, 0.5, 0.0)
+
         collision_dist = safe_dist * 0.5
+        msgs = [f"航点: {len(self.waypoints)}"]
+        if violations:
+            msgs.append(f"{len(violations)} 对过近 (<{safe_dist}m)")
+        if collisions:
+            msgs.append(f"{len(collisions)} 个碰撞 (<{collision_dist:.1f}m)")
+        if low_z:
+            msgs.append(f"{len(low_z)} 个低于Z={min_z}m")
+        self.lbl_info.setText(" | ".join(msgs))
+        self.viewer.vtk_widget.GetRenderWindow().Render()
+
+    def _collect_collision_warnings(self):
+        """收集碰撞检测数据，返回 (violations, collisions, low_z)
+        violations: [(i, j, dist), ...] 航点间距过近
+        collisions: [(idx, dist), ...] 航点距点云过近
+        low_z: [(idx, z_val), ...] 航点低于最低Z值
+        """
+        safe_dist = self.viewer._safe_distance
+        collision_dist = safe_dist * 0.5
+
+        violations = []
+        for i in range(len(self.waypoints) - 1):
+            d = np.linalg.norm(self.waypoints[i+1]['pos'] - self.waypoints[i]['pos'])
+            if d < safe_dist:
+                violations.append((i, i+1, d))
+
+        collisions = []
         tree = self._get_kdtree()
         if tree is not None:
             wp_positions = np.array([wp['pos'] for wp in self.waypoints])
             dists, _ = tree.query(wp_positions)
             for i, dist in enumerate(dists):
                 if dist < collision_dist:
-                    collision_count += 1
-                    if i < len(self.viewer._waypoint_actors):
-                        self.viewer._waypoint_actors[i].GetProperty().SetColor(1.0, 0.0, 1.0)
+                    collisions.append((i, dist))
 
-        # 最低Z值检查
-        low_z_count = 0
+        low_z = []
         try:
             min_z = float(self.edt_min_z.text())
         except ValueError:
@@ -1304,19 +1354,9 @@ class MainWindow(QMainWindow):
         if min_z > -900:
             for i, wp in enumerate(self.waypoints):
                 if wp['pos'][2] < min_z:
-                    low_z_count += 1
-                    if i < len(self.viewer._waypoint_actors):
-                        self.viewer._waypoint_actors[i].GetProperty().SetColor(1.0, 0.5, 0.0)
+                    low_z.append((i, wp['pos'][2]))
 
-        msgs = [f"航点: {len(self.waypoints)}"]
-        if violations:
-            msgs.append(f"{len(violations)} 对过近 (<{safe_dist}m)")
-        if collision_count:
-            msgs.append(f"{collision_count} 个碰撞 (<{collision_dist:.1f}m)")
-        if low_z_count:
-            msgs.append(f"{low_z_count} 个低于Z={min_z}m")
-        self.lbl_info.setText(" | ".join(msgs))
-        self.viewer.vtk_widget.GetRenderWindow().Render()
+        return violations, collisions, low_z
 
     # ─── 清除航线 ───
     def clear_route(self):
@@ -1356,28 +1396,19 @@ class MainWindow(QMainWindow):
             return
 
         # 碰撞检测警告（不影响保存）
-        warnings = []
         safe_dist = self.viewer._safe_distance
-        for i in range(len(self.waypoints) - 1):
-            d = np.linalg.norm(self.waypoints[i+1]['pos'] - self.waypoints[i]['pos'])
-            if d < safe_dist:
-                warnings.append(f"{i+1}-{i+2} 号航点间距 {d:.2f}m < {safe_dist}m")
-        collision_dist = safe_dist * 0.5
-        tree = self._get_kdtree()
-        if tree is not None:
-            wp_positions = np.array([wp['pos'] for wp in self.waypoints])
-            dists, _ = tree.query(wp_positions)
-            for i, dist in enumerate(dists):
-                if dist < collision_dist:
-                    warnings.append(f"{i+1} 号航点碰撞 (距点云 {dist:.2f}m)")
+        violations, collisions, low_z = self._collect_collision_warnings()
+        warnings = []
+        for i, j, d in violations:
+            warnings.append(f"{i+1}-{j+1} 号航点间距 {d:.2f}m < {safe_dist}m")
+        for idx, dist in collisions:
+            warnings.append(f"{idx+1} 号航点碰撞 (距点云 {dist:.2f}m)")
         try:
             min_z = float(self.edt_min_z.text())
         except ValueError:
             min_z = -999
-        if min_z > -900:
-            for i, wp in enumerate(self.waypoints):
-                if wp['pos'][2] < min_z:
-                    warnings.append(f"{i+1} 号航点Z={wp['pos'][2]:.1f}m < {min_z}m")
+        for idx, z_val in low_z:
+            warnings.append(f"{idx+1} 号航点Z={z_val:.1f}m < {min_z}m")
         if warnings:
             msg = f"检测到 {len(warnings)} 个问题:\n\n" + "\n".join(warnings[:10])
             if len(warnings) > 10:
@@ -1404,14 +1435,7 @@ class MainWindow(QMainWindow):
         if not self.waypoints:
             return None
 
-        try:
-            takeoff_z = float(self.edt_takeoff_z.text())
-        except ValueError:
-            takeoff_z = 1.0
-        try:
-            takeoff_yaw = float(self.edt_takeoff_yaw.text())
-        except ValueError:
-            takeoff_yaw = 0.0
+        _, takeoff_yaw = self._get_takeoff_params()
 
         yaw_rad = np.radians(takeoff_yaw)
         takeoff_quat = quat_map_to_odom(np.array([np.cos(yaw_rad / 2), 0, 0, np.sin(yaw_rad / 2)]))
@@ -1471,7 +1495,6 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "提示", "没有航线可复制")
             return
         json_str = json.dumps(data, indent=2, ensure_ascii=False)
-        from PyQt5.QtWidgets import QApplication
         QApplication.clipboard().setText(json_str)
         QMessageBox.information(self, "已复制", f"航线已复制到剪贴板（{len(data['poses'])} 个航点）")
 
