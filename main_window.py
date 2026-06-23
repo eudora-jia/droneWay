@@ -21,7 +21,7 @@ from vtk_viewer import VTKViewer
 class NoWheelSlider(QSlider):
     """禁用滚轮事件的 QSlider，避免滚动鼠标时意外改变值"""
     def wheelEvent(self, event):
-        event.ignore()
+        event.accept()  # 接受但不处理，阻止事件继续传播
 
 
 class MainWindow(QMainWindow):
@@ -446,9 +446,9 @@ class MainWindow(QMainWindow):
         mn = poly.min(axis=0)
         mx = poly.max(axis=0)
         if self.points is not None and len(self.points) > 0:
-            z_val = self.points[:, 2].max() + 3
+            z_val = max(self.points[:, 2].max() + 3, 2.0)
         else:
-            z_val = mx[2] + 3
+            z_val = 2.0
         self.edt_z.setText(f"{z_val:.1f}")
         self._polygon_vertices = pts
         self.generate_flat_route()
@@ -637,17 +637,6 @@ class MainWindow(QMainWindow):
         if xmin >= xmax or ymin >= ymax:
             QMessageBox.warning(self, "输入错误", "区域范围无效")
             return
-
-        # 高Z受限于区域四角最近点Z - 0.5
-        flat_corners = [
-            (poly[0][0], poly[0][1]), (poly[1][0], poly[1][1]),
-            (poly[2][0], poly[2][1]), (poly[3][0], poly[3][1]),
-        ]
-        max_z = self._compute_max_z_for_area(flat_corners)
-        if max_z is not None and z > max_z:
-            z = max_z
-            self.edt_z.setText(f"{z:.1f}")
-            QMessageBox.information(self, "高度调整", f"飞行高度已调整为 {z:.1f}m（受限于区域上方点云）")
 
         y_center = (ymin + ymax) / 2
         y_half = (ymax - ymin) / 2 if ymax != ymin else 1.0
