@@ -212,7 +212,7 @@ export function generateCubeRoute(params) {
         // 跳过非最后一层的每条边最后一个点
         const lastIdx = reverse ? 0 : pts.length - 1
         const lastEdge = reverse ? 0 : 3
-        if (pi === lastIdx && ei !== lastEdge && layer < numLayers) continue
+        if (pi === lastIdx && ei !== lastEdge) continue
 
         const { pos2d, heading } = pts[pi]
         const pos = [pos2d[0], pos2d[1], z]

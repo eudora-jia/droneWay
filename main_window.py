@@ -790,8 +790,8 @@ class MainWindow(QMainWindow):
                 pts = edge_points[ei]
                 pt_order = range(len(pts)) if not reverse else range(len(pts) - 1, -1, -1)
                 for pi in pt_order:
-                    # 跳过非最后一层的每条边最后一个点（避免与下一条边起点重复）
-                    if pi == (len(pts) - 1 if not reverse else 0) and ei != (3 if not reverse else 0) and layer < num_layers:
+                    # 跳过每条边最后一个点（避免与下一条边起点重复）
+                    if pi == (len(pts) - 1 if not reverse else 0) and ei != (3 if not reverse else 0):
                         continue
                     pos_2d, heading = pts[pi]
                     pos = np.array([pos_2d[0], pos_2d[1], z])
