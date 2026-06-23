@@ -904,10 +904,12 @@ class MainWindow(QMainWindow):
                 ratio = j / (n_pts - 1)
                 px = c0[0] + ratio * ex
                 py = c0[1] + ratio * ey
-                # 机头垂直于边方向，朝矩形内侧
-                d_len = np.sqrt(ex * ex + ey * ey)
-                if d_len > 1e-10:
-                    heading = np.array([-ey / d_len, ex / d_len, 0.0])
+                # 每个点独立计算指向立方体中心的方向
+                to_cx = cx - px
+                to_cy = cy - py
+                to_c_len = np.sqrt(to_cx * to_cx + to_cy * to_cy)
+                if to_c_len > 1e-10:
+                    heading = np.array([to_cx / to_c_len, to_cy / to_c_len, 0.0])
                 else:
                     heading = np.array([1.0, 0.0, 0.0])
                 pts.append((np.array([px, py]), heading))
@@ -1159,19 +1161,26 @@ class MainWindow(QMainWindow):
                     cz_min = max(cz_min, nearby_z + 0.5)
         return cz_min
 
-    def _compute_max_z_for_area(self, corners):
-        """计算区域最大允许飞行Z值：四个角点最近点的最大Z - 0.5"""
+    def _compute_max_z_for_area(self, corners, ref_z=None):
+        """计算区域最大允许飞行Z值：水平2m内、在ref_z以上的最高点Z - 0.5
+        ref_z: 参考高度，只考虑此高度以上的点。默认使用多边形区域的Z均值。
+        """
         if self.points is None or len(self.points) == 0:
             return None
+        if ref_z is None:
+            ref_z = min(c[2] if len(c) > 2 else 0 for c in corners) if corners else 0
+        xy = self.points[:, :2]
         max_z = -float('inf')
         for cx, cy in corners:
-            dx = self.points[:, 0] - cx
-            dy = self.points[:, 1] - cy
-            dist_sq = dx * dx + dy * dy
-            idx = np.argmin(dist_sq)
-            nearest_z = self.points[idx, 2]
-            if nearest_z > max_z:
-                max_z = nearest_z
+            diff = xy - [cx, cy]
+            dist_sq = diff[:, 0] ** 2 + diff[:, 1] ** 2
+            mask = dist_sq < 4.0  # 水平2m内
+            if ref_z is not None:
+                mask = mask & (self.points[:, 2] > ref_z)
+            if np.any(mask):
+                z = np.max(self.points[mask, 2])
+                if z > max_z:
+                    max_z = z
         return max_z - 0.5 if max_z > -float('inf') else None
 
     def _on_takeoff_z_changed(self, text):

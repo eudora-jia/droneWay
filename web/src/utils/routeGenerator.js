@@ -190,8 +190,11 @@ export function generateCubeRoute(params) {
       const ratio = j / (nPts - 1)
       const px = c0[0] + ratio * ex
       const py = c0[1] + ratio * ey
-      const dLen = Math.sqrt(ex * ex + ey * ey)
-      const heading = dLen > 1e-10 ? [-ey / dLen, ex / dLen, 0] : [1, 0, 0]
+      // 每个点独立计算指向立方体中心的方向
+      const toCx = cx - px
+      const toCy = cy - py
+      const toCLen = Math.sqrt(toCx * toCx + toCy * toCy)
+      const heading = toCLen > 1e-10 ? [toCx / toCLen, toCy / toCLen, 0] : [1, 0, 0]
       pts.push({ pos2d: [px, py], heading })
     }
     edgePoints.push(pts)
