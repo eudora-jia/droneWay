@@ -36,3 +36,4 @@ Thumbs.db
 output/
 *.json
 !package.json
+!config.json

@@ -73,3 +73,27 @@ pyinstaller --onefile --windowed --name "BridgeRoutePlanner" main.py
 | `quaternion` | object | 姿态四元数 (w, x, y, z)，描述无人机朝向 |
 | `speed` | float | 飞行速度 (m/s) |
 | `action` | string | 动作类型: `fly`(飞行) / `scan`(扫描) |
+
+## 配置文件 config.json
+
+外参标定参数存放在 `config.json`，用于保存航线时将四元数从地图坐标系转换到雷达 IMU 坐标系。
+
+```json
+{
+  "lidar_to_dji_imu_rotation": [
+    [-0.839384, 0.0720621, 0.538741],
+    [0.0487258, 0.997158, -0.0574631],
+    [-0.541351, -0.021983, -0.840509]
+  ]
+}
+```
+
+| 参数 | 说明 |
+|------|------|
+| `lidar_to_dji_imu_rotation` | 3x3 旋转矩阵，雷达 IMU 到 DJI IMU 的坐标变换 |
+
+### 坐标系说明
+
+- 界面展示使用**地图坐标系**（方便预览）
+- 导出 JSON 中的四元数使用**雷达 IMU 坐标系**（供飞控使用）
+- 转换公式：`R_lidar = R_map @ lidar_to_dji_imu_R.T`
