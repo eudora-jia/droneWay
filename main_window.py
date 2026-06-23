@@ -7,7 +7,7 @@ import numpy as np
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QLabel, QLineEdit, QPushButton, QComboBox,
-    QFileDialog, QMessageBox, QSplitter, QButtonGroup, QSlider,
+    QFileDialog, QMessageBox, QButtonGroup, QSlider,
     QProgressBar, QCheckBox, QGridLayout, QScrollArea, QTabWidget
 )
 from PyQt5.QtCore import Qt
@@ -41,11 +41,8 @@ class MainWindow(QMainWindow):
         main_layout = QHBoxLayout(central)
         main_layout.setContentsMargins(4, 4, 4, 4)
 
-        splitter = QSplitter(Qt.Horizontal)
-
         # ─── 左侧 3D 视图 ───
         self.viewer = VTKViewer()
-        splitter.addWidget(self.viewer)
 
         self.viewer.waypoint_edited.connect(self._on_waypoint_edited)
         self.viewer.polygon_finished.connect(self._on_polygon_finished)
@@ -127,7 +124,7 @@ class MainWindow(QMainWindow):
         pk = QVBoxLayout(grp_pick)
         sd_row = QHBoxLayout()
         sd_row.addWidget(QLabel("安全距离(m):"))
-        self.edt_safe_dist = QLineEdit("2.0")
+        self.edt_safe_dist = QLineEdit("1.0")
         self.edt_safe_dist.setMaximumWidth(60)
         self.edt_safe_dist.textChanged.connect(self._on_safe_dist_changed)
         sd_row.addWidget(self.edt_safe_dist)
@@ -138,9 +135,10 @@ class MainWindow(QMainWindow):
         tk_row.addWidget(QLabel("起飞高度(m):"))
         self.edt_takeoff_z = QLineEdit("1.0")
         self.edt_takeoff_z.setMaximumWidth(60)
+        self.edt_takeoff_z.textChanged.connect(self._on_takeoff_z_changed)
         tk_row.addWidget(self.edt_takeoff_z)
         tk_row.addWidget(QLabel("初始偏航角(°):"))
-        self.edt_takeoff_yaw = QLineEdit("0")
+        self.edt_takeoff_yaw = QLineEdit("-90")
         self.edt_takeoff_yaw.setMaximumWidth(60)
         tk_row.addWidget(self.edt_takeoff_yaw)
         tk_row.addStretch()
@@ -178,14 +176,14 @@ class MainWindow(QMainWindow):
         fl.setSpacing(4)
 
         fl.addWidget(QLabel("高度Z:"), 0, 0)
-        self.edt_z = QLineEdit("5"); fl.addWidget(self.edt_z, 0, 1)
+        self.edt_z = QLineEdit("2"); fl.addWidget(self.edt_z, 0, 1)
         fl.addWidget(QLabel("线间距:"), 0, 2)
         self.edt_spacing = QLineEdit("2"); fl.addWidget(self.edt_spacing, 0, 3)
 
         fl.addWidget(QLabel("航点距离:"), 1, 0)
         self.edt_wp_spacing = QLineEdit("2"); fl.addWidget(self.edt_wp_spacing, 1, 1)
         fl.addWidget(QLabel("速度(m/s):"), 1, 2)
-        self.edt_flat_speed = QLineEdit("3"); fl.addWidget(self.edt_flat_speed, 1, 3)
+        self.edt_flat_speed = QLineEdit("1"); fl.addWidget(self.edt_flat_speed, 1, 3)
 
         fl.addWidget(QLabel("曲度:"), 2, 0)
         self.sld_curvature = QSlider(Qt.Horizontal)
@@ -225,9 +223,9 @@ class MainWindow(QMainWindow):
         self.edt_dy = QLineEdit("4"); cl.addWidget(self.edt_dy, 1, 3)
 
         cl.addWidget(QLabel("高(Z):"), 2, 0)
-        self.edt_dz = QLineEdit("8"); cl.addWidget(self.edt_dz, 2, 1)
+        self.edt_dz = QLineEdit("2"); cl.addWidget(self.edt_dz, 2, 1)
         cl.addWidget(QLabel("离柱距离:"), 2, 2)
-        self.edt_dist = QLineEdit("3"); cl.addWidget(self.edt_dist, 2, 3)
+        self.edt_dist = QLineEdit("1"); cl.addWidget(self.edt_dist, 2, 3)
 
         cl.addWidget(QLabel("水平步距:"), 3, 0)
         self.edt_cstep = QLineEdit("2"); cl.addWidget(self.edt_cstep, 3, 1)
@@ -235,16 +233,20 @@ class MainWindow(QMainWindow):
         self.edt_vstep = QLineEdit("2"); cl.addWidget(self.edt_vstep, 3, 3)
 
         cl.addWidget(QLabel("速度:"), 4, 0)
-        self.edt_cspeed = QLineEdit("2"); cl.addWidget(self.edt_cspeed, 4, 1)
+        self.edt_cspeed = QLineEdit("1"); cl.addWidget(self.edt_cspeed, 4, 1)
 
         cl.addWidget(QLabel("起始角度(°):"), 5, 0)
         self.sld_cube_start_angle = QSlider(Qt.Horizontal)
         self.sld_cube_start_angle.setRange(0, 360)
         self.sld_cube_start_angle.setValue(0)
-        cl.addWidget(self.sld_cube_start_angle, 5, 1, 1, 2)
+        cl.addWidget(self.sld_cube_start_angle, 5, 1)
         self.lbl_cube_angle_val = QLabel("0°")
         self.lbl_cube_angle_val.setMinimumWidth(30)
-        cl.addWidget(self.lbl_cube_angle_val, 5, 3)
+        cl.addWidget(self.lbl_cube_angle_val, 5, 2)
+        btn_cube_auto_angle = QPushButton("自动")
+        btn_cube_auto_angle.setMaximumWidth(50)
+        btn_cube_auto_angle.clicked.connect(self._auto_cube_angle)
+        cl.addWidget(btn_cube_auto_angle, 5, 3)
         self.sld_cube_start_angle.valueChanged.connect(lambda v: self.lbl_cube_angle_val.setText(f"{v}°"))
 
         btn_apply_cube = QPushButton("应用")
@@ -271,17 +273,17 @@ class MainWindow(QMainWindow):
         cyl.addWidget(QLabel("直径:"), 1, 0)
         self.edt_cyl_diam = QLineEdit("4"); cyl.addWidget(self.edt_cyl_diam, 1, 1)
         cyl.addWidget(QLabel("高(Z):"), 1, 2)
-        self.edt_cyl_h = QLineEdit("8"); cyl.addWidget(self.edt_cyl_h, 1, 3)
+        self.edt_cyl_h = QLineEdit("2"); cyl.addWidget(self.edt_cyl_h, 1, 3)
 
         cyl.addWidget(QLabel("离柱距离:"), 2, 0)
-        self.edt_cyl_dist = QLineEdit("3"); cyl.addWidget(self.edt_cyl_dist, 2, 1)
+        self.edt_cyl_dist = QLineEdit("1"); cyl.addWidget(self.edt_cyl_dist, 2, 1)
         cyl.addWidget(QLabel("水平步距(°):"), 2, 2)
         self.edt_cyl_astep = QLineEdit("15"); cyl.addWidget(self.edt_cyl_astep, 2, 3)
 
         cyl.addWidget(QLabel("垂直步距:"), 3, 0)
         self.edt_cyl_vstep = QLineEdit("2"); cyl.addWidget(self.edt_cyl_vstep, 3, 1)
         cyl.addWidget(QLabel("速度:"), 3, 2)
-        self.edt_cyl_speed = QLineEdit("2"); cyl.addWidget(self.edt_cyl_speed, 3, 3)
+        self.edt_cyl_speed = QLineEdit("1"); cyl.addWidget(self.edt_cyl_speed, 3, 3)
 
         cyl.addWidget(QLabel("路径:"), 4, 0)
         self.cbo_cyl_type = QComboBox()
@@ -292,10 +294,14 @@ class MainWindow(QMainWindow):
         self.sld_cyl_start_angle = QSlider(Qt.Horizontal)
         self.sld_cyl_start_angle.setRange(0, 360)
         self.sld_cyl_start_angle.setValue(0)
-        cyl.addWidget(self.sld_cyl_start_angle, 5, 1, 1, 2)
+        cyl.addWidget(self.sld_cyl_start_angle, 5, 1)
         self.lbl_cyl_angle_val = QLabel("0°")
         self.lbl_cyl_angle_val.setMinimumWidth(30)
-        cyl.addWidget(self.lbl_cyl_angle_val, 5, 3)
+        cyl.addWidget(self.lbl_cyl_angle_val, 5, 2)
+        btn_cyl_auto_angle = QPushButton("自动")
+        btn_cyl_auto_angle.setMaximumWidth(50)
+        btn_cyl_auto_angle.clicked.connect(self._auto_cyl_angle)
+        cyl.addWidget(btn_cyl_auto_angle, 5, 3)
         self.sld_cyl_start_angle.valueChanged.connect(lambda v: self.lbl_cyl_angle_val.setText(f"{v}°"))
 
         btn_apply_cyl = QPushButton("应用")
@@ -321,6 +327,9 @@ class MainWindow(QMainWindow):
         rl.addWidget(self.btn_clear)
         self.btn_save = QPushButton("保存航线 (JSON)")
         rl.addWidget(self.btn_save)
+        self.btn_copy = QPushButton("复制航线到剪贴板")
+        self.btn_copy.clicked.connect(self.copy_route_to_clipboard)
+        rl.addWidget(self.btn_copy)
         self.btn_load_route = QPushButton("加载航线 (JSON)")
         rl.addWidget(self.btn_load_route)
 
@@ -344,18 +353,27 @@ class MainWindow(QMainWindow):
         scroll.setWidget(ctrl)
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setMinimumWidth(320)
-        scroll.setMaximumWidth(400)
-        splitter.addWidget(scroll)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 0)
-        main_layout.addWidget(splitter)
+        scroll.setFixedWidth(340)
+        main_layout.addWidget(self.viewer)
+        main_layout.addWidget(scroll)
 
         # -- 信号连接 --
         self.btn_load.clicked.connect(self.load_point_cloud)
         self.btn_clear.clicked.connect(self.clear_route)
         self.btn_save.clicked.connect(self.save_route)
         self.btn_load_route.clicked.connect(self.load_route)
+
+        # 立方体区域参数变化时重新计算
+        self.edt_cx.textChanged.connect(lambda: self._on_cube_area_changed())
+        self.edt_cy.textChanged.connect(lambda: self._on_cube_area_changed())
+        self.edt_dx.textChanged.connect(lambda: self._on_cube_area_changed())
+        self.edt_dy.textChanged.connect(lambda: self._on_cube_area_changed())
+
+        # 圆柱体区域参数变化时重新计算
+        self.edt_cyl_cx.textChanged.connect(lambda: self._on_cyl_area_changed())
+        self.edt_cyl_cy.textChanged.connect(lambda: self._on_cyl_area_changed())
+        self.edt_cyl_diam.textChanged.connect(lambda: self._on_cyl_area_changed())
+        self.edt_cyl_dist.textChanged.connect(lambda: self._on_cyl_area_changed())
 
         self.btn_mode_preview.clicked.connect(lambda: self._switch_mode("preview"))
         self.btn_mode_route.clicked.connect(lambda: self._switch_mode("route"))
@@ -480,18 +498,88 @@ class MainWindow(QMainWindow):
                 mn = self.points.min(axis=0)
                 mx = self.points.max(axis=0)
 
+                # 起飞Z = 最低那批点的平均值（底部1%的点）
+                z_sorted = np.sort(self.points[:, 2])
+                bottom_n = max(1, int(len(z_sorted) * 0.01))
+                takeoff_z = float(np.mean(z_sorted[:bottom_n]))
+                self.edt_takeoff_z.setText(f"{takeoff_z:.1f}")
+
+                # 最低飞行Z值 = 点云最低点
+                self.edt_min_z.setText(f"{float(mn[2]):.1f}")
+
                 self.edt_z.setText(f"{mx[2] + 3:.1f}")
 
                 center = (mn + mx) / 2
                 self.edt_cx.setText(f"{center[0]:.1f}")
                 self.edt_cy.setText(f"{center[1]:.1f}")
-                self.edt_cz.setText(f"{mn[2]:.1f}")
-                self.edt_dz.setText(f"{mx[2] - mn[2]:.1f}")
 
+                # 立方体四角
+                dx_default = 4.0
+                dy_default = 4.0
+                try:
+                    dx_default = float(self.edt_dx.text())
+                    dy_default = float(self.edt_dy.text())
+                except ValueError:
+                    pass
+                half_x, half_y = dx_default / 2, dy_default / 2
+                cube_corners = [
+                    (center[0] - half_x, center[1] - half_y),
+                    (center[0] + half_x, center[1] - half_y),
+                    (center[0] + half_x, center[1] + half_y),
+                    (center[0] - half_x, center[1] + half_y),
+                ]
+
+                # 立方体底面Z
+                cube_cz = self._compute_default_cz(cube_corners, takeoff_z)
+                self.edt_cz.setText(f"{cube_cz:.1f}")
+
+                # 圆柱体圆周四点
                 self.edt_cyl_cx.setText(f"{center[0]:.1f}")
                 self.edt_cyl_cy.setText(f"{center[1]:.1f}")
-                self.edt_cyl_cz.setText(f"{mn[2]:.1f}")
-                self.edt_cyl_h.setText(f"{mx[2] - mn[2]:.1f}")
+                cyl_radius = 2.0
+                cyl_dist = 3.0
+                try:
+                    cyl_radius = float(self.edt_cyl_diam.text()) / 2
+                    cyl_dist = float(self.edt_cyl_dist.text())
+                except ValueError:
+                    pass
+                R = cyl_radius + cyl_dist
+                cyl_corners = [
+                    (center[0] + R, center[1]),
+                    (center[0], center[1] + R),
+                    (center[0] - R, center[1]),
+                    (center[0], center[1] - R),
+                ]
+                cyl_cz = self._compute_default_cz(cyl_corners, takeoff_z)
+                self.edt_cyl_cz.setText(f"{cyl_cz:.1f}")
+                max_z_cube = self._compute_max_z_for_area(cube_corners)
+                if max_z_cube is not None:
+                    max_dz = max(1.0, max_z_cube - cube_cz)
+                    self.edt_dz.setText(f"{min(mx[2] - mn[2], max_dz):.1f}")
+                else:
+                    self.edt_dz.setText(f"{mx[2] - mn[2]:.1f}")
+
+                # 圆柱体高度受限于圆周上四点最近点Z - 0.5
+                cyl_radius = 2.0  # 默认直径4
+                cyl_dist = 3.0
+                try:
+                    cyl_radius = float(self.edt_cyl_diam.text()) / 2
+                    cyl_dist = float(self.edt_cyl_dist.text())
+                except ValueError:
+                    pass
+                R = cyl_radius + cyl_dist
+                cyl_circle_pts = [
+                    (center[0] + R, center[1]),
+                    (center[0], center[1] + R),
+                    (center[0] - R, center[1]),
+                    (center[0], center[1] - R),
+                ]
+                max_z_cyl = self._compute_max_z_for_area(cyl_circle_pts)
+                if max_z_cyl is not None:
+                    max_h = max(1.0, max_z_cyl - cyl_cz)
+                    self.edt_cyl_h.setText(f"{min(mx[2] - mn[2], max_h):.1f}")
+                else:
+                    self.edt_cyl_h.setText(f"{mx[2] - mn[2]:.1f}")
 
             self.progress_bar.setValue(100)
 
@@ -518,29 +606,63 @@ class MainWindow(QMainWindow):
 
         if hasattr(self, '_polygon_vertices') and self._polygon_vertices:
             poly = np.array(self._polygon_vertices)
-            xmin, ymin = poly[:, 0].min(), poly[:, 1].min()
-            xmax, ymax = poly[:, 0].max(), poly[:, 1].max()
             use_polygon = True
         elif self.points is not None and len(self.points) > 0:
             mn = self.points.min(axis=0)
             mx = self.points.max(axis=0)
-            xmin, ymin = mn[0], mn[1]
-            xmax, ymax = mx[0], mx[1]
+            poly = np.array([
+                [mn[0], mn[1]], [mx[0], mn[1]],
+                [mx[0], mx[1]], [mn[0], mx[1]]
+            ])
             use_polygon = False
         else:
             QMessageBox.warning(self, "提示", "请先加载点云或多边形选择区域")
             return
 
+        # 计算多边形主方向（用最长边的方向作为扫描方向）
+        n_poly = len(poly)
+        max_len = 0
+        main_dir = np.array([1.0, 0.0])
+        for i in range(n_poly):
+            edge = poly[(i + 1) % n_poly][:2] - poly[i][:2]
+            length = np.linalg.norm(edge)
+            if length > max_len:
+                max_len = length
+                main_dir = edge / length
+
+        # 构建旋转矩阵：将多边形旋转到轴对齐
+        # 扫描方向沿X轴，垂直方向沿Y轴
+        cos_a = main_dir[0]
+        sin_a = main_dir[1]
+        R_to_axis = np.array([[cos_a, sin_a], [-sin_a, cos_a]])  # 旋转到轴对齐
+        R_from_axis = np.array([[cos_a, -sin_a], [sin_a, cos_a]])  # 旋转回来
+
+        # 旋转多边形到轴对齐坐标系
+        poly_rot = np.dot(poly[:, :2], R_to_axis.T)
+        xmin, ymin = poly_rot[:, 0].min(), poly_rot[:, 1].min()
+        xmax, ymax = poly_rot[:, 0].max(), poly_rot[:, 1].max()
+
         if xmin >= xmax or ymin >= ymax:
             QMessageBox.warning(self, "输入错误", "区域范围无效")
             return
+
+        # 高Z受限于区域四角最近点Z - 0.5
+        flat_corners = [
+            (poly[0][0], poly[0][1]), (poly[1][0], poly[1][1]),
+            (poly[2][0], poly[2][1]), (poly[3][0], poly[3][1]),
+        ]
+        max_z = self._compute_max_z_for_area(flat_corners)
+        if max_z is not None and z > max_z:
+            z = max_z
+            self.edt_z.setText(f"{z:.1f}")
+            QMessageBox.information(self, "高度调整", f"飞行高度已调整为 {z:.1f}m（受限于区域上方点云）")
 
         y_center = (ymin + ymax) / 2
         y_half = (ymax - ymin) / 2 if ymax != ymin else 1.0
         span = y_half * 2
 
-        def curved_z(y):
-            t = (y - y_center) / y_half  # -1 到 1
+        def curved_z(y_local):
+            t = (y_local - y_center) / y_half
             return z + curvature * span * (1 - t * t) / 4
 
         def point_in_polygon(x, y, polygon_xy):
@@ -555,51 +677,44 @@ class MainWindow(QMainWindow):
                 j = i
             return inside
 
-        poly_xy = None
-        if use_polygon:
-            poly_xy = [(p[0], p[1]) for p in self._polygon_vertices]
-
         self.waypoints = []
-        # 起始点选择离原点最近的角
-        corners = [(xmin, ymin), (xmax, ymin), (xmin, ymax), (xmax, ymax)]
-        best = min(corners, key=lambda c: c[0]**2 + c[1]**2)
-        start_y = best[1]
-        start_x = best[0]
-        # 从起始角开始：Y方向朝另一端扫描，X方向朝另一端扫描
-        direction = 1 if start_x == xmin else -1
-        y = start_y
-        y_step = spacing if start_y == ymin else -spacing
+        direction = 1
+        y = ymin
+        y_step = spacing
 
-        while (y_step > 0 and y <= ymax) or (y_step < 0 and y >= ymin):
+        while y <= ymax + y_step * 0.5:
             if direction == 1:
                 x_start, x_end = xmin, xmax
             else:
                 x_start, x_end = xmax, xmin
 
-            if use_polygon and poly_xy:
-                xs = np.linspace(xmin, xmax, max(100, int((xmax - xmin) / 0.5)))
-                inside_xs = [x for x in xs if point_in_polygon(x, y, poly_xy)]
-                if not inside_xs:
-                    y += y_step
-                    continue
-                if direction == 1:
-                    x_start, x_end = inside_xs[0], inside_xs[-1]
-                else:
-                    x_start, x_end = inside_xs[-1], inside_xs[0]
+            # 在旋转坐标系中裁剪到多边形内
+            xs = np.linspace(xmin, xmax, max(100, int((xmax - xmin) / 0.5)))
+            inside_xs = [x for x in xs if point_in_polygon(x, y, poly_rot)]
+            if not inside_xs:
+                y += spacing
+                continue
+            if direction == 1:
+                x_start, x_end = inside_xs[0], inside_xs[-1]
+            else:
+                x_start, x_end = inside_xs[-1], inside_xs[0]
 
-            # 沿扫描线均匀分布多个航点
             line_len = abs(x_end - x_start)
             n_pts = max(2, int(line_len / wp_spacing) + 1)
             z_line = curved_z(y)
 
             for j in range(n_pts):
-                x = x_start + (x_end - x_start) * j / (n_pts - 1)
-                pos = np.array([x, y, z_line])
-                # 机头垂直于航线方向，朝扫描区域中心
+                x_local = x_start + (x_end - x_start) * j / (n_pts - 1)
+                # 从轴对齐坐标系旋转回原始坐标系
+                xy_orig = np.dot([x_local, y], R_from_axis.T)
+                pos = np.array([xy_orig[0], xy_orig[1], z_line])
+                # 机头方向：垂直于扫描线，朝区域中心
+                # normal 是垂直于扫描方向的单位向量（在原始坐标系中）
+                normal = np.array([-sin_a, cos_a])
                 if y >= y_center:
-                    heading = np.array([0.0, -1.0, 0.0])
+                    heading = np.array([-normal[0], -normal[1], 0.0])
                 else:
-                    heading = np.array([0.0, 1.0, 0.0])
+                    heading = np.array([normal[0], normal[1], 0.0])
                 target = pos + heading
                 quat = look_at_quaternion(target, pos)
                 self.waypoints.append({
@@ -640,7 +755,20 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "输入错误", "直径、高度和步距必须为正数")
             return
 
+        # 高度受限于圆周四点最近点Z - 0.5
         radius = diam / 2 + dist
+        cyl_circle_pts = [
+            (cx + radius, cy),
+            (cx, cy + radius),
+            (cx - radius, cy),
+            (cx, cy - radius),
+        ]
+        max_z = self._compute_max_z_for_area(cyl_circle_pts)
+        if max_z is not None and (cz + h) > max_z:
+            h = max(1.0, max_z - cz)
+            self.edt_cyl_h.setText(f"{h:.1f}")
+            QMessageBox.information(self, "高度调整", f"圆柱体高度已调整为 {h:.1f}m（受限于区域上方点云）")
+
         route_type = self.cbo_cyl_type.currentText()
         self.waypoints = []
 
@@ -679,7 +807,7 @@ class MainWindow(QMainWindow):
             num_cols = max(1, int(360 / max(1, astep)))
             num_layers = max(1, int(h / vstep))
 
-            for col in range(num_cols + 1):
+            for col in range(num_cols):  # 不含num_cols，因为2π=0与col=0重复
                 angle = start_angle + (col / num_cols) * 2 * np.pi
                 rx = cx + radius * np.cos(angle)
                 ry = cy + radius * np.sin(angle)
@@ -734,6 +862,27 @@ class MainWindow(QMainWindow):
         if cstep <= 0 or vstep <= 0 or dz <= 0:
             QMessageBox.warning(self, "输入错误", "步距和高度必须为正数")
             return
+
+        # 高度受限于区域四角最近点Z - 0.5
+        half_x_check = dx / 2
+        half_y_check = dy / 2
+        cos_a_check = np.cos(start_angle)
+        sin_a_check = np.sin(start_angle)
+        cube_corners = [
+            (cx + (-half_x_check) * cos_a_check - (-half_y_check) * sin_a_check,
+             cy + (-half_x_check) * sin_a_check + (-half_y_check) * cos_a_check),
+            (cx + (half_x_check) * cos_a_check - (-half_y_check) * sin_a_check,
+             cy + (half_x_check) * sin_a_check + (-half_y_check) * cos_a_check),
+            (cx + (half_x_check) * cos_a_check - (half_y_check) * sin_a_check,
+             cy + (half_x_check) * sin_a_check + (half_y_check) * cos_a_check),
+            (cx + (-half_x_check) * cos_a_check - (half_y_check) * sin_a_check,
+             cy + (-half_x_check) * sin_a_check + (half_y_check) * cos_a_check),
+        ]
+        max_z = self._compute_max_z_for_area(cube_corners)
+        if max_z is not None and (cz + dz) > max_z:
+            dz = max(1.0, max_z - cz)
+            self.edt_dz.setText(f"{dz:.1f}")
+            QMessageBox.information(self, "高度调整", f"立方体高度已调整为 {dz:.1f}m（受限于区域上方点云）")
 
         half_x = dx / 2
         half_y = dy / 2
@@ -879,20 +1028,63 @@ class MainWindow(QMainWindow):
         """应用面状航线参数并重新生成航线"""
         if hasattr(self, '_polygon_vertices') and self._polygon_vertices:
             self.generate_flat_route()
-        elif self.points is not None and len(self.points) > 0:
-            self.generate_flat_route()
         else:
-            QMessageBox.warning(self, "提示", "请先加载点云或多边形选择区域")
+            QMessageBox.warning(self, "提示", "请先点击选择区域按钮并绘制多边形")
+
+    def _auto_cube_angle(self):
+        """自动计算立方体起始角度：使第一个航点离起飞点最近"""
+        if self.points is None or len(self.points) == 0:
+            QMessageBox.warning(self, "提示", "请先加载点云")
+            return
+        try:
+            cx = float(self.edt_cx.text())
+            cy = float(self.edt_cy.text())
+            dx = float(self.edt_dx.text())
+            dy = float(self.edt_dy.text())
+        except ValueError:
+            return
+        half_x, half_y = dx / 2, dy / 2
+        best_angle, best_dist = 0, float('inf')
+        for deg in range(361):
+            a = np.radians(deg)
+            cos_a, sin_a = np.cos(a), np.sin(a)
+            # corners[0] = (-halfX, -halfY) 旋转后
+            px = cx + (-half_x * cos_a - (-half_y) * sin_a)
+            py = cy + (-half_x * sin_a + (-half_y) * cos_a)
+            d = px * px + py * py
+            if d < best_dist:
+                best_dist = d
+                best_angle = deg
+        self.sld_cube_start_angle.setValue(best_angle)
+
+    def _auto_cyl_angle(self):
+        """自动计算圆柱体起始角度：使第一个航点离起飞点最近"""
+        if self.points is None or len(self.points) == 0:
+            QMessageBox.warning(self, "提示", "请先加载点云")
+            return
+        try:
+            cx = float(self.edt_cyl_cx.text())
+            cy = float(self.edt_cyl_cy.text())
+        except ValueError:
+            return
+        # 最优角度：从圆心指向起飞点(0,0)的方向
+        angle_rad = np.arctan2(-cy, -cx)
+        angle_deg = int(np.degrees(angle_rad)) % 360
+        self.sld_cyl_start_angle.setValue(angle_deg)
 
     def _apply_cube_params(self):
         """应用立方体航线参数并重新生成航线"""
         if self.waypoints:
             self.generate_cube_route()
+        else:
+            QMessageBox.warning(self, "提示", "请先点击放置并右键确认生成航线")
 
     def _apply_cyl_params(self):
         """应用圆柱体航线参数并重新生成航线"""
         if self.waypoints:
             self.generate_cylinder_route()
+        else:
+            QMessageBox.warning(self, "提示", "请先点击放置并右键确认生成航线")
 
     def _toggle_heading(self, state):
         self.viewer.show_heading = (state == Qt.Checked)
@@ -915,6 +1107,131 @@ class MainWindow(QMainWindow):
                 self.viewer._safe_distance = val
                 if self.waypoints:
                     self._check_safety_distance()
+        except ValueError:
+            pass
+
+    def _on_cube_area_changed(self):
+        """立方体区域参数变化时重新计算cz和dz"""
+        if self.points is None or len(self.points) == 0:
+            return
+        try:
+            cx = float(self.edt_cx.text())
+            cy = float(self.edt_cy.text())
+            takeoff_z = float(self.edt_takeoff_z.text())
+            dx = float(self.edt_dx.text())
+            dy = float(self.edt_dy.text())
+        except ValueError:
+            return
+        half_x, half_y = dx / 2, dy / 2
+        corners = [
+            (cx - half_x, cy - half_y), (cx + half_x, cy - half_y),
+            (cx + half_x, cy + half_y), (cx - half_x, cy + half_y),
+        ]
+        cz = self._compute_default_cz(corners, takeoff_z)
+        self.edt_cz.setText(f"{cz:.1f}")
+        max_z = self._compute_max_z_for_area(corners)
+        if max_z is not None:
+            max_dz = max(1.0, max_z - cz)
+            try:
+                cur_dz = float(self.edt_dz.text())
+                if cur_dz > max_dz:
+                    self.edt_dz.setText(f"{max_dz:.1f}")
+            except ValueError:
+                self.edt_dz.setText(f"{max_dz:.1f}")
+
+    def _on_cyl_area_changed(self):
+        """圆柱体区域参数变化时重新计算cz和h"""
+        if self.points is None or len(self.points) == 0:
+            return
+        try:
+            cx = float(self.edt_cyl_cx.text())
+            cy = float(self.edt_cyl_cy.text())
+            takeoff_z = float(self.edt_takeoff_z.text())
+            diam = float(self.edt_cyl_diam.text())
+            dist = float(self.edt_cyl_dist.text())
+        except ValueError:
+            return
+        R = diam / 2 + dist
+        corners = [
+            (cx + R, cy), (cx, cy + R),
+            (cx - R, cy), (cx, cy - R),
+        ]
+        cz = self._compute_default_cz(corners, takeoff_z)
+        self.edt_cyl_cz.setText(f"{cz:.1f}")
+        max_z = self._compute_max_z_for_area(corners)
+        if max_z is not None:
+            max_h = max(1.0, max_z - cz)
+            try:
+                cur_h = float(self.edt_cyl_h.text())
+                if cur_h > max_h:
+                    self.edt_cyl_h.setText(f"{max_h:.1f}")
+            except ValueError:
+                self.edt_cyl_h.setText(f"{max_h:.1f}")
+
+    def _compute_default_cz(self, corners, takeoff_z):
+        """计算底面中心默认Z值：>= takeoff_z+0.5 且 >= 四个角附近点云最低Z+0.5"""
+        cz_min = takeoff_z + 0.5
+        if self.points is not None and len(self.points) > 0:
+            for cx, cy in corners:
+                dx = self.points[:, 0] - cx
+                dy = self.points[:, 1] - cy
+                dist_sq = dx * dx + dy * dy
+                mask = dist_sq < 4.0  # 半径2m内的点
+                if np.any(mask):
+                    nearby_z = np.min(self.points[mask, 2])
+                    cz_min = max(cz_min, nearby_z + 0.5)
+        return cz_min
+
+    def _compute_max_z_for_area(self, corners):
+        """计算区域最大允许飞行Z值：四个角点最近点的最大Z - 0.5"""
+        if self.points is None or len(self.points) == 0:
+            return None
+        max_z = -float('inf')
+        for cx, cy in corners:
+            dx = self.points[:, 0] - cx
+            dy = self.points[:, 1] - cy
+            dist_sq = dx * dx + dy * dy
+            idx = np.argmin(dist_sq)
+            nearest_z = self.points[idx, 2]
+            if nearest_z > max_z:
+                max_z = nearest_z
+        return max_z - 0.5 if max_z > -float('inf') else None
+
+    def _on_takeoff_z_changed(self, text):
+        try:
+            takeoff_z = float(text)
+            # 立方体四角
+            try:
+                cx = float(self.edt_cx.text())
+                cy = float(self.edt_cy.text())
+                dx = float(self.edt_dx.text())
+                dy = float(self.edt_dy.text())
+            except ValueError:
+                cx, cy, dx, dy = 0.0, 0.0, 4.0, 4.0
+            half_x, half_y = dx / 2, dy / 2
+            cube_corners = [
+                (cx - half_x, cy - half_y), (cx + half_x, cy - half_y),
+                (cx + half_x, cy + half_y), (cx - half_x, cy + half_y),
+            ]
+            cz = self._compute_default_cz(cube_corners, takeoff_z)
+            self.edt_cz.setText(f"{cz:.1f}")
+
+            # 圆柱体圆周四点
+            try:
+                cyl_cx = float(self.edt_cyl_cx.text())
+                cyl_cy = float(self.edt_cyl_cy.text())
+                cyl_diam = float(self.edt_cyl_diam.text())
+                cyl_dist = float(self.edt_cyl_dist.text())
+            except ValueError:
+                cyl_cx, cyl_cy = cx, cy
+                cyl_diam, cyl_dist = 4.0, 3.0
+            R = cyl_diam / 2 + cyl_dist
+            cyl_corners = [
+                (cyl_cx + R, cyl_cy), (cyl_cx, cyl_cy + R),
+                (cyl_cx - R, cyl_cy), (cyl_cx, cyl_cy - R),
+            ]
+            cyl_cz = self._compute_default_cz(cyl_corners, takeoff_z)
+            self.edt_cyl_cz.setText(f"{cyl_cz:.1f}")
         except ValueError:
             pass
 
@@ -1038,6 +1355,55 @@ class MainWindow(QMainWindow):
         if not path:
             return
 
+        # 碰撞检测警告（不影响保存）
+        warnings = []
+        safe_dist = self.viewer._safe_distance
+        for i in range(len(self.waypoints) - 1):
+            d = np.linalg.norm(self.waypoints[i+1]['pos'] - self.waypoints[i]['pos'])
+            if d < safe_dist:
+                warnings.append(f"{i+1}-{i+2} 号航点间距 {d:.2f}m < {safe_dist}m")
+        collision_dist = safe_dist * 0.5
+        tree = self._get_kdtree()
+        if tree is not None:
+            wp_positions = np.array([wp['pos'] for wp in self.waypoints])
+            dists, _ = tree.query(wp_positions)
+            for i, dist in enumerate(dists):
+                if dist < collision_dist:
+                    warnings.append(f"{i+1} 号航点碰撞 (距点云 {dist:.2f}m)")
+        try:
+            min_z = float(self.edt_min_z.text())
+        except ValueError:
+            min_z = -999
+        if min_z > -900:
+            for i, wp in enumerate(self.waypoints):
+                if wp['pos'][2] < min_z:
+                    warnings.append(f"{i+1} 号航点Z={wp['pos'][2]:.1f}m < {min_z}m")
+        if warnings:
+            msg = f"检测到 {len(warnings)} 个问题:\n\n" + "\n".join(warnings[:10])
+            if len(warnings) > 10:
+                msg += f"\n...等共 {len(warnings)} 个"
+            msg += "\n\n是否仍要保存？"
+            reply = QMessageBox.warning(self, "碰撞警告", msg,
+                                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if reply == QMessageBox.No:
+                return
+
+        data = self._build_route_json()
+        if data is None:
+            return
+
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            QMessageBox.information(self, "已保存", f"航线已保存到:\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"保存失败:\n{str(e)}")
+
+    def _build_route_json(self):
+        """构建航线JSON数据（供保存和复制共用）"""
+        if not self.waypoints:
+            return None
+
         try:
             takeoff_z = float(self.edt_takeoff_z.text())
         except ValueError:
@@ -1047,7 +1413,6 @@ class MainWindow(QMainWindow):
         except ValueError:
             takeoff_yaw = 0.0
 
-        # 起飞偏航角转四元数，再转换到雷达 IMU 坐标系
         yaw_rad = np.radians(takeoff_yaw)
         takeoff_quat = quat_map_to_odom(np.array([np.cos(yaw_rad / 2), 0, 0, np.sin(yaw_rad / 2)]))
 
@@ -1071,7 +1436,6 @@ class MainWindow(QMainWindow):
             }
 
         poses = []
-        # 第1个点：原点 (0,0,0)，方向为起飞偏航角
         poses.append({
             "header": {"stamp": {"sec": 0, "nsec": 0}, "frame_id": "camera_init"},
             "pose": {
@@ -1087,11 +1451,8 @@ class MainWindow(QMainWindow):
         for wp in self.waypoints:
             poses.append(_wp_to_pose(wp))
 
-        data = {
-            "header": {
-                "stamp": {"sec": 0, "nsec": 0},
-                "frame_id": "camera_init"
-            },
+        return {
+            "header": {"stamp": {"sec": 0, "nsec": 0}, "frame_id": "camera_init"},
             "poses": poses,
             "bridge": {
                 "type": self.cmb_bridge_type.currentText(),
@@ -1103,12 +1464,16 @@ class MainWindow(QMainWindow):
             }
         }
 
-        try:
-            with open(path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-            QMessageBox.information(self, "已保存", f"航线已保存到:\n{path}")
-        except Exception as e:
-            QMessageBox.critical(self, "错误", f"保存失败:\n{str(e)}")
+    def copy_route_to_clipboard(self):
+        """复制航线JSON到剪贴板"""
+        data = self._build_route_json()
+        if data is None:
+            QMessageBox.information(self, "提示", "没有航线可复制")
+            return
+        json_str = json.dumps(data, indent=2, ensure_ascii=False)
+        from PyQt5.QtWidgets import QApplication
+        QApplication.clipboard().setText(json_str)
+        QMessageBox.information(self, "已复制", f"航线已复制到剪贴板（{len(data['poses'])} 个航点）")
 
     # ─── 加载航线（兼容 nav_msgs/Path 和旧格式）───
     def load_route(self):

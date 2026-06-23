@@ -13,9 +13,11 @@ try:
     from vtkmodules.vtkRenderingCore import (
         vtkActor, vtkPolyDataMapper, vtkRenderer,
         vtkPoints, vtkPolyData, vtkVertexGlyphFilter,
-        vtkFollower, vtkVectorText
+        vtkFollower, vtkVectorText, vtkBillboardTextActor3D
     )
-    from vtkmodules.vtkFiltersSources import vtkSphereSource, vtkLineSource
+    from vtkmodules.vtkFiltersSources import vtkSphereSource, vtkLineSource, vtkArrowSource
+    from vtkmodules.vtkFiltersGeneral import vtkTransformPolyDataFilter
+    from vtkmodules.vtkCommonTransforms import vtkTransform
     from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyLine
     from vtkmodules.vtkCommonCore import vtkPoints as vtkPointsBase
     VTK_AVAILABLE = True
@@ -28,8 +30,10 @@ except ImportError:
         from vtk import (
             vtkActor, vtkPolyDataMapper, vtkRenderer,
             vtkPoints, vtkPolyData, vtkVertexGlyphFilter,
-            vtkSphereSource, vtkLineSource, vtkCellArray,
+            vtkSphereSource, vtkLineSource, vtkArrowSource, vtkCellArray,
             vtkPolyLine, vtkFollower, vtkVectorText,
+            vtkBillboardTextActor3D,
+            vtkTransformPolyDataFilter, vtkTransform,
         )
     except ImportError:
         VTK_AVAILABLE = False
@@ -351,6 +355,7 @@ class VTKViewer(QWidget):
         if not VTK_AVAILABLE or len(points) == 0:
             return
         self.clear_actors()
+        self._add_scene_axes()
         self.points_data = points
 
         MAX_RENDER_POINTS = 5_000_000
@@ -500,6 +505,8 @@ class VTKViewer(QWidget):
             self.renderer.RemoveActor(self._actors[i])
             del self._actors[i]
 
+        self._add_scene_axes()
+
         n = len(waypoints)
         BATCH_THRESHOLD = 50
 
@@ -525,7 +532,7 @@ class VTKViewer(QWidget):
         actor = vtkActor()
         actor.SetMapper(mapper)
         actor.GetProperty().SetColor(0.0, 1.0, 0.3)
-        actor.GetProperty().SetLineWidth(2.5)
+        actor.GetProperty().SetLineWidth(3.5)
         self.renderer.AddActor(actor)
         self._actors.append(actor)
 
@@ -631,18 +638,18 @@ class VTKViewer(QWidget):
 
             # 标签只在少量航点时显示
             for i, wp in enumerate(waypoints):
-                txt_src = vtkVectorText()
-                txt_src.SetText(str(i + 1))
-                txt_m = vtkPolyDataMapper()
-                txt_m.SetInputConnection(txt_src.GetOutputPort())
-                follower = vtkFollower()
-                follower.SetMapper(txt_m)
-                follower.SetScale(label_offset * 0.6, label_offset * 0.6, label_offset * 0.6)
-                follower.SetPosition(wp['pos'][0], wp['pos'][1], wp['pos'][2] + label_offset * 2)
-                follower.GetProperty().SetColor(0.0, 0.2, 0.8)
-                follower.SetCamera(self.renderer.GetActiveCamera())
-                self.renderer.AddActor(follower)
-                self._actors.append(follower)
+                label = vtkBillboardTextActor3D()
+                label.SetInput(str(i + 1))
+                label.SetPosition(wp['pos'][0], wp['pos'][1], wp['pos'][2] + label_offset * 2)
+                label.SetScale(label_offset * 0.6, label_offset * 0.6, label_offset * 0.6)
+                label.GetTextProperty().SetColor(0.0, 0.2, 0.8)
+                label.GetTextProperty().SetFontSize(24)
+                label.GetTextProperty().SetBackgroundColor(1.0, 1.0, 1.0)
+                label.GetTextProperty().SetBackgroundOpacity(0.8)
+                label.GetTextProperty().SetFrame(True)
+                label.GetTextProperty().SetFrameColor(0.8, 0.8, 0.8)
+                self.renderer.AddActor(label)
+                self._actors.append(label)
 
         # ── 机头方向 ──
         if getattr(self, 'show_heading', True) and n >= 2:
@@ -888,6 +895,7 @@ class VTKViewer(QWidget):
         self.place_mode = True
         self._place_preview_pos = None
         self._place_preview_actor = None
+        self._set_view("top")
 
     def exit_place_mode(self, clear_marker=True):
         self.place_mode = False
@@ -903,7 +911,7 @@ class VTKViewer(QWidget):
 
         sphere = vtkSphereSource()
         sphere.SetCenter(pos.tolist())
-        sphere.SetRadius(0.5)
+        sphere.SetRadius(0.3)
         sphere.Update()
         m = vtkPolyDataMapper()
         m.SetInputConnection(sphere.GetOutputPort())
@@ -1075,22 +1083,45 @@ class VTKViewer(QWidget):
         self.vtk_widget.GetRenderWindow().Render()
 
     def _add_scene_axes(self):
-        """添加坐标轴和网格到场景"""
-        axes = [
-            ((0, 0, 0), (8, 0, 0), (1, 0, 0)),
-            ((0, 0, 0), (0, 8, 0), (0, 1, 0)),
-            ((0, 0, 0), (0, 0, 8), (0, 0, 1)),
+        """添加坐标轴（带箭头）和网格到场景"""
+        arrow_len = 4.0
+        axes_config = [
+            # (color, rotate_func) - 箭头默认沿X轴
+            ((1, 0, 0), None),                    # X轴：无需旋转
+            ((0, 1, 0), (90, 0, 0, 1)),            # Y轴：绕Z旋转90°
+            ((0, 0, 1), (-90, 0, 1, 0)),           # Z轴：绕Y旋转-90°
         ]
-        for start, end, color in axes:
-            line = vtkLineSource()
-            line.SetPoint1(start)
-            line.SetPoint2(end)
-            m = vtkPolyDataMapper()
-            m.SetInputConnection(line.GetOutputPort())
+        for color, rot in axes_config:
+            arrow = vtkArrowSource()
+            arrow.SetShaftRadius(0.03)
+            arrow.SetTipRadius(0.08)
+            arrow.SetTipLength(0.25)
+            arrow.Update()
+
+            if rot:
+                angle, ax_x, ax_y, ax_z = rot
+                transform = vtkTransform()
+                transform.RotateWXYZ(angle, ax_x, ax_y, ax_z)
+                transform.Scale(arrow_len, arrow_len, arrow_len)
+                filt = vtkTransformPolyDataFilter()
+                filt.SetInputConnection(arrow.GetOutputPort())
+                filt.SetTransform(transform)
+                filt.Update()
+                m = vtkPolyDataMapper()
+                m.SetInputConnection(filt.GetOutputPort())
+            else:
+                transform = vtkTransform()
+                transform.Scale(arrow_len, arrow_len, arrow_len)
+                filt = vtkTransformPolyDataFilter()
+                filt.SetInputConnection(arrow.GetOutputPort())
+                filt.SetTransform(transform)
+                filt.Update()
+                m = vtkPolyDataMapper()
+                m.SetInputConnection(filt.GetOutputPort())
+
             a = vtkActor()
             a.SetMapper(m)
             a.GetProperty().SetColor(color)
-            a.GetProperty().SetLineWidth(3)
             self.renderer.AddActor(a)
             self._actors.append(a)
 

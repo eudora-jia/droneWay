@@ -266,7 +266,7 @@ export function generateCylinderZigzag(params) {
   const numLayers = Math.max(1, Math.floor(h / vstep))
   const waypoints = []
 
-  for (let col = 0; col <= numCols; col++) {
+  for (let col = 0; col < numCols; col++) {  // 不含numCols，因为2π=0与col=0重复
     const angle = startAngle + (col / numCols) * 2 * Math.PI
     const rx = cx + radius * Math.cos(angle)
     const ry = cy + radius * Math.sin(angle)
