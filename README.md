@@ -74,26 +74,9 @@ pyinstaller --onefile --windowed --name "BridgeRoutePlanner" main.py
 | `speed` | float | 飞行速度 (m/s) |
 | `action` | string | 动作类型: `fly`(飞行) / `scan`(扫描) |
 
-## 配置文件 config.json
-
-外参标定参数存放在 `config.json`，用于保存航线时将四元数从地图坐标系转换到雷达 IMU 坐标系。
-
-```json
-{
-  "airy_lidar_to_airy_imu_rotation": [
-    [0.0, -1.0, 0.0],
-    [-0.9996573, 0.0, -0.0261769],
-    [0.0261769, 0.0, -0.9996573]
-  ]
-}
-```
-
-| 参数 | 说明 |
-|------|------|
-| `airy_lidar_to_airy_imu_rotation` | 3x3 旋转矩阵，雷达 IMU 到 Airy IMU 的坐标变换 |
-
 ### 坐标系说明
 
 - 界面展示使用**地图坐标系**（方便预览）
 - 导出 JSON 中的四元数使用**雷达 IMU 坐标系**（供飞控使用）
 - 转换公式：`R_lidar = inv(airy_lidar_to_airy_imu_R) @ R_map`
+- 外参矩阵 `airy_lidar_to_airy_imu_R` 硬编码在 `quaternion_utils.py` 中

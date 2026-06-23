@@ -1,13 +1,6 @@
 """四元数与旋转矩阵工具函数"""
 
-import json
-import os
 import numpy as np
-
-# 加载外参配置
-_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
-with open(_CONFIG_PATH, 'r') as _f:
-    _config = json.load(_f)
 
 
 def rotation_matrix_from_vectors(forward, up):
@@ -86,8 +79,12 @@ def quaternion_forward(quat):
     return v / n if n > 1e-10 else np.array([1.0, 0.0, 0.0])
 
 
-# 雷达 IMU 到 Airy IMU 的旋转矩阵（从 config.json 读取）
-AIRY_LIDAR_TO_IMU_R = np.array(_config['airy_lidar_to_airy_imu_rotation'])
+# 雷达 IMU 到 Airy IMU 的旋转矩阵
+AIRY_LIDAR_TO_IMU_R = np.array([
+    [0.0, -1.0, 0.0],
+    [-0.9996573, 0.0, -0.0261769],
+    [0.0261769, 0.0, -0.9996573]
+])
 
 
 def quat_to_matrix(q):
