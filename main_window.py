@@ -14,7 +14,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont, QFontDatabase
 
 from pcd_parser import parse_pcd
-from quaternion_utils import look_at_quaternion
+from quaternion_utils import look_at_quaternion, quat_map_to_lidar
 from vtk_viewer import VTKViewer
 
 
@@ -1047,12 +1047,12 @@ class MainWindow(QMainWindow):
         except ValueError:
             takeoff_yaw = 0.0
 
-        # 起飞偏航角转四元数
+        # 起飞偏航角转四元数，再转换到雷达 IMU 坐标系
         yaw_rad = np.radians(takeoff_yaw)
-        takeoff_quat = np.array([np.cos(yaw_rad / 2), 0, 0, np.sin(yaw_rad / 2)])
+        takeoff_quat = quat_map_to_lidar(np.array([np.cos(yaw_rad / 2), 0, 0, np.sin(yaw_rad / 2)]))
 
         def _wp_to_pose(wp):
-            q = wp['quat']
+            q = quat_map_to_lidar(wp['quat'])
             return {
                 "header": {"stamp": {"sec": 0, "nsec": 0}, "frame_id": "map"},
                 "pose": {
