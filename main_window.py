@@ -18,6 +18,12 @@ from quaternion_utils import look_at_quaternion, quat_map_to_odom
 from vtk_viewer import VTKViewer
 
 
+class NoWheelSlider(QSlider):
+    """禁用滚轮事件的 QSlider，避免滚动鼠标时意外改变值"""
+    def wheelEvent(self, event):
+        event.ignore()
+
+
 class MainWindow(QMainWindow):
     """桥梁巡检航线规划工具 - 主窗口"""
 
@@ -186,7 +192,7 @@ class MainWindow(QMainWindow):
         self.edt_flat_speed = QLineEdit("1"); fl.addWidget(self.edt_flat_speed, 1, 3)
 
         fl.addWidget(QLabel("曲度:"), 2, 0)
-        self.sld_curvature = QSlider(Qt.Horizontal)
+        self.sld_curvature = NoWheelSlider(Qt.Horizontal)
         self.sld_curvature.setRange(0, 100)
         self.sld_curvature.setValue(0)
         fl.addWidget(self.sld_curvature, 2, 1, 1, 2)
@@ -236,7 +242,7 @@ class MainWindow(QMainWindow):
         self.edt_cspeed = QLineEdit("1"); cl.addWidget(self.edt_cspeed, 4, 1)
 
         cl.addWidget(QLabel("起始角度(°):"), 5, 0)
-        self.sld_cube_start_angle = QSlider(Qt.Horizontal)
+        self.sld_cube_start_angle = NoWheelSlider(Qt.Horizontal)
         self.sld_cube_start_angle.setRange(0, 360)
         self.sld_cube_start_angle.setValue(0)
         cl.addWidget(self.sld_cube_start_angle, 5, 1)
@@ -291,7 +297,7 @@ class MainWindow(QMainWindow):
         cyl.addWidget(self.cbo_cyl_type, 4, 1)
 
         cyl.addWidget(QLabel("起始角度(°):"), 5, 0)
-        self.sld_cyl_start_angle = QSlider(Qt.Horizontal)
+        self.sld_cyl_start_angle = NoWheelSlider(Qt.Horizontal)
         self.sld_cyl_start_angle.setRange(0, 360)
         self.sld_cyl_start_angle.setValue(0)
         cyl.addWidget(self.sld_cyl_start_angle, 5, 1)
