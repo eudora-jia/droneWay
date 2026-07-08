@@ -8,7 +8,8 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QLabel, QLineEdit, QPushButton, QComboBox,
     QFileDialog, QMessageBox, QButtonGroup, QSlider,
-    QProgressBar, QCheckBox, QGridLayout, QScrollArea, QTabWidget
+    QProgressBar, QCheckBox, QGridLayout, QScrollArea, QTabWidget,
+    QListWidget, QListWidgetItem
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
@@ -90,26 +91,43 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         gl.addWidget(self.progress_bar)
 
-        # Z值过滤
-        z_filter_row = QHBoxLayout()
-        self.chk_z_filter = QCheckBox("Z过滤:")
-        self.chk_z_filter.setChecked(False)
-        z_filter_row.addWidget(self.chk_z_filter)
-        self.edt_z_filter_min = QLineEdit("-999")
-        self.edt_z_filter_min.setMaximumWidth(60)
-        self.edt_z_filter_min.setEnabled(False)
-        z_filter_row.addWidget(QLabel("从"))
-        z_filter_row.addWidget(self.edt_z_filter_min)
-        self.edt_z_filter_max = QLineEdit("999")
-        self.edt_z_filter_max.setMaximumWidth(60)
-        self.edt_z_filter_max.setEnabled(False)
-        z_filter_row.addWidget(QLabel("到"))
-        z_filter_row.addWidget(self.edt_z_filter_max)
-        self.btn_z_filter_apply = QPushButton("应用")
-        self.btn_z_filter_apply.setMaximumWidth(50)
-        self.btn_z_filter_apply.setEnabled(False)
-        z_filter_row.addWidget(self.btn_z_filter_apply)
-        gl.addLayout(z_filter_row)
+        # 裁剪框（XYZ过滤）
+        clip_row0 = QHBoxLayout()
+        self.chk_clip = QCheckBox("裁剪框:")
+        self.chk_clip.setChecked(False)
+        clip_row0.addWidget(self.chk_clip)
+        self.btn_clip_apply = QPushButton("应用")
+        self.btn_clip_apply.setMaximumWidth(50)
+        self.btn_clip_apply.setEnabled(False)
+        clip_row0.addWidget(self.btn_clip_apply)
+        gl.addLayout(clip_row0)
+
+        clip_row_x = QHBoxLayout()
+        clip_row_x.addWidget(QLabel("X:"))
+        self.edt_clip_xmin = QLineEdit("-999"); self.edt_clip_xmin.setMaximumWidth(60); self.edt_clip_xmin.setEnabled(False)
+        self.edt_clip_xmax = QLineEdit("999"); self.edt_clip_xmax.setMaximumWidth(60); self.edt_clip_xmax.setEnabled(False)
+        clip_row_x.addWidget(self.edt_clip_xmin)
+        clip_row_x.addWidget(QLabel("~"))
+        clip_row_x.addWidget(self.edt_clip_xmax)
+        gl.addLayout(clip_row_x)
+
+        clip_row_y = QHBoxLayout()
+        clip_row_y.addWidget(QLabel("Y:"))
+        self.edt_clip_ymin = QLineEdit("-999"); self.edt_clip_ymin.setMaximumWidth(60); self.edt_clip_ymin.setEnabled(False)
+        self.edt_clip_ymax = QLineEdit("999"); self.edt_clip_ymax.setMaximumWidth(60); self.edt_clip_ymax.setEnabled(False)
+        clip_row_y.addWidget(self.edt_clip_ymin)
+        clip_row_y.addWidget(QLabel("~"))
+        clip_row_y.addWidget(self.edt_clip_ymax)
+        gl.addLayout(clip_row_y)
+
+        clip_row_z = QHBoxLayout()
+        clip_row_z.addWidget(QLabel("Z:"))
+        self.edt_clip_zmin = QLineEdit("-999"); self.edt_clip_zmin.setMaximumWidth(60); self.edt_clip_zmin.setEnabled(False)
+        self.edt_clip_zmax = QLineEdit("999"); self.edt_clip_zmax.setMaximumWidth(60); self.edt_clip_zmax.setEnabled(False)
+        clip_row_z.addWidget(self.edt_clip_zmin)
+        clip_row_z.addWidget(QLabel("~"))
+        clip_row_z.addWidget(self.edt_clip_zmax)
+        gl.addLayout(clip_row_z)
 
         # 点云渲染模式 + 大小
         render_row = QHBoxLayout()
@@ -387,6 +405,11 @@ class MainWindow(QMainWindow):
         self.edt_line_y2 = QLineEdit("0"); ll.addWidget(self.edt_line_y2, 1, 2)
         self.edt_line_z2 = QLineEdit("5"); ll.addWidget(self.edt_line_z2, 1, 3)
 
+        btn_pick_line = QPushButton("选择起终点")
+        btn_pick_line.setStyleSheet("QPushButton { background: #e8e0d0; padding: 4px; } QPushButton:hover { background: #d8d0c0; }")
+        btn_pick_line.clicked.connect(self._start_line_mode)
+        ll.addWidget(btn_pick_line, 0, 4, 2, 1)
+
         ll.addWidget(QLabel("航点距离:"), 2, 0)
         self.edt_line_spacing = QLineEdit("2"); ll.addWidget(self.edt_line_spacing, 2, 1)
         ll.addWidget(QLabel("速度(m/s):"), 2, 2)
@@ -401,6 +424,47 @@ class MainWindow(QMainWindow):
 
         ctrl_layout.addWidget(route_tabs)
         self._route_widgets.append(route_tabs)
+
+        # -- 巡检点 --
+        grp_inspect = QGroupBox("巡检点")
+        il = QVBoxLayout(grp_inspect)
+        il.setSpacing(4)
+
+        insp_btn_row = QHBoxLayout()
+        self.btn_inspect = QPushButton("选择巡检点")
+        self.btn_inspect.setStyleSheet("QPushButton { background: #e8e0d0; font-weight: bold; padding: 6px; } QPushButton:hover { background: #d8d0c0; }")
+        self.btn_inspect.clicked.connect(self._start_inspect_mode)
+        insp_btn_row.addWidget(self.btn_inspect)
+        self.btn_clear_inspect = QPushButton("清除")
+        self.btn_clear_inspect.setMaximumWidth(60)
+        self.btn_clear_inspect.clicked.connect(self._clear_inspect_points)
+        insp_btn_row.addWidget(self.btn_clear_inspect)
+        il.addLayout(insp_btn_row)
+
+        self.lst_inspect = QListWidget()
+        self.lst_inspect.setMaximumHeight(100)
+        il.addWidget(self.lst_inspect)
+
+        insp_param_row = QHBoxLayout()
+        insp_param_row.addWidget(QLabel("巡检距离:"))
+        self.edt_inspect_dist = QLineEdit("3.0")
+        self.edt_inspect_dist.setMaximumWidth(50)
+        insp_param_row.addWidget(self.edt_inspect_dist)
+        insp_param_row.addWidget(QLabel("m"))
+        insp_param_row.addStretch()
+        il.addLayout(insp_param_row)
+
+        self.btn_gen_inspect = QPushButton("生成巡检航线")
+        self.btn_gen_inspect.setStyleSheet("QPushButton { background: #d0e8d0; font-weight: bold; padding: 6px; } QPushButton:hover { background: #c0d8c0; }")
+        self.btn_gen_inspect.clicked.connect(self.generate_inspect_route)
+        il.addWidget(self.btn_gen_inspect)
+
+        self._inspect_target_points = []  # 巡检目标点列表
+        self.viewer.inspect_points_confirmed.connect(self._on_inspect_confirmed)
+        self.viewer.line_points_confirmed.connect(self._on_line_confirmed)
+
+        ctrl_layout.addWidget(grp_inspect)
+        self._route_widgets.append(grp_inspect)
 
         # -- 航线管理 --
         grp_route = QGroupBox("航线管理")
@@ -443,8 +507,8 @@ class MainWindow(QMainWindow):
 
         # -- 信号连接 --
         self.btn_load.clicked.connect(self.load_point_cloud)
-        self.chk_z_filter.toggled.connect(self._on_z_filter_toggled)
-        self.btn_z_filter_apply.clicked.connect(self._apply_z_filter)
+        self.chk_clip.toggled.connect(self._on_clip_toggled)
+        self.btn_clip_apply.clicked.connect(self._apply_clip)
         self.cmb_render_mode.currentTextChanged.connect(self._on_render_mode_changed)
         self.sld_point_size.valueChanged.connect(self._on_point_size_changed)
         self.btn_clear.clicked.connect(self.clear_route)
@@ -657,12 +721,16 @@ class MainWindow(QMainWindow):
         finally:
             self.progress_bar.setVisible(False)
 
-        # 设置Z过滤默认范围
+        # 设置XYZ裁剪框默认范围
         if self.points is not None and len(self.points) > 0:
-            mn_z = float(self.points[:, 2].min())
-            mx_z = float(self.points[:, 2].max())
-            self.edt_z_filter_min.setText(f"{mn_z:.1f}")
-            self.edt_z_filter_max.setText(f"{mx_z:.1f}")
+            mn = self.points.min(axis=0)
+            mx = self.points.max(axis=0)
+            self.edt_clip_xmin.setText(f"{mn[0]:.1f}")
+            self.edt_clip_xmax.setText(f"{mx[0]:.1f}")
+            self.edt_clip_ymin.setText(f"{mn[1]:.1f}")
+            self.edt_clip_ymax.setText(f"{mx[1]:.1f}")
+            self.edt_clip_zmin.setText(f"{mn[2]:.1f}")
+            self.edt_clip_zmax.setText(f"{mx[2]:.1f}")
 
     # ─── Z值过滤 ───
     def _get_render_mode(self):
@@ -681,30 +749,36 @@ class MainWindow(QMainWindow):
         self._refresh_point_cloud()
 
     def _refresh_point_cloud(self):
-        if self.chk_z_filter.isChecked():
-            self._apply_z_filter()
+        if self.chk_clip.isChecked():
+            self._apply_clip()
         elif self.points is not None:
             self.viewer.add_point_cloud(self.points, self._get_render_mode(), self._get_point_size())
 
-    def _on_z_filter_toggled(self, checked):
-        self.edt_z_filter_min.setEnabled(checked)
-        self.edt_z_filter_max.setEnabled(checked)
-        self.btn_z_filter_apply.setEnabled(checked)
+    def _on_clip_toggled(self, checked):
+        for w in [self.edt_clip_xmin, self.edt_clip_xmax,
+                  self.edt_clip_ymin, self.edt_clip_ymax,
+                  self.edt_clip_zmin, self.edt_clip_zmax, self.btn_clip_apply]:
+            w.setEnabled(checked)
         self._refresh_point_cloud()
 
-    def _apply_z_filter(self):
+    def _apply_clip(self):
         if self.points is None or len(self.points) == 0:
             return
         try:
-            z_min = float(self.edt_z_filter_min.text())
-            z_max = float(self.edt_z_filter_max.text())
+            xmin = float(self.edt_clip_xmin.text())
+            xmax = float(self.edt_clip_xmax.text())
+            ymin = float(self.edt_clip_ymin.text())
+            ymax = float(self.edt_clip_ymax.text())
+            zmin = float(self.edt_clip_zmin.text())
+            zmax = float(self.edt_clip_zmax.text())
         except ValueError:
-            QMessageBox.warning(self, "输入错误", "请输入有效的Z值范围")
+            QMessageBox.warning(self, "输入错误", "请输入有效的裁剪范围")
             return
-        mask = (self.points[:, 2] >= z_min) & (self.points[:, 2] <= z_max)
-        filtered = self.points[mask]
+        p = self.points
+        mask = (p[:,0]>=xmin)&(p[:,0]<=xmax)&(p[:,1]>=ymin)&(p[:,1]<=ymax)&(p[:,2]>=zmin)&(p[:,2]<=zmax)
+        filtered = p[mask]
         if len(filtered) == 0:
-            QMessageBox.information(self, "提示", "过滤后无点云数据")
+            QMessageBox.information(self, "提示", "裁剪后无点云数据")
             return
         self.viewer.add_point_cloud(filtered, self._get_render_mode(), self._get_point_size())
         n_total = len(self.points)
@@ -997,6 +1071,129 @@ class MainWindow(QMainWindow):
 
         self._display_route()
         print(f"[Line] Generated {len(self.waypoints)} waypoints")
+
+    # ─── 巡检点功能 ─────────────────────────────────────────
+    def _start_inspect_mode(self):
+        self.viewer.enter_inspect_mode()
+
+    def _on_inspect_confirmed(self, pts):
+        """巡检点选点确认回调"""
+        self._inspect_target_points = [np.array(p) for p in pts]
+        self.lst_inspect.clear()
+        for i, p in enumerate(self._inspect_target_points):
+            self.lst_inspect.addItem(f"P{i+1}: ({p[0]:.1f}, {p[1]:.1f}, {p[2]:.1f})")
+        print(f"[Inspect] {len(self._inspect_target_points)} inspection points confirmed")
+
+    def _clear_inspect_points(self):
+        self._inspect_target_points.clear()
+        self.lst_inspect.clear()
+        self.viewer._clear_inspect_points()
+        self.viewer.vtk_widget.GetRenderWindow().Render()
+
+    def _start_line_mode(self):
+        self.viewer.enter_line_mode()
+
+    def _on_line_confirmed(self, pts):
+        """直线起终点选点确认回调"""
+        if len(pts) == 2:
+            s, e = pts[0], pts[1]
+            self.edt_line_x1.setText(f"{s[0]:.1f}")
+            self.edt_line_y1.setText(f"{s[1]:.1f}")
+            self.edt_line_z1.setText(f"{s[2]:.1f}")
+            self.edt_line_x2.setText(f"{e[0]:.1f}")
+            self.edt_line_y2.setText(f"{e[1]:.1f}")
+            self.edt_line_z2.setText(f"{e[2]:.1f}")
+            print(f"[Line] 起点({s[0]:.1f},{s[1]:.1f},{s[2]:.1f}) 终点({e[0]:.1f},{e[1]:.1f},{e[2]:.1f})")
+
+    def _estimate_normal(self, point):
+        """用 PCA 估计点云在该位置的法线方向"""
+        tree = self._get_kdtree()
+        if tree is None or len(self.points) < 3:
+            return np.array([0.0, 0.0, 1.0])
+        k = max(3, min(30, len(self.points)))
+        dists, idxs = tree.query(point, k=k)
+        neighbors = self.points[idxs]
+        centered = neighbors - neighbors.mean(axis=0)
+        cov = centered.T @ centered / len(neighbors)
+        eigvals, eigvecs = np.linalg.eigh(cov)
+        normal = eigvecs[:, 0]  # 最小特征值 = 法线方向
+        # 确保法线朝外（远离点云质心）
+        centroid = self.points.mean(axis=0)
+        if np.dot(normal, point - centroid) < 0:
+            normal = -normal
+        return normal
+
+    def _find_safe_position(self, target, normal, tree, collision_dist, safe_dist, max_offset=10.0):
+        """沿法线方向找安全飞行位置，返回 (pos, warned)"""
+        for i in range(20):
+            offset = safe_dist + i * 0.5
+            if offset > max_offset:
+                return None, True
+            pos = target + normal * offset
+            if tree is not None:
+                dist, _ = tree.query(pos)
+                if dist >= collision_dist:
+                    return pos, False
+            else:
+                return pos, False
+        return None, True
+
+    def generate_inspect_route(self):
+        """从巡检目标点自动生成无人机航线（带碰撞检测）"""
+        if not self._inspect_target_points:
+            QMessageBox.warning(self, "提示", "请先选择巡检点")
+            return
+
+        try:
+            inspect_dist = float(self.edt_inspect_dist.text())
+        except ValueError:
+            QMessageBox.warning(self, "输入错误", "请输入有效的巡检距离")
+            return
+
+        if inspect_dist <= 0:
+            QMessageBox.warning(self, "输入错误", "巡检距离必须为正数")
+            return
+
+        safe_dist = self.viewer._safe_distance
+        collision_dist = safe_dist * 0.5
+        tree = self._get_kdtree()
+
+        self.waypoints = []
+        warnings = []
+
+        for i, target in enumerate(self._inspect_target_points):
+            normal = self._estimate_normal(target)
+            pos, warned = self._find_safe_position(
+                target, normal, tree, collision_dist, inspect_dist
+            )
+            if pos is None:
+                # 法线方向找不到安全位置，尝试向上
+                pos = target + np.array([0, 0, inspect_dist])
+                if tree is not None:
+                    dist, _ = tree.query(pos)
+                    if dist < collision_dist:
+                        warnings.append(f"P{i+1} 无法找到安全位置")
+                        pos = target + np.array([0, 0, inspect_dist + 2.0])
+                warned = True
+
+            if warned:
+                warnings.append(f"P{i+1} 航点可能过近")
+
+            # 朝向巡检目标点
+            quat = look_at_quaternion(target, pos)
+            self.waypoints.append({
+                'pos': pos,
+                'quat': quat,
+                'speed': 1.0,
+                'action': 'scan'
+            })
+
+        self._display_route()
+
+        if warnings:
+            QMessageBox.warning(self, "碰撞警告",
+                f"生成 {len(self.waypoints)} 个航点\n\n" + "\n".join(warnings))
+        print(f"[Inspect] Generated {len(self.waypoints)} waypoints from {len(self._inspect_target_points)} targets")
 
     # ─── 生成立方体航线 ───
     def generate_cube_route(self):

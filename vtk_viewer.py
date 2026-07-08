@@ -55,6 +55,14 @@ class FoxgloveInteractorStyle(object):
             v._poly_click_start = pos
             return
 
+        if v.inspect_mode:
+            v._poly_click_start = pos
+            return
+
+        if v.line_mode:
+            v._poly_click_start = pos
+            return
+
         if ctrl:
             wp_idx = v._find_nearest_waypoint(pos[0], pos[1])
             if wp_idx >= 0:
@@ -92,6 +100,30 @@ class FoxgloveInteractorStyle(object):
             self._prev_pos = None
             return
 
+        if v and v.inspect_mode and v._poly_click_start is not None:
+            pos = rwi.GetEventPosition()
+            start = v._poly_click_start
+            v._poly_click_start = None
+            if abs(pos[0] - start[0]) < 5 and abs(pos[1] - start[1]) < 5:
+                p = v._pick_3d(pos[0], pos[1])
+                if p is not None:
+                    v._add_inspect_point(p)
+            self._mode = None
+            self._prev_pos = None
+            return
+
+        if v and v.line_mode and v._poly_click_start is not None:
+            pos = rwi.GetEventPosition()
+            start = v._poly_click_start
+            v._poly_click_start = None
+            if abs(pos[0] - start[0]) < 5 and abs(pos[1] - start[1]) < 5:
+                p = v._pick_3d(pos[0], pos[1])
+                if p is not None:
+                    v._add_line_point(p)
+            self._mode = None
+            self._prev_pos = None
+            return
+
         if v and v._wp_editing:
             v._end_wp_edit()
             self._mode = None
@@ -118,6 +150,22 @@ class FoxgloveInteractorStyle(object):
                 v.exit_place_mode(clear_marker=False)
             else:
                 v.exit_place_mode()
+            return
+        if v and v.inspect_mode:
+            if len(v._inspect_points) > 0:
+                pts = [p.tolist() for p in v._inspect_points]
+                v.inspect_points_confirmed.emit(pts)
+                v.exit_inspect_mode(clear_markers=False)
+            else:
+                v.exit_inspect_mode()
+            return
+        if v and v.line_mode:
+            if len(v._line_points) == 2:
+                pts = [p.tolist() for p in v._line_points]
+                v.line_points_confirmed.emit(pts)
+                v.exit_line_mode(clear_markers=False)
+            else:
+                v.exit_line_mode()
             return
         self._mode = 'rotate'
         self._prev_pos = rwi.GetEventPosition()
@@ -216,6 +264,8 @@ class VTKViewer(QWidget):
     waypoint_edited = pyqtSignal(int, object, object)
     polygon_finished = pyqtSignal(list)
     place_picked = pyqtSignal(object)  # 点击放置模式
+    inspect_points_confirmed = pyqtSignal(list)  # 巡检点确认
+    line_points_confirmed = pyqtSignal(list)  # 直线起终点确认 [start, end]
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -355,6 +405,16 @@ class VTKViewer(QWidget):
         self._poly_markers = []
         self._poly_line_actor = None
         self._poly_click_start = None
+
+        # ─── 巡检选点模式 ───
+        self.inspect_mode = False
+        self._inspect_points = []
+        self._inspect_markers = []
+
+        # ─── 直线起终点选点模式 ───
+        self.line_mode = False
+        self._line_points = []
+        self._line_markers = []
 
         self._timer_id = self.startTimer(30)
 
@@ -1045,6 +1105,89 @@ class VTKViewer(QWidget):
             self.renderer.RemoveActor(self._poly_line_actor)
             self._poly_line_actor = None
 
+    # ─── 巡检选点模式 ─────────────────────────────────────────
+    def enter_inspect_mode(self):
+        if self.points_data is None or len(self.points_data) == 0:
+            print("[Inspect] No point cloud loaded")
+            return
+        self.inspect_mode = True
+        self._poly_click_start = None
+        self._set_view("top")
+        print("[Inspect] 左键点击添加巡检点，右键确认，Esc取消")
+
+    def exit_inspect_mode(self, clear_markers=True):
+        self.inspect_mode = False
+        self._poly_click_start = None
+        if clear_markers:
+            self._clear_inspect_points()
+        print("[Inspect] Exited inspect mode.")
+
+    def _add_inspect_point(self, pos):
+        self._inspect_points.append(pos)
+        sphere = self._vtkSphereSource()
+        sphere.SetCenter(pos.tolist())
+        sphere.SetRadius(0.2)
+        sphere.Update()
+        m = self._vtkPolyDataMapper()
+        m.SetInputConnection(sphere.GetOutputPort())
+        a = self._vtkActor()
+        a.SetMapper(m)
+        a.GetProperty().SetColor(1.0, 0.8, 0.0)  # 黄色
+        self.renderer.AddActor(a)
+        self._inspect_markers.append(a)
+        self.vtk_widget.GetRenderWindow().Render()
+
+    def _clear_inspect_points(self):
+        for a in self._inspect_markers:
+            self.renderer.RemoveActor(a)
+        self._inspect_markers.clear()
+        self._inspect_points.clear()
+
+    # ─── 直线起终点选点 ───
+    def enter_line_mode(self):
+        if self.points_data is None or len(self.points_data) == 0:
+            print("[Line] No point cloud loaded")
+            return
+        self.line_mode = True
+        self._poly_click_start = None
+        self._set_view("top")
+        print("[Line] 左键点击选起点，再点选终点，右键确认，Esc取消")
+
+    def exit_line_mode(self, clear_markers=True):
+        self.line_mode = False
+        self._poly_click_start = None
+        if clear_markers:
+            self._clear_line_points()
+        print("[Line] Exited line mode.")
+
+    def _add_line_point(self, pos):
+        if len(self._line_points) >= 2:
+            return
+        self._line_points.append(pos)
+        sphere = self._vtkSphereSource()
+        sphere.SetCenter(pos.tolist())
+        sphere.SetRadius(0.3)
+        sphere.Update()
+        m = self._vtkPolyDataMapper()
+        m.SetInputConnection(sphere.GetOutputPort())
+        a = self._vtkActor()
+        a.SetMapper(m)
+        if len(self._line_points) == 1:
+            a.GetProperty().SetColor(0.2, 0.8, 0.2)  # 绿色=起点
+        else:
+            a.GetProperty().SetColor(0.9, 0.2, 0.2)  # 红色=终点
+        self.renderer.AddActor(a)
+        self._line_markers.append(a)
+        self.vtk_widget.GetRenderWindow().Render()
+        if len(self._line_points) == 2:
+            print("[Line] 已选起点和终点，右键确认生成航线")
+
+    def _clear_line_points(self):
+        for a in self._line_markers:
+            self.renderer.RemoveActor(a)
+        self._line_markers.clear()
+        self._line_points.clear()
+
     def _update_view(self):
         if not self._vtk_available:
             return
@@ -1109,6 +1252,10 @@ class VTKViewer(QWidget):
                 self.exit_polygon_mode()
             elif self.place_mode:
                 self.exit_place_mode()
+            elif self.inspect_mode:
+                self.exit_inspect_mode()
+            elif self.line_mode:
+                self.exit_line_mode()
             self.vtk_widget.GetRenderWindow().Render()
 
     def _add_scene_axes(self):
