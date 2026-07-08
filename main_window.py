@@ -110,6 +110,16 @@ class MainWindow(QMainWindow):
         self.btn_z_filter_apply.setEnabled(False)
         z_filter_row.addWidget(self.btn_z_filter_apply)
         gl.addLayout(z_filter_row)
+
+        # 点云渲染模式
+        render_row = QHBoxLayout()
+        render_row.addWidget(QLabel("渲染:"))
+        self.cmb_render_mode = QComboBox()
+        self.cmb_render_mode.addItems(["自动", "球体", "立方体", "像素"])
+        self.cmb_render_mode.setMaximumWidth(100)
+        render_row.addWidget(self.cmb_render_mode)
+        render_row.addStretch()
+        gl.addLayout(render_row)
         ctrl_layout.addWidget(grp_load)
 
         self._route_widgets = []
@@ -400,6 +410,7 @@ class MainWindow(QMainWindow):
         self.btn_load.clicked.connect(self.load_point_cloud)
         self.chk_z_filter.toggled.connect(self._on_z_filter_toggled)
         self.btn_z_filter_apply.clicked.connect(self._apply_z_filter)
+        self.cmb_render_mode.currentTextChanged.connect(self._on_render_mode_changed)
         self.btn_clear.clicked.connect(self.clear_route)
         self.btn_save.clicked.connect(self.save_route)
         self.btn_load_route.clicked.connect(self.load_route)
@@ -522,7 +533,7 @@ class MainWindow(QMainWindow):
             self.progress_bar.setValue(30)
             QApplication.processEvents()
 
-            self.viewer.add_point_cloud(self.points)
+            self.viewer.add_point_cloud(self.points, self._get_render_mode())
             self.progress_bar.setValue(80)
             QApplication.processEvents()
 
@@ -618,6 +629,18 @@ class MainWindow(QMainWindow):
             self.edt_z_filter_max.setText(f"{mx_z:.1f}")
 
     # ─── Z值过滤 ───
+    def _get_render_mode(self):
+        """获取当前渲染模式: 'auto'/'sphere'/'cube'/'pixel'"""
+        text = self.cmb_render_mode.currentText()
+        return {"自动": "auto", "球体": "sphere", "立方体": "cube", "像素": "pixel"}.get(text, "auto")
+
+    def _on_render_mode_changed(self, text):
+        # 渲染模式变化时刷新显示
+        if self.chk_z_filter.isChecked():
+            self._apply_z_filter()
+        elif self.points is not None:
+            self.viewer.add_point_cloud(self.points, self._get_render_mode())
+
     def _on_z_filter_toggled(self, checked):
         self.edt_z_filter_min.setEnabled(checked)
         self.edt_z_filter_max.setEnabled(checked)
@@ -625,9 +648,8 @@ class MainWindow(QMainWindow):
         if checked:
             self._apply_z_filter()
         else:
-            # 取消过滤，显示全部点云
             if self.points is not None:
-                self.viewer.add_point_cloud(self.points)
+                self.viewer.add_point_cloud(self.points, self._get_render_mode())
 
     def _apply_z_filter(self):
         if self.points is None or len(self.points) == 0:
@@ -643,7 +665,7 @@ class MainWindow(QMainWindow):
         if len(filtered) == 0:
             QMessageBox.information(self, "提示", "过滤后无点云数据")
             return
-        self.viewer.add_point_cloud(filtered)
+        self.viewer.add_point_cloud(filtered, self._get_render_mode())
         n_total = len(self.points)
         n_show = len(filtered)
         self.lbl_pc_info.setText(f"已加载: {n_total:,} 点 (显示 {n_show:,})")

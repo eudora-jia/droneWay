@@ -229,7 +229,7 @@ class VTKViewer(QWidget):
                 vtkPoints, vtkPolyData, vtkVertexGlyphFilter,
                 vtkFollower, vtkVectorText, vtkBillboardTextActor3D
             )
-            from vtkmodules.vtkFiltersSources import vtkSphereSource, vtkLineSource, vtkArrowSource
+            from vtkmodules.vtkFiltersSources import vtkSphereSource, vtkCubeSource, vtkLineSource, vtkArrowSource
             from vtkmodules.vtkFiltersGeneral import vtkTransformPolyDataFilter
             from vtkmodules.vtkCommonTransforms import vtkTransform
             from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyLine
@@ -245,7 +245,7 @@ class VTKViewer(QWidget):
                 from vtk import (
                     vtkActor, vtkPolyDataMapper, vtkRenderer,
                     vtkPoints, vtkPolyData, vtkVertexGlyphFilter,
-                    vtkSphereSource, vtkLineSource, vtkArrowSource, vtkCellArray,
+                    vtkSphereSource, vtkCubeSource, vtkLineSource, vtkArrowSource, vtkCellArray,
                     vtkPolyLine, vtkFollower, vtkVectorText,
                     vtkBillboardTextActor3D,
                     vtkTransformPolyDataFilter, vtkTransform,
@@ -270,6 +270,7 @@ class VTKViewer(QWidget):
         self._vtkPolyData = vtkPolyData
         self._vtkVertexGlyphFilter = vtkVertexGlyphFilter
         self._vtkSphereSource = vtkSphereSource
+        self._vtkCubeSource = vtkCubeSource
         self._vtkLineSource = vtkLineSource
         self._vtkArrowSource = vtkArrowSource
         self._vtkCellArray = vtkCellArray
@@ -367,8 +368,8 @@ class VTKViewer(QWidget):
         self._actors.clear()
         self._cloud_actor = None
 
-    def add_point_cloud(self, points):
-        """显示点云（按高度着色，大点云自动降采样渲染）"""
+    def add_point_cloud(self, points, render_mode='auto'):
+        """显示点云（按高度着色，支持球体/立方体/像素渲染模式）"""
         if not self._vtk_available or len(points) == 0:
             return
         self.clear_actors()
@@ -422,22 +423,28 @@ class VTKViewer(QWidget):
         polydata.GetPointData().SetScalars(vtk_colors)
 
         SPHERE_THRESHOLD = 200_000
-        if len(render_points) <= SPHERE_THRESHOLD:
-            # 小点云：用球体渲染
-            sphere = self._vtkSphereSource()
-            sphere.SetRadius(0.05)
-            sphere.SetThetaResolution(6)
-            sphere.SetPhiResolution(6)
+        use_glyph = (render_mode in ('sphere', 'cube')) or (render_mode == 'auto' and len(render_points) <= SPHERE_THRESHOLD)
+
+        if use_glyph:
+            if render_mode == 'cube':
+                src = self._vtkCubeSource()
+                src.SetXLength(0.1)
+                src.SetYLength(0.1)
+                src.SetZLength(0.1)
+            else:
+                src = self._vtkSphereSource()
+                src.SetRadius(0.05)
+                src.SetThetaResolution(6)
+                src.SetPhiResolution(6)
             glyph = self._vtkGlyph3D()
             glyph.SetInputData(polydata)
-            glyph.SetSourceConnection(sphere.GetOutputPort())
+            glyph.SetSourceConnection(src.GetOutputPort())
             glyph.ScalingOff()
             glyph.Update()
             mapper = self._vtkPolyDataMapper()
             mapper.SetInputConnection(glyph.GetOutputPort())
             mapper.ScalarVisibilityOn()
         else:
-            # 大点云：用像素点渲染
             glyph = self._vtkVertexGlyphFilter()
             glyph.SetInputData(polydata)
             glyph.Update()
@@ -448,7 +455,7 @@ class VTKViewer(QWidget):
 
         actor = self._vtkActor()
         actor.SetMapper(mapper)
-        if len(render_points) > SPHERE_THRESHOLD:
+        if not use_glyph:
             actor.GetProperty().SetPointSize(2)
 
         self.renderer.AddActor(actor)
