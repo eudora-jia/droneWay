@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (
     QGroupBox, QLabel, QLineEdit, QPushButton, QComboBox,
     QFileDialog, QMessageBox, QButtonGroup, QSlider,
     QProgressBar, QCheckBox, QGridLayout, QScrollArea, QTabWidget,
-    QListWidget, QListWidgetItem
+    QListWidget, QListWidgetItem, QAction
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
@@ -33,6 +33,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("桥梁巡检无人机航线规划工具")
         self.resize(1400, 900)
 
+        # ─── 菜单栏 ───
+        self._init_menu_bar()
+
         self.points = None
         self.waypoints = []
         self._kdtree = None
@@ -41,6 +44,27 @@ class MainWindow(QMainWindow):
         self._init_ui()
         self._apply_style()
         self.viewer.setup_scene()
+
+    def _init_menu_bar(self):
+        """初始化菜单栏"""
+        menubar = self.menuBar()
+        menubar.setStyleSheet("QMenuBar { font-size: 13px; } QMenuBar::item { padding: 4px 10px; }")
+
+        file_menu = menubar.addMenu("文件")
+
+        act_save_ros = QAction("保存ROS航线", self)
+        act_save_ros.triggered.connect(self.save_route)
+        file_menu.addAction(act_save_ros)
+
+        act_load = QAction("加载航线", self)
+        act_load.triggered.connect(self.load_route)
+        file_menu.addAction(act_load)
+
+        file_menu.addSeparator()
+
+        act_export_maicro = QAction("导出maicro航线文件", self)
+        act_export_maicro.triggered.connect(self.export_maicro_route)
+        file_menu.addAction(act_export_maicro)
 
     def _init_ui(self):
         central = QWidget()
@@ -501,7 +525,7 @@ class MainWindow(QMainWindow):
         rl.addWidget(self.lbl_info)
         self.btn_clear = QPushButton("清除航线")
         rl.addWidget(self.btn_clear)
-        self.btn_save = QPushButton("保存航线 (JSON)")
+        self.btn_save = QPushButton("保存ROS航线")
         rl.addWidget(self.btn_save)
         self.btn_copy = QPushButton("复制航线到剪贴板")
         self.btn_copy.clicked.connect(self.copy_route_to_clipboard)
@@ -2046,6 +2070,116 @@ class MainWindow(QMainWindow):
         json_str = json.dumps(data, indent=2, ensure_ascii=False)
         QApplication.clipboard().setText(json_str)
         QMessageBox.information(self, "已复制", f"航线已复制到剪贴板（{len(data['poses'])} 个航点）")
+
+    # ─── 导出 maicro 航线文件 ───
+    def export_maicro_route(self):
+        """导出maicro格式航线文件"""
+        if not self.waypoints:
+            QMessageBox.information(self, "提示", "没有航线可导出")
+            return
+
+        from datetime import datetime
+        ts = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+        default_name = f"{getattr(self, '_bridge_name', '航线')}_{ts}.json"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出maicro航线文件", default_name, "JSON 文件 (*.json)"
+        )
+        if not path:
+            return
+
+        # 获取相机参数
+        cam_name = self.cmb_camera.currentText()
+        cam_fov = self._camera_fov_map.get(cam_name, 80)
+        # maicro 相机源映射
+        if "长焦" in cam_name:
+            camera_source = "ZOOM_CAMERA"
+        else:
+            camera_source = "WIDE_CAMERA"
+        focal_length_map = {
+            "DJI Mavic 3E": 24, "DJI Mavic 3T": 24,
+            "M4T 广角": 24, "M4T 中长焦": 72, "M4T 长焦": 162,
+            "DJI M350+P1(24mm)": 24, "DJI M350+P1(35mm)": 35,
+            "DJI M350+P1(50mm)": 50, "DJI M350+L2(雷达)": 24,
+            "自定义": 24,
+        }
+        focal_length = focal_length_map.get(cam_name, 24)
+
+        bridge_name = getattr(self, '_bridge_name', '桥梁')
+
+        # 构建航点列表
+        way_point_list = []
+        for i, wp in enumerate(self.waypoints):
+            pos = wp['pos']
+            gimbal_pitch = wp.get('gimbal_pitch', -90.0)
+            speed = wp.get('speed', 1.0)
+            action = wp.get('action', 'fly')
+            shoot = (action == 'scan')
+
+            # 从 quat 计算 yaw 角度
+            q = wp['quat']
+            yaw = np.degrees(np.arctan2(
+                2.0 * (q[0] * q[3] + q[1] * q[2]),
+                1.0 - 2.0 * (q[2]**2 + q[3]**2)
+            ))
+
+            wp_data = {
+                "index": i,
+                "lat": 0.0,
+                "lon": 0.0,
+                "alt": float(pos[2]),
+                "x": round(float(pos[0]), 6),
+                "y": round(float(pos[1]), 6),
+                "z": round(float(pos[2]), 6),
+                "devicePartName": f"航点{i+1}",
+                "cameraSource": camera_source,
+                "focalLength": focal_length,
+                "gimbalPitch": round(float(gimbal_pitch), 2),
+                "speed": round(float(speed), 1),
+                "head": round(float(yaw), 2),
+                "yaw": round(float(yaw), 2),
+                "shoot": shoot,
+                "thermal": False,
+                "headingMode": "fixed"
+            }
+
+            # 如果有投影目标点，添加 aimTarget
+            if 'target_pos' in wp:
+                tgt = wp['target_pos']
+                wp_data["aimTarget"] = {
+                    "focalRing": 0,
+                    "distance": round(float(np.linalg.norm(np.array(pos) - np.array(tgt))), 2),
+                    "alt": round(float(tgt[2]), 6),
+                    "lon": 0.0,
+                    "lat": 0.0
+                }
+
+            way_point_list.append(wp_data)
+
+        maicro_data = {
+            "aircraftModel": "DJI_MATRICE_4_SERIES",
+            "createdTime": ts,
+            "bridgeName": bridge_name,
+            "partName": "自定义航线",
+            "name": f"{bridge_name}_自定义航线",
+            "photoCount": len([w for w in way_point_list if w.get("shoot")]),
+            "partType": 1,
+            "exposure": {
+                "shutter": 500,
+                "ev": 0,
+                "iso": 400
+            },
+            "photoMode": 1,
+            "initialSpeed": 2,
+            "wayPointList": way_point_list
+        }
+
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(maicro_data, f, indent=2, ensure_ascii=False)
+            QMessageBox.information(self, "已导出",
+                f"maicro航线已导出到:\n{path}\n\n航点数: {len(way_point_list)}")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"导出失败:\n{str(e)}")
 
     # ─── 加载航线（兼容 nav_msgs/Path 和旧格式）───
     def load_route(self):
