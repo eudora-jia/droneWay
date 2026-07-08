@@ -41,7 +41,6 @@ class MainWindow(QMainWindow):
             "menu_lang": "语言", "lang_zh": "中文", "lang_en": "English",
             "menu_settings": "设置", "act_bridge_params": "桥梁参数",
             "grp_mode": "工作模式", "btn_route": "航线模式",
-            "grp_load": "点云渲染",
             "lbl_pc_info": "未加载点云",
             "grp_bridge": "桥梁参数", "lbl_bridge_name": "桥梁名称:",
             "lbl_bridge_type": "桥型:", "lbl_bridge_len": "桥长(m):",
@@ -96,7 +95,6 @@ class MainWindow(QMainWindow):
             "menu_lang": "Language", "lang_zh": "中文", "lang_en": "English",
             "menu_settings": "Settings", "act_bridge_params": "Bridge Params",
             "grp_mode": "Mode", "btn_route": "Route",
-            "grp_load": "Point Cloud Render",
             "lbl_pc_info": "No point cloud loaded",
             "grp_bridge": "Bridge Params", "lbl_bridge_name": "Bridge Name:",
             "lbl_bridge_type": "Type:", "lbl_bridge_len": "Length(m):",
@@ -270,14 +268,12 @@ class MainWindow(QMainWindow):
         ctrl_layout = QVBoxLayout(ctrl)
         ctrl_layout.setSpacing(6)
 
-        # -- 点云渲染 --
-        grp_load = QGroupBox("点云渲染")
-        gl = QVBoxLayout(grp_load)
+        # -- 进度条 --
         self.progress_bar = QProgressBar()
         self.progress_bar.setMaximumHeight(12)
         self.progress_bar.setTextVisible(False)
         self.progress_bar.setVisible(False)
-        gl.addWidget(self.progress_bar)
+        ctrl_layout.addWidget(self.progress_bar)
 
         # 状态栏
         self.statusBar().showMessage("未加载点云")
@@ -324,26 +320,18 @@ class MainWindow(QMainWindow):
         clip_row_z.addWidget(QLabel("~"))
         clip_row_z.addWidget(self.edt_clip_zmax)
         clip_lay.addLayout(clip_row_z)
-        gl.addWidget(self._clip_group)
+        ctrl_layout.addWidget(self._clip_group)
 
-        # 点云渲染模式 + 大小
-        render_row = QHBoxLayout()
-        render_row.addWidget(QLabel("渲染:"))
+        # 点云渲染模式 + 大小（隐藏，通过展示菜单控制）
         self.cmb_render_mode = QComboBox()
         self.cmb_render_mode.addItems(["自动", "球体", "立方体", "像素"])
-        self.cmb_render_mode.setMaximumWidth(80)
-        render_row.addWidget(self.cmb_render_mode)
-        render_row.addWidget(QLabel("大小:"))
+        self.cmb_render_mode.setVisible(False)
         self.sld_point_size = NoWheelSlider(Qt.Horizontal)
         self.sld_point_size.setRange(1, 20)
         self.sld_point_size.setValue(5)
-        self.sld_point_size.setMaximumWidth(80)
-        render_row.addWidget(self.sld_point_size)
+        self.sld_point_size.setVisible(False)
         self.lbl_point_size = QLabel("0.05")
-        self.lbl_point_size.setMaximumWidth(35)
-        render_row.addWidget(self.lbl_point_size)
-        gl.addLayout(render_row)
-        ctrl_layout.addWidget(grp_load)
+        self.lbl_point_size.setVisible(False)
 
         self._route_widgets = []
 
