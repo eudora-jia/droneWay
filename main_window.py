@@ -34,11 +34,12 @@ class MainWindow(QMainWindow):
             "win_title": "桥梁巡检无人机航线规划工具",
             "menu_file": "文件", "menu_view": "展示",
             "act_load_pc": "加载点云", "act_save_ros": "保存ROS航线",
-            "act_load_route": "加载航线", "act_export_maicro": "导出maicro航线文件",
+            "act_load_route": "加载ROS航线", "act_copy_route": "复制航线到剪贴板",
+            "act_export_maicro": "导出maicro航线文件",
             "act_clip": "裁剪框", "menu_render": "渲染模式", "menu_size": "点云大小",
             "menu_lang": "语言", "lang_zh": "中文", "lang_en": "English",
             "grp_mode": "工作模式", "btn_preview": "预览模式", "btn_route": "航线模式",
-            "grp_load": "加载点云", "btn_open_pcd": "打开 PCD 文件",
+            "grp_load": "加载点云",
             "lbl_pc_info": "未加载点云",
             "grp_bridge": "桥梁参数", "lbl_bridge_name": "桥梁名称:",
             "lbl_bridge_type": "桥型:", "lbl_bridge_len": "桥长(m):",
@@ -86,11 +87,12 @@ class MainWindow(QMainWindow):
             "win_title": "Bridge Inspection Drone Route Planner",
             "menu_file": "File", "menu_view": "View",
             "act_load_pc": "Load Point Cloud", "act_save_ros": "Save ROS Route",
-            "act_load_route": "Load Route", "act_export_maicro": "Export Maicro Route",
+            "act_load_route": "Load ROS Route", "act_copy_route": "Copy Route to Clipboard",
+            "act_export_maicro": "Export Maicro Route",
             "act_clip": "Clip Box", "menu_render": "Render Mode", "menu_size": "Point Size",
             "menu_lang": "Language", "lang_zh": "中文", "lang_en": "English",
             "grp_mode": "Mode", "btn_preview": "Preview", "btn_route": "Route",
-            "grp_load": "Point Cloud", "btn_open_pcd": "Open PCD File",
+            "grp_load": "Point Cloud",
             "lbl_pc_info": "No point cloud loaded",
             "grp_bridge": "Bridge Params", "lbl_bridge_name": "Bridge Name:",
             "lbl_bridge_type": "Type:", "lbl_bridge_len": "Length(m):",
@@ -158,42 +160,48 @@ class MainWindow(QMainWindow):
         """初始化菜单栏"""
         menubar = self.menuBar()
         menubar.setStyleSheet("QMenuBar { font-size: 13px; } QMenuBar::item { padding: 4px 10px; }")
+        self._menubar = menubar
 
         # ─── 文件 ───
-        file_menu = menubar.addMenu("文件")
+        self._file_menu = menubar.addMenu("文件")
 
-        act_load_pc = QAction("加载点云", self)
-        act_load_pc.triggered.connect(self.load_point_cloud)
-        file_menu.addAction(act_load_pc)
+        self._act_load_pc = QAction("加载点云", self)
+        self._act_load_pc.triggered.connect(self.load_point_cloud)
+        self._file_menu.addAction(self._act_load_pc)
 
-        file_menu.addSeparator()
+        self._file_menu.addSeparator()
 
-        act_save_ros = QAction("保存ROS航线", self)
-        act_save_ros.triggered.connect(self.save_route)
-        file_menu.addAction(act_save_ros)
+        self._act_save_ros = QAction("保存ROS航线", self)
+        self._act_save_ros.triggered.connect(self.save_route)
+        self._file_menu.addAction(self._act_save_ros)
 
-        act_load_route = QAction("加载航线", self)
-        act_load_route.triggered.connect(self.load_route)
-        file_menu.addAction(act_load_route)
+        self._act_load_route = QAction("加载航线", self)
+        self._act_load_route.triggered.connect(self.load_route)
+        self._file_menu.addAction(self._act_load_route)
 
-        file_menu.addSeparator()
+        self._act_copy_route = QAction("复制航线到剪贴板", self)
+        self._act_copy_route.triggered.connect(self.copy_route_to_clipboard)
+        self._file_menu.addAction(self._act_copy_route)
 
-        act_export_maicro = QAction("导出maicro航线文件", self)
-        act_export_maicro.triggered.connect(self.export_maicro_route)
-        file_menu.addAction(act_export_maicro)
+        self._file_menu.addSeparator()
+
+        self._act_export_maicro = QAction("导出maicro航线文件", self)
+        self._act_export_maicro.triggered.connect(self.export_maicro_route)
+        self._file_menu.addAction(self._act_export_maicro)
 
         # ─── 展示 ───
-        view_menu = menubar.addMenu("展示")
+        self._view_menu = menubar.addMenu("展示")
 
         self._act_clip_toggle = QAction("裁剪框", self)
         self._act_clip_toggle.setCheckable(True)
         self._act_clip_toggle.triggered.connect(self._on_menu_clip_toggle)
-        view_menu.addAction(self._act_clip_toggle)
+        self._view_menu.addAction(self._act_clip_toggle)
 
-        view_menu.addSeparator()
+        self._view_menu.addSeparator()
 
-        render_menu = view_menu.addMenu("渲染模式")
+        self._render_menu = self._view_menu.addMenu("渲染模式")
         self._render_mode_group = QActionGroup(self)
+        self._render_mode_acts = {}
         for name in ["自动", "球体", "立方体", "像素"]:
             act = QAction(name, self)
             act.setCheckable(True)
@@ -201,28 +209,30 @@ class MainWindow(QMainWindow):
             if name == "自动":
                 act.setChecked(True)
             act.triggered.connect(lambda checked, n=name: self._on_menu_render_mode(n))
-            render_menu.addAction(act)
+            self._render_menu.addAction(act)
+            self._render_mode_acts[name] = act
 
-        size_menu = view_menu.addMenu("点云大小")
+        self._view_menu.addSeparator()
+        self._size_menu = self._view_menu.addMenu("点云大小")
         for val in [1, 3, 5, 8, 10, 15, 20]:
             act = QAction(f"{val * 0.01:.2f}", self)
             act.triggered.connect(lambda checked, v=val: self._on_menu_point_size(v))
-            size_menu.addAction(act)
+            self._size_menu.addAction(act)
 
-        view_menu.addSeparator()
-        lang_menu = view_menu.addMenu("语言")
+        self._view_menu.addSeparator()
+        self._lang_menu = self._view_menu.addMenu("语言")
         self._lang_group = QActionGroup(self)
         self._act_lang_zh = QAction("中文", self)
         self._act_lang_zh.setCheckable(True)
         self._act_lang_zh.setChecked(True)
         self._act_lang_zh.setActionGroup(self._lang_group)
         self._act_lang_zh.triggered.connect(lambda: self._switch_language('zh'))
-        lang_menu.addAction(self._act_lang_zh)
+        self._lang_menu.addAction(self._act_lang_zh)
         self._act_lang_en = QAction("English", self)
         self._act_lang_en.setCheckable(True)
         self._act_lang_en.setActionGroup(self._lang_group)
         self._act_lang_en.triggered.connect(lambda: self._switch_language('en'))
-        lang_menu.addAction(self._act_lang_en)
+        self._lang_menu.addAction(self._act_lang_en)
 
     def _init_ui(self):
         central = QWidget()
@@ -263,8 +273,6 @@ class MainWindow(QMainWindow):
         # -- 加载点云 --
         grp_load = QGroupBox("加载点云")
         gl = QVBoxLayout(grp_load)
-        self.btn_load = QPushButton("打开 PCD 文件")
-        gl.addWidget(self.btn_load)
         self.lbl_pc_info = QLabel("未加载点云")
         gl.addWidget(self.lbl_pc_info)
         self.progress_bar = QProgressBar()
@@ -696,13 +704,6 @@ class MainWindow(QMainWindow):
         rl.addWidget(self.lbl_info)
         self.btn_clear = QPushButton("清除航线")
         rl.addWidget(self.btn_clear)
-        self.btn_save = QPushButton("保存ROS航线")
-        rl.addWidget(self.btn_save)
-        self.btn_copy = QPushButton("复制航线到剪贴板")
-        self.btn_copy.clicked.connect(self.copy_route_to_clipboard)
-        rl.addWidget(self.btn_copy)
-        self.btn_load_route = QPushButton("加载航线 (JSON)")
-        rl.addWidget(self.btn_load_route)
 
         self.chk_show_heading = QCheckBox("显示机头方向")
         self.chk_show_heading.setChecked(True)
@@ -729,14 +730,11 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(scroll)
 
         # -- 信号连接 --
-        self.btn_load.clicked.connect(self.load_point_cloud)
         self.chk_clip.toggled.connect(self._on_clip_toggled)
         self.btn_clip_apply.clicked.connect(self._apply_clip)
         self.cmb_render_mode.currentTextChanged.connect(self._on_render_mode_changed)
         self.sld_point_size.valueChanged.connect(self._on_point_size_changed)
         self.btn_clear.clicked.connect(self.clear_route)
-        self.btn_save.clicked.connect(self.save_route)
-        self.btn_load_route.clicked.connect(self.load_route)
 
         # 立方体区域参数变化时重新计算
         self.edt_cx.textChanged.connect(lambda: self._on_cube_area_changed())
@@ -1008,8 +1006,22 @@ class MainWindow(QMainWindow):
     def _apply_language(self):
         """应用当前语言到所有UI文本"""
         t = self._T[self._lang]
+
+        # ─── 菜单栏 ───
+        self._file_menu.setTitle(t["menu_file"])
+        self._act_load_pc.setText(t["act_load_pc"])
+        self._act_save_ros.setText(t["act_save_ros"])
+        self._act_load_route.setText(t["act_load_route"])
+        self._act_copy_route.setText(t["act_copy_route"])
+        self._act_export_maicro.setText(t["act_export_maicro"])
+        self._view_menu.setTitle(t["menu_view"])
+        self._act_clip_toggle.setText(t["act_clip"])
+        self._render_menu.setTitle(t["menu_render"])
+        self._size_menu.setTitle(t["menu_size"])
+        self._lang_menu.setTitle(t["menu_lang"])
+
         self.setWindowTitle(t["win_title"])
-        # 菜单栏重建最简单，但为避免复杂度，这里只更新已知控件
+
         # GroupBox 标题
         for grp, key in [
             ("grp_mode", "grp_mode"), ("grp_load", "grp_load"),
@@ -1020,10 +1032,11 @@ class MainWindow(QMainWindow):
             w = getattr(self, grp, None)
             if w:
                 w.setTitle(t.get(key, w.title()))
+
         # 按钮
         for btn, key in [
             ("btn_mode_preview", "btn_preview"), ("btn_mode_route", "btn_route"),
-            ("btn_load", "btn_open_pcd"), ("btn_apply_bridge", "btn_apply"),
+            ("btn_apply_bridge", "btn_apply"),
             ("btn_apply_safety", "btn_apply"),
             ("btn_poly_select", "btn_pick_area"),
             ("btn_pick_line", "btn_pick_endpoints"),
@@ -1032,15 +1045,13 @@ class MainWindow(QMainWindow):
             ("btn_gen_inspect", "btn_gen_inspect"),
             ("btn_gen_line", "btn_gen_line"),
             ("btn_clear", "btn_clear_route"),
-            ("btn_save", "btn_save_ros2"),
-            ("btn_copy", "btn_copy"),
-            ("btn_load_route", "btn_load_route2"),
             ("btn_calc_overlap", "btn_calc_overlap"),
             ("btn_clip_apply", "btn_clip_apply"),
         ]:
             w = getattr(self, btn, None)
             if w:
                 w.setText(t.get(key, w.text()))
+
         # ComboBox 航线类型
         route_names = [t["route_flat"], t["route_cube"], t["route_cyl"],
                        t["route_line"], t["route_inspect"]]
@@ -1048,7 +1059,8 @@ class MainWindow(QMainWindow):
         self.cmb_route_type.clear()
         self.cmb_route_type.addItems(route_names)
         self.cmb_route_type.setCurrentIndex(idx)
-        # Labels（通过 setText 更新）
+
+        # Labels
         for lbl, key in [
             ("lbl_pc_info", "lbl_pc_info"), ("lbl_wp_hint", "lbl_wp_hint"),
             ("lbl_help", "lbl_shortcuts"),
@@ -1056,6 +1068,7 @@ class MainWindow(QMainWindow):
             w = getattr(self, lbl, None)
             if w:
                 w.setText(t.get(key, w.text()))
+
         # CheckBox
         self.chk_show_heading.setText(t.get("chk_heading", self.chk_show_heading.text()))
         self.chk_clip.setText(t.get("clip_enable", self.chk_clip.text()))
