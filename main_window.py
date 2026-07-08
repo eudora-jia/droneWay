@@ -422,49 +422,44 @@ class MainWindow(QMainWindow):
 
         route_tabs.addTab(tab_line, "直线航线")
 
-        ctrl_layout.addWidget(route_tabs)
-        self._route_widgets.append(route_tabs)
-
-        # -- 巡检点 --
-        grp_inspect = QGroupBox("巡检点")
-        il = QVBoxLayout(grp_inspect)
+        # -- Tab 5: 点状航线 --
+        tab_inspect = QWidget()
+        il = QGridLayout(tab_inspect)
         il.setSpacing(4)
 
-        insp_btn_row = QHBoxLayout()
+        il.addWidget(QLabel("巡检点列表:"), 0, 0)
         self.btn_inspect = QPushButton("选择巡检点")
         self.btn_inspect.setStyleSheet("QPushButton { background: #e8e0d0; font-weight: bold; padding: 6px; } QPushButton:hover { background: #d8d0c0; }")
         self.btn_inspect.clicked.connect(self._start_inspect_mode)
-        insp_btn_row.addWidget(self.btn_inspect)
+        il.addWidget(self.btn_inspect, 0, 1)
         self.btn_clear_inspect = QPushButton("清除")
         self.btn_clear_inspect.setMaximumWidth(60)
         self.btn_clear_inspect.clicked.connect(self._clear_inspect_points)
-        insp_btn_row.addWidget(self.btn_clear_inspect)
-        il.addLayout(insp_btn_row)
+        il.addWidget(self.btn_clear_inspect, 0, 2)
 
         self.lst_inspect = QListWidget()
         self.lst_inspect.setMaximumHeight(100)
-        il.addWidget(self.lst_inspect)
+        il.addWidget(self.lst_inspect, 1, 0, 1, 3)
 
-        insp_param_row = QHBoxLayout()
-        insp_param_row.addWidget(QLabel("巡检距离:"))
+        il.addWidget(QLabel("巡检距离:"), 2, 0)
         self.edt_inspect_dist = QLineEdit("3.0")
         self.edt_inspect_dist.setMaximumWidth(50)
-        insp_param_row.addWidget(self.edt_inspect_dist)
-        insp_param_row.addWidget(QLabel("m"))
-        insp_param_row.addStretch()
-        il.addLayout(insp_param_row)
+        il.addWidget(self.edt_inspect_dist, 2, 1)
+        il.addWidget(QLabel("m"), 2, 2)
 
-        self.btn_gen_inspect = QPushButton("生成巡检航线")
+        self.btn_gen_inspect = QPushButton("生成点状航线")
         self.btn_gen_inspect.setStyleSheet("QPushButton { background: #d0e8d0; font-weight: bold; padding: 6px; } QPushButton:hover { background: #c0d8c0; }")
         self.btn_gen_inspect.clicked.connect(self.generate_inspect_route)
-        il.addWidget(self.btn_gen_inspect)
+        il.addWidget(self.btn_gen_inspect, 3, 0, 1, 3)
 
         self._inspect_target_points = []  # 巡检目标点列表
         self.viewer.inspect_points_confirmed.connect(self._on_inspect_confirmed)
         self.viewer.line_points_confirmed.connect(self._on_line_confirmed)
 
-        ctrl_layout.addWidget(grp_inspect)
-        self._route_widgets.append(grp_inspect)
+        route_tabs.addTab(tab_inspect, "点状航线")
+
+        ctrl_layout.addWidget(route_tabs)
+        self._route_widgets.append(route_tabs)
 
         # -- 航线管理 --
         grp_route = QGroupBox("航线管理")
@@ -1141,7 +1136,7 @@ class MainWindow(QMainWindow):
     def generate_inspect_route(self):
         """从巡检目标点自动生成无人机航线（带碰撞检测）"""
         if not self._inspect_target_points:
-            QMessageBox.warning(self, "提示", "请先选择巡检点")
+            QMessageBox.warning(self, "提示", "请先选择巡检点位")
             return
 
         try:
