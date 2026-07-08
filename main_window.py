@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (
     QGroupBox, QLabel, QLineEdit, QPushButton, QComboBox,
     QFileDialog, QMessageBox, QButtonGroup, QSlider,
     QProgressBar, QCheckBox, QGridLayout, QScrollArea, QTabWidget,
-    QListWidget, QListWidgetItem, QAction
+    QListWidget, QListWidgetItem, QAction, QActionGroup, QStackedWidget
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
@@ -50,21 +50,55 @@ class MainWindow(QMainWindow):
         menubar = self.menuBar()
         menubar.setStyleSheet("QMenuBar { font-size: 13px; } QMenuBar::item { padding: 4px 10px; }")
 
+        # ─── 文件 ───
         file_menu = menubar.addMenu("文件")
+
+        act_load_pc = QAction("加载点云", self)
+        act_load_pc.triggered.connect(self.load_point_cloud)
+        file_menu.addAction(act_load_pc)
+
+        file_menu.addSeparator()
 
         act_save_ros = QAction("保存ROS航线", self)
         act_save_ros.triggered.connect(self.save_route)
         file_menu.addAction(act_save_ros)
 
-        act_load = QAction("加载航线", self)
-        act_load.triggered.connect(self.load_route)
-        file_menu.addAction(act_load)
+        act_load_route = QAction("加载航线", self)
+        act_load_route.triggered.connect(self.load_route)
+        file_menu.addAction(act_load_route)
 
         file_menu.addSeparator()
 
         act_export_maicro = QAction("导出maicro航线文件", self)
         act_export_maicro.triggered.connect(self.export_maicro_route)
         file_menu.addAction(act_export_maicro)
+
+        # ─── 展示 ───
+        view_menu = menubar.addMenu("展示")
+
+        self._act_clip_toggle = QAction("裁剪框", self)
+        self._act_clip_toggle.setCheckable(True)
+        self._act_clip_toggle.triggered.connect(self._on_menu_clip_toggle)
+        view_menu.addAction(self._act_clip_toggle)
+
+        view_menu.addSeparator()
+
+        render_menu = view_menu.addMenu("渲染模式")
+        self._render_mode_group = QActionGroup(self)
+        for name in ["自动", "球体", "立方体", "像素"]:
+            act = QAction(name, self)
+            act.setCheckable(True)
+            act.setActionGroup(self._render_mode_group)
+            if name == "自动":
+                act.setChecked(True)
+            act.triggered.connect(lambda checked, n=name: self._on_menu_render_mode(n))
+            render_menu.addAction(act)
+
+        size_menu = view_menu.addMenu("点云大小")
+        for val in [1, 3, 5, 8, 10, 15, 20]:
+            act = QAction(f"{val * 0.01:.2f}", self)
+            act.triggered.connect(lambda checked, v=val: self._on_menu_point_size(v))
+            size_menu.addAction(act)
 
     def _init_ui(self):
         central = QWidget()
@@ -115,16 +149,21 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         gl.addWidget(self.progress_bar)
 
-        # 裁剪框（XYZ过滤）
+        # 裁剪框（XYZ过滤）— 通过菜单"展示→裁剪框"控制显隐
+        self._clip_group = QGroupBox("裁剪框")
+        self._clip_group.setVisible(False)
+        clip_lay = QVBoxLayout(self._clip_group)
+        clip_lay.setSpacing(3)
+
         clip_row0 = QHBoxLayout()
-        self.chk_clip = QCheckBox("裁剪框:")
+        self.chk_clip = QCheckBox("启用")
         self.chk_clip.setChecked(False)
         clip_row0.addWidget(self.chk_clip)
         self.btn_clip_apply = QPushButton("应用")
         self.btn_clip_apply.setMaximumWidth(50)
         self.btn_clip_apply.setEnabled(False)
         clip_row0.addWidget(self.btn_clip_apply)
-        gl.addLayout(clip_row0)
+        clip_lay.addLayout(clip_row0)
 
         clip_row_x = QHBoxLayout()
         clip_row_x.addWidget(QLabel("X:"))
@@ -133,7 +172,7 @@ class MainWindow(QMainWindow):
         clip_row_x.addWidget(self.edt_clip_xmin)
         clip_row_x.addWidget(QLabel("~"))
         clip_row_x.addWidget(self.edt_clip_xmax)
-        gl.addLayout(clip_row_x)
+        clip_lay.addLayout(clip_row_x)
 
         clip_row_y = QHBoxLayout()
         clip_row_y.addWidget(QLabel("Y:"))
@@ -142,7 +181,7 @@ class MainWindow(QMainWindow):
         clip_row_y.addWidget(self.edt_clip_ymin)
         clip_row_y.addWidget(QLabel("~"))
         clip_row_y.addWidget(self.edt_clip_ymax)
-        gl.addLayout(clip_row_y)
+        clip_lay.addLayout(clip_row_y)
 
         clip_row_z = QHBoxLayout()
         clip_row_z.addWidget(QLabel("Z:"))
@@ -151,7 +190,8 @@ class MainWindow(QMainWindow):
         clip_row_z.addWidget(self.edt_clip_zmin)
         clip_row_z.addWidget(QLabel("~"))
         clip_row_z.addWidget(self.edt_clip_zmax)
-        gl.addLayout(clip_row_z)
+        clip_lay.addLayout(clip_row_z)
+        gl.addWidget(self._clip_group)
 
         # 点云渲染模式 + 大小
         render_row = QHBoxLayout()
@@ -265,9 +305,16 @@ class MainWindow(QMainWindow):
         ctrl_layout.addWidget(grp_pick)
         self._route_widgets.append(grp_pick)
 
-        # ─── 航线类型 Tab ───
-        route_tabs = QTabWidget()
-        route_tabs.setStyleSheet("QTabWidget::pane { border: 1px solid #ccc; } QTabBar::tab { background: #e0e0de; padding: 6px 12px; color: #000; } QTabBar::tab:selected { background: #fff; }")
+        # ─── 航线类型选择 ───
+        route_type_row = QHBoxLayout()
+        route_type_row.addWidget(QLabel("航线类型:"))
+        self.cmb_route_type = QComboBox()
+        self.cmb_route_type.addItems(["面状航线", "立方体航线", "圆柱体航线", "直线航线", "点状航线"])
+        route_type_row.addWidget(self.cmb_route_type)
+        ctrl_layout.addLayout(route_type_row)
+
+        self._route_stack = QStackedWidget()
+        self.cmb_route_type.currentIndexChanged.connect(self._route_stack.setCurrentIndex)
 
         # -- Tab 1: 面状航线 --
         tab_flat = QWidget()
@@ -337,7 +384,7 @@ class MainWindow(QMainWindow):
         self.btn_poly_select.clicked.connect(self._start_polygon_select)
         fl.addWidget(self.btn_poly_select, 6, 2, 1, 2)
 
-        route_tabs.addTab(tab_flat, "面状航线")
+        self._route_stack.addWidget(tab_flat)
 
         # -- Tab 2: 立方体航线 --
         tab_cube = QWidget()
@@ -390,7 +437,7 @@ class MainWindow(QMainWindow):
         self.btn_cube_place.setStyleSheet("QPushButton { background: #d8e8d8; font-weight: bold; padding: 6px; } QPushButton:hover { background: #c8d8c8; }")
         self.btn_cube_place.clicked.connect(lambda: self._start_place_mode("cube"))
         cl.addWidget(self.btn_cube_place, 6, 2, 1, 2)
-        route_tabs.addTab(tab_cube, "立方体航线")
+        self._route_stack.addWidget(tab_cube)
 
         # -- Tab 3: 圆柱体航线 --
         tab_cyl = QWidget()
@@ -445,7 +492,7 @@ class MainWindow(QMainWindow):
         self.btn_cyl_place.setStyleSheet("QPushButton { background: #d8e8d8; font-weight: bold; padding: 6px; } QPushButton:hover { background: #c8d8c8; }")
         self.btn_cyl_place.clicked.connect(lambda: self._start_place_mode("cylinder"))
         cyl.addWidget(self.btn_cyl_place, 6, 2, 1, 2)
-        route_tabs.addTab(tab_cyl, "圆柱体航线")
+        self._route_stack.addWidget(tab_cyl)
 
         # -- Tab 4: 直线航线 --
         tab_line = QWidget()
@@ -477,7 +524,7 @@ class MainWindow(QMainWindow):
         btn_apply_line.clicked.connect(self.generate_line_route)
         ll.addWidget(btn_apply_line, 3, 0, 1, 4)
 
-        route_tabs.addTab(tab_line, "直线航线")
+        self._route_stack.addWidget(tab_line)
 
         # -- Tab 5: 点状航线 --
         tab_inspect = QWidget()
@@ -513,10 +560,10 @@ class MainWindow(QMainWindow):
         self.viewer.inspect_points_confirmed.connect(self._on_inspect_confirmed)
         self.viewer.line_points_confirmed.connect(self._on_line_confirmed)
 
-        route_tabs.addTab(tab_inspect, "点状航线")
+        self._route_stack.addWidget(tab_inspect)
 
-        ctrl_layout.addWidget(route_tabs)
-        self._route_widgets.append(route_tabs)
+        ctrl_layout.addWidget(self._route_stack)
+        self._route_widgets.append(self._route_stack)
 
         # -- 航线管理 --
         grp_route = QGroupBox("航线管理")
@@ -811,7 +858,21 @@ class MainWindow(QMainWindow):
                   self.edt_clip_ymin, self.edt_clip_ymax,
                   self.edt_clip_zmin, self.edt_clip_zmax, self.btn_clip_apply]:
             w.setEnabled(checked)
+        self._act_clip_toggle.setChecked(checked)
         self._refresh_point_cloud()
+
+    def _on_menu_clip_toggle(self, checked):
+        """菜单栏裁剪框开关"""
+        self.chk_clip.setChecked(checked)
+        self._clip_group.setVisible(checked)
+
+    def _on_menu_render_mode(self, name):
+        """菜单栏渲染模式切换"""
+        self.cmb_render_mode.setCurrentText(name)
+
+    def _on_menu_point_size(self, val):
+        """菜单栏点云大小切换"""
+        self.sld_point_size.setValue(val)
 
     def _apply_clip(self):
         if self.points is None or len(self.points) == 0:
