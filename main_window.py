@@ -39,7 +39,7 @@ class MainWindow(QMainWindow):
             "act_copy_maicro": "复制maicro航线到剪贴板",
             "act_clip": "裁剪框", "menu_render": "渲染模式", "menu_size": "点云大小",
             "menu_lang": "语言", "lang_zh": "中文", "lang_en": "English",
-            "grp_mode": "工作模式", "btn_preview": "预览模式", "btn_route": "航线模式",
+            "grp_mode": "工作模式", "btn_route": "航线模式",
             "grp_load": "点云渲染",
             "lbl_pc_info": "未加载点云",
             "grp_bridge": "桥梁参数", "lbl_bridge_name": "桥梁名称:",
@@ -93,7 +93,7 @@ class MainWindow(QMainWindow):
             "act_copy_maicro": "Copy Maicro Route to Clipboard",
             "act_clip": "Clip Box", "menu_render": "Render Mode", "menu_size": "Point Size",
             "menu_lang": "Language", "lang_zh": "中文", "lang_en": "English",
-            "grp_mode": "Mode", "btn_preview": "Preview", "btn_route": "Route",
+            "grp_mode": "Mode", "btn_route": "Route",
             "grp_load": "Point Cloud Render",
             "lbl_pc_info": "No point cloud loaded",
             "grp_bridge": "Bridge Params", "lbl_bridge_name": "Bridge Name:",
@@ -260,21 +260,6 @@ class MainWindow(QMainWindow):
         ctrl.setMinimumWidth(320)
         ctrl_layout = QVBoxLayout(ctrl)
         ctrl_layout.setSpacing(6)
-
-        # -- 模式切换 --
-        grp_mode = QGroupBox("工作模式")
-        mode_layout = QHBoxLayout(grp_mode)
-        self._mode_group = QButtonGroup(self)
-        self.btn_mode_preview = QPushButton("预览模式")
-        self.btn_mode_preview.setCheckable(True)
-        self.btn_mode_preview.setChecked(True)
-        self.btn_mode_route = QPushButton("航线模式")
-        self.btn_mode_route.setCheckable(True)
-        self._mode_group.addButton(self.btn_mode_preview)
-        self._mode_group.addButton(self.btn_mode_route)
-        mode_layout.addWidget(self.btn_mode_preview)
-        mode_layout.addWidget(self.btn_mode_route)
-        ctrl_layout.addWidget(grp_mode)
 
         # -- 点云渲染 --
         grp_load = QGroupBox("点云渲染")
@@ -755,24 +740,6 @@ class MainWindow(QMainWindow):
         self.edt_cyl_diam.textChanged.connect(lambda: self._on_cyl_area_changed())
         self.edt_cyl_dist.textChanged.connect(lambda: self._on_cyl_area_changed())
 
-        self.btn_mode_preview.clicked.connect(lambda: self._switch_mode("preview"))
-        self.btn_mode_route.clicked.connect(lambda: self._switch_mode("route"))
-
-        self._switch_mode("preview")
-
-    def _switch_mode(self, mode):
-        is_route = (mode == "route")
-        for w in self._route_widgets:
-            w.setVisible(is_route)
-        self.btn_mode_preview.setChecked(not is_route)
-        self.btn_mode_route.setChecked(is_route)
-        if is_route:
-            self.btn_mode_preview.setStyleSheet("")
-            self.btn_mode_route.setStyleSheet("QPushButton { background: #4a9eff; font-weight: bold; color: #fff; }")
-        else:
-            self.btn_mode_preview.setStyleSheet("QPushButton { background: #4a9eff; font-weight: bold; color: #fff; }")
-            self.btn_mode_route.setStyleSheet("")
-
     def _on_pillar_type_changed(self, idx):
         if idx == 1:
             self.edt_dy.setText(self.edt_dx.text())
@@ -1106,7 +1073,6 @@ class MainWindow(QMainWindow):
             text_map = {v: k for k, v in self._INLINE_LABELS.items()}
             # 已知控件的翻译
             known = {
-                "Preview": "预览模式", "Route": "航线模式",
                 "Apply": "应用",
                 "Place (Right-click to confirm)": "点击放置（右键确认生成）",
                 "Pick Points": "选择起终点",
@@ -1125,7 +1091,6 @@ class MainWindow(QMainWindow):
             # 中→英
             text_map = dict(self._INLINE_LABELS)
             known = {
-                "预览模式": "Preview", "航线模式": "Route",
                 "应用": "Apply",
                 "点击放置（右键确认生成）": "Place (Right-click to confirm)",
                 "选择起终点": "Pick Points",
