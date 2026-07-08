@@ -34,8 +34,9 @@ class MainWindow(QMainWindow):
             "win_title": "桥梁巡检无人机航线规划工具",
             "menu_file": "文件", "menu_view": "展示",
             "act_load_pc": "加载点云", "act_save_ros": "保存ROS航线",
-            "act_load_route": "加载ROS航线", "act_copy_route": "复制航线到剪贴板",
+            "act_load_route": "加载ROS航线", "act_copy_route": "复制ROS航线到剪贴板",
             "act_export_maicro": "导出maicro航线文件",
+            "act_copy_maicro": "复制maicro航线到剪贴板",
             "act_clip": "裁剪框", "menu_render": "渲染模式", "menu_size": "点云大小",
             "menu_lang": "语言", "lang_zh": "中文", "lang_en": "English",
             "grp_mode": "工作模式", "btn_preview": "预览模式", "btn_route": "航线模式",
@@ -74,7 +75,7 @@ class MainWindow(QMainWindow):
             "btn_gen_inspect": "生成点状航线",
             "grp_route_mgmt": "航线管理", "lbl_wp_count": "航点: 0",
             "btn_clear_route": "清除航线", "btn_save_ros2": "保存ROS航线",
-            "btn_copy": "复制航线到剪贴板", "btn_load_route2": "加载航线 (JSON)",
+            "btn_copy": "复制ROS航线到剪贴板", "btn_load_route2": "加载航线 (JSON)",
             "chk_heading": "显示机头方向",
             "lbl_shortcuts": "快捷键: 1=俯视 2=正视 3=侧视 4=透视 5=仰视  Esc=取消",
             "clip_enable": "启用", "btn_clip_apply": "应用",
@@ -87,8 +88,9 @@ class MainWindow(QMainWindow):
             "win_title": "Bridge Inspection Drone Route Planner",
             "menu_file": "File", "menu_view": "View",
             "act_load_pc": "Load Point Cloud", "act_save_ros": "Save ROS Route",
-            "act_load_route": "Load ROS Route", "act_copy_route": "Copy Route to Clipboard",
+            "act_load_route": "Load ROS Route", "act_copy_route": "Copy ROS Route to Clipboard",
             "act_export_maicro": "Export Maicro Route",
+            "act_copy_maicro": "Copy Maicro Route to Clipboard",
             "act_clip": "Clip Box", "menu_render": "Render Mode", "menu_size": "Point Size",
             "menu_lang": "Language", "lang_zh": "中文", "lang_en": "English",
             "grp_mode": "Mode", "btn_preview": "Preview", "btn_route": "Route",
@@ -127,7 +129,7 @@ class MainWindow(QMainWindow):
             "btn_gen_inspect": "Generate Inspect Route",
             "grp_route_mgmt": "Route Mgmt", "lbl_wp_count": "Waypoints: 0",
             "btn_clear_route": "Clear Route", "btn_save_ros2": "Save ROS Route",
-            "btn_copy": "Copy to Clipboard", "btn_load_route2": "Load Route (JSON)",
+            "btn_copy": "Copy ROS Route to Clipboard", "btn_load_route2": "Load Route (JSON)",
             "chk_heading": "Show Heading",
             "lbl_shortcuts": "Keys: 1=Top 2=Front 3=Side 4=Persp 5=Bottom  Esc=Cancel",
             "clip_enable": "Enable", "btn_clip_apply": "Apply",
@@ -179,7 +181,7 @@ class MainWindow(QMainWindow):
         self._act_load_route.triggered.connect(self.load_route)
         self._file_menu.addAction(self._act_load_route)
 
-        self._act_copy_route = QAction("复制航线到剪贴板", self)
+        self._act_copy_route = QAction("复制ROS航线到剪贴板", self)
         self._act_copy_route.triggered.connect(self.copy_route_to_clipboard)
         self._file_menu.addAction(self._act_copy_route)
 
@@ -188,6 +190,10 @@ class MainWindow(QMainWindow):
         self._act_export_maicro = QAction("导出maicro航线文件", self)
         self._act_export_maicro.triggered.connect(self.export_maicro_route)
         self._file_menu.addAction(self._act_export_maicro)
+
+        self._act_copy_maicro = QAction("复制maicro航线到剪贴板", self)
+        self._act_copy_maicro.triggered.connect(self.copy_maicro_route_to_clipboard)
+        self._file_menu.addAction(self._act_copy_maicro)
 
         # ─── 展示 ───
         self._view_menu = menubar.addMenu("展示")
@@ -1072,9 +1078,17 @@ class MainWindow(QMainWindow):
         self._act_load_route.setText(t["act_load_route"])
         self._act_copy_route.setText(t["act_copy_route"])
         self._act_export_maicro.setText(t["act_export_maicro"])
+        self._act_copy_maicro.setText(t["act_copy_maicro"])
         self._view_menu.setTitle(t["menu_view"])
         self._act_clip_toggle.setText(t["act_clip"])
         self._render_menu.setTitle(t["menu_render"])
+        # 更新渲染模式子菜单文本
+        render_map = {"自动": "Auto", "球体": "Sphere", "立方体": "Cube", "像素": "Pixel"}
+        if self._lang == "zh":
+            render_map = {v: k for k, v in render_map.items()}
+        for old_name, act in self._render_mode_acts.items():
+            new_name = render_map.get(old_name, old_name)
+            act.setText(new_name)
         self._size_menu.setTitle(t["menu_size"])
         self._lang_menu.setTitle(t["menu_lang"])
 
@@ -2419,6 +2433,93 @@ class MainWindow(QMainWindow):
         json_str = json.dumps(data, indent=2, ensure_ascii=False)
         QApplication.clipboard().setText(json_str)
         QMessageBox.information(self, "已复制", f"航线已复制到剪贴板（{len(data['poses'])} 个航点）")
+
+    def copy_maicro_route_to_clipboard(self):
+        """复制maicro格式航线到剪贴板"""
+        if not self.waypoints:
+            QMessageBox.information(self, "提示", "没有航线可复制")
+            return
+
+        from datetime import datetime
+        ts = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+
+        # 获取相机参数
+        cam_name = self.cmb_camera.currentText()
+        if "长焦" in cam_name:
+            camera_source = "ZOOM_CAMERA"
+        else:
+            camera_source = "WIDE_CAMERA"
+        focal_length_map = {
+            "DJI Mavic 3E": 24, "DJI Mavic 3T": 24,
+            "M4T 广角": 24, "M4T 中长焦": 72, "M4T 长焦": 162,
+            "DJI M350+P1(24mm)": 24, "DJI M350+P1(35mm)": 35,
+            "DJI M350+P1(50mm)": 50, "DJI M350+L2(雷达)": 24,
+            "自定义": 24,
+        }
+        focal_length = focal_length_map.get(cam_name, 24)
+        bridge_name = getattr(self, '_bridge_name', '桥梁')
+
+        way_point_list = []
+        for i, wp in enumerate(self.waypoints):
+            pos = wp['pos']
+            gimbal_pitch = wp.get('gimbal_pitch', -90.0)
+            speed = wp.get('speed', 1.0)
+            action = wp.get('action', 'fly')
+            shoot = (action == 'scan')
+
+            q = wp['quat']
+            yaw = np.degrees(np.arctan2(
+                2.0 * (q[0] * q[3] + q[1] * q[2]),
+                1.0 - 2.0 * (q[2]**2 + q[3]**2)
+            ))
+
+            wp_data = {
+                "index": i,
+                "lat": 0.0, "lon": 0.0, "alt": float(pos[2]),
+                "x": round(float(pos[0]), 6),
+                "y": round(float(pos[1]), 6),
+                "z": round(float(pos[2]), 6),
+                "devicePartName": f"航点{i+1}",
+                "cameraSource": camera_source,
+                "focalLength": focal_length,
+                "gimbalPitch": round(float(gimbal_pitch), 2),
+                "speed": round(float(speed), 1),
+                "head": round(float(yaw), 2),
+                "yaw": round(float(yaw), 2),
+                "shoot": shoot,
+                "thermal": False,
+                "headingMode": "fixed"
+            }
+
+            if 'target_pos' in wp:
+                tgt = wp['target_pos']
+                wp_data["aimTarget"] = {
+                    "focalRing": 0,
+                    "distance": round(float(np.linalg.norm(np.array(pos) - np.array(tgt))), 2),
+                    "alt": round(float(tgt[2]), 6),
+                    "lon": 0.0, "lat": 0.0
+                }
+
+            way_point_list.append(wp_data)
+
+        maicro_data = {
+            "aircraftModel": "DJI_MATRICE_4_SERIES",
+            "createdTime": ts,
+            "bridgeName": bridge_name,
+            "partName": "自定义航线",
+            "name": f"{bridge_name}_自定义航线",
+            "photoCount": len([w for w in way_point_list if w.get("shoot")]),
+            "partType": 1,
+            "exposure": {"shutter": 500, "ev": 0, "iso": 400},
+            "photoMode": 1,
+            "initialSpeed": 2,
+            "wayPointList": way_point_list
+        }
+
+        json_str = json.dumps(maicro_data, indent=2, ensure_ascii=False)
+        QApplication.clipboard().setText(json_str)
+        QMessageBox.information(self, "已复制",
+            f"maicro航线已复制到剪贴板（{len(way_point_list)} 个航点）")
 
     # ─── 导出 maicro 航线文件 ───
     def export_maicro_route(self):
