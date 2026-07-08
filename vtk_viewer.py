@@ -368,7 +368,7 @@ class VTKViewer(QWidget):
         self._actors.clear()
         self._cloud_actor = None
 
-    def add_point_cloud(self, points, render_mode='auto'):
+    def add_point_cloud(self, points, render_mode='auto', point_size=0.05):
         """显示点云（按高度着色，支持球体/立方体/像素渲染模式）"""
         if not self._vtk_available or len(points) == 0:
             return
@@ -428,12 +428,12 @@ class VTKViewer(QWidget):
         if use_glyph:
             if render_mode == 'cube':
                 src = self._vtkCubeSource()
-                src.SetXLength(0.1)
-                src.SetYLength(0.1)
-                src.SetZLength(0.1)
+                src.SetXLength(point_size * 2)
+                src.SetYLength(point_size * 2)
+                src.SetZLength(point_size * 2)
             else:
                 src = self._vtkSphereSource()
-                src.SetRadius(0.05)
+                src.SetRadius(point_size)
                 src.SetThetaResolution(6)
                 src.SetPhiResolution(6)
             glyph = self._vtkGlyph3D()
@@ -456,7 +456,7 @@ class VTKViewer(QWidget):
         actor = self._vtkActor()
         actor.SetMapper(mapper)
         if not use_glyph:
-            actor.GetProperty().SetPointSize(2)
+            actor.GetProperty().SetPointSize(max(1, int(point_size * 40)))
 
         self.renderer.AddActor(actor)
         self._actors.append(actor)

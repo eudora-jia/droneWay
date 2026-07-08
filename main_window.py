@@ -111,14 +111,22 @@ class MainWindow(QMainWindow):
         z_filter_row.addWidget(self.btn_z_filter_apply)
         gl.addLayout(z_filter_row)
 
-        # 点云渲染模式
+        # 点云渲染模式 + 大小
         render_row = QHBoxLayout()
         render_row.addWidget(QLabel("渲染:"))
         self.cmb_render_mode = QComboBox()
         self.cmb_render_mode.addItems(["自动", "球体", "立方体", "像素"])
-        self.cmb_render_mode.setMaximumWidth(100)
+        self.cmb_render_mode.setMaximumWidth(80)
         render_row.addWidget(self.cmb_render_mode)
-        render_row.addStretch()
+        render_row.addWidget(QLabel("大小:"))
+        self.sld_point_size = NoWheelSlider(Qt.Horizontal)
+        self.sld_point_size.setRange(1, 20)
+        self.sld_point_size.setValue(5)
+        self.sld_point_size.setMaximumWidth(80)
+        render_row.addWidget(self.sld_point_size)
+        self.lbl_point_size = QLabel("0.05")
+        self.lbl_point_size.setMaximumWidth(35)
+        render_row.addWidget(self.lbl_point_size)
         gl.addLayout(render_row)
         ctrl_layout.addWidget(grp_load)
 
@@ -411,6 +419,7 @@ class MainWindow(QMainWindow):
         self.chk_z_filter.toggled.connect(self._on_z_filter_toggled)
         self.btn_z_filter_apply.clicked.connect(self._apply_z_filter)
         self.cmb_render_mode.currentTextChanged.connect(self._on_render_mode_changed)
+        self.sld_point_size.valueChanged.connect(self._on_point_size_changed)
         self.btn_clear.clicked.connect(self.clear_route)
         self.btn_save.clicked.connect(self.save_route)
         self.btn_load_route.clicked.connect(self.load_route)
@@ -533,7 +542,7 @@ class MainWindow(QMainWindow):
             self.progress_bar.setValue(30)
             QApplication.processEvents()
 
-            self.viewer.add_point_cloud(self.points, self._get_render_mode())
+            self.viewer.add_point_cloud(self.points, self._get_render_mode(), self._get_point_size())
             self.progress_bar.setValue(80)
             QApplication.processEvents()
 
@@ -634,22 +643,27 @@ class MainWindow(QMainWindow):
         text = self.cmb_render_mode.currentText()
         return {"自动": "auto", "球体": "sphere", "立方体": "cube", "像素": "pixel"}.get(text, "auto")
 
+    def _get_point_size(self):
+        return self.sld_point_size.value() * 0.01
+
+    def _on_point_size_changed(self, val):
+        self.lbl_point_size.setText(f"{val * 0.01:.2f}")
+        self._refresh_point_cloud()
+
     def _on_render_mode_changed(self, text):
-        # 渲染模式变化时刷新显示
+        self._refresh_point_cloud()
+
+    def _refresh_point_cloud(self):
         if self.chk_z_filter.isChecked():
             self._apply_z_filter()
         elif self.points is not None:
-            self.viewer.add_point_cloud(self.points, self._get_render_mode())
+            self.viewer.add_point_cloud(self.points, self._get_render_mode(), self._get_point_size())
 
     def _on_z_filter_toggled(self, checked):
         self.edt_z_filter_min.setEnabled(checked)
         self.edt_z_filter_max.setEnabled(checked)
         self.btn_z_filter_apply.setEnabled(checked)
-        if checked:
-            self._apply_z_filter()
-        else:
-            if self.points is not None:
-                self.viewer.add_point_cloud(self.points, self._get_render_mode())
+        self._refresh_point_cloud()
 
     def _apply_z_filter(self):
         if self.points is None or len(self.points) == 0:
@@ -665,7 +679,7 @@ class MainWindow(QMainWindow):
         if len(filtered) == 0:
             QMessageBox.information(self, "提示", "过滤后无点云数据")
             return
-        self.viewer.add_point_cloud(filtered, self._get_render_mode())
+        self.viewer.add_point_cloud(filtered, self._get_render_mode(), self._get_point_size())
         n_total = len(self.points)
         n_show = len(filtered)
         self.lbl_pc_info.setText(f"已加载: {n_total:,} 点 (显示 {n_show:,})")
