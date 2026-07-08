@@ -264,7 +264,9 @@ class MainWindow(QMainWindow):
         self._camera_fov_map = {
             "DJI Mavic 3E": 84,
             "DJI Mavic 3T": 82,
-            "DJI Matrice 4T": 82,
+            "M4T 广角": 82,
+            "M4T 中长焦": 35,
+            "M4T 长焦": 15,
             "DJI M350+P1(24mm)": 84,
             "DJI M350+P1(35mm)": 54,
             "DJI M350+P1(50mm)": 40,
