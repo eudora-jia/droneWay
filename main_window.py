@@ -40,7 +40,7 @@ class MainWindow(QMainWindow):
             "act_clip": "裁剪框", "menu_render": "渲染模式", "menu_size": "点云大小",
             "menu_lang": "语言", "lang_zh": "中文", "lang_en": "English",
             "grp_mode": "工作模式", "btn_preview": "预览模式", "btn_route": "航线模式",
-            "grp_load": "加载点云",
+            "grp_load": "点云渲染",
             "lbl_pc_info": "未加载点云",
             "grp_bridge": "桥梁参数", "lbl_bridge_name": "桥梁名称:",
             "lbl_bridge_type": "桥型:", "lbl_bridge_len": "桥长(m):",
@@ -94,7 +94,7 @@ class MainWindow(QMainWindow):
             "act_clip": "Clip Box", "menu_render": "Render Mode", "menu_size": "Point Size",
             "menu_lang": "Language", "lang_zh": "中文", "lang_en": "English",
             "grp_mode": "Mode", "btn_preview": "Preview", "btn_route": "Route",
-            "grp_load": "Point Cloud",
+            "grp_load": "Point Cloud Render",
             "lbl_pc_info": "No point cloud loaded",
             "grp_bridge": "Bridge Params", "lbl_bridge_name": "Bridge Name:",
             "lbl_bridge_type": "Type:", "lbl_bridge_len": "Length(m):",
@@ -276,8 +276,8 @@ class MainWindow(QMainWindow):
         mode_layout.addWidget(self.btn_mode_route)
         ctrl_layout.addWidget(grp_mode)
 
-        # -- 加载点云 --
-        grp_load = QGroupBox("加载点云")
+        # -- 点云渲染 --
+        grp_load = QGroupBox("点云渲染")
         gl = QVBoxLayout(grp_load)
         self.progress_bar = QProgressBar()
         self.progress_bar.setMaximumHeight(12)
