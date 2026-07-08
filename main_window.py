@@ -566,7 +566,7 @@ class MainWindow(QMainWindow):
                 ]
 
                 # 立方体底面Z
-                cube_cz = self._compute_default_cz(cube_corners, takeoff_z)
+                cube_cz = self._compute_default_cz(cube_corners, 1.2)
                 self.edt_cz.setText(f"{cube_cz:.1f}")
 
                 # 圆柱体圆周四点
@@ -586,7 +586,7 @@ class MainWindow(QMainWindow):
                     (center[0] - R, center[1]),
                     (center[0], center[1] - R),
                 ]
-                cyl_cz = self._compute_default_cz(cyl_corners, takeoff_z)
+                cyl_cz = self._compute_default_cz(cyl_corners, 1.2)
                 self.edt_cyl_cz.setText(f"{cyl_cz:.1f}")
                 max_z_cube = self._compute_max_z_for_area(cube_corners)
                 if max_z_cube is not None:
