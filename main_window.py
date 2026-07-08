@@ -260,25 +260,37 @@ class MainWindow(QMainWindow):
         fl.addWidget(QLabel("速度(m/s):"), 1, 2)
         self.edt_flat_speed = QLineEdit("1"); fl.addWidget(self.edt_flat_speed, 1, 3)
 
-        fl.addWidget(QLabel("曲度:"), 2, 0)
+        fl.addWidget(QLabel("相机FOV(°):"), 2, 0)
+        self.edt_camera_fov = QLineEdit("80"); fl.addWidget(self.edt_camera_fov, 2, 1)
+        fl.addWidget(QLabel("航向重叠(%):"), 2, 2)
+        self.edt_forward_overlap = QLineEdit("10"); fl.addWidget(self.edt_forward_overlap, 2, 3)
+
+        fl.addWidget(QLabel("旁向重叠(%):"), 3, 0)
+        self.edt_side_overlap = QLineEdit("10"); fl.addWidget(self.edt_side_overlap, 3, 1)
+        btn_calc_overlap = QPushButton("自动算间距")
+        btn_calc_overlap.setStyleSheet("QPushButton { background: #e8e0d0; padding: 4px; } QPushButton:hover { background: #d8d0c0; }")
+        btn_calc_overlap.clicked.connect(self._calc_overlap_spacing)
+        fl.addWidget(btn_calc_overlap, 3, 2, 1, 2)
+
+        fl.addWidget(QLabel("曲度:"), 4, 0)
         self.sld_curvature = NoWheelSlider(Qt.Horizontal)
         self.sld_curvature.setRange(0, 100)
         self.sld_curvature.setValue(0)
-        fl.addWidget(self.sld_curvature, 2, 1, 1, 2)
+        fl.addWidget(self.sld_curvature, 4, 1, 1, 2)
         self.lbl_curvature_val = QLabel("0.00")
         self.lbl_curvature_val.setMinimumWidth(30)
-        fl.addWidget(self.lbl_curvature_val, 2, 3)
+        fl.addWidget(self.lbl_curvature_val, 4, 3)
         self.sld_curvature.valueChanged.connect(lambda v: self.lbl_curvature_val.setText(f"{v/100:.2f}"))
 
         btn_apply_flat = QPushButton("应用")
         btn_apply_flat.setStyleSheet("QPushButton { background: #d0d8e8; padding: 4px; } QPushButton:hover { background: #c0c8d8; }")
         btn_apply_flat.clicked.connect(self._apply_flat_params)
-        fl.addWidget(btn_apply_flat, 3, 0, 1, 2)
+        fl.addWidget(btn_apply_flat, 5, 0, 1, 2)
 
         self.btn_poly_select = QPushButton("点击放置（右键确认生成）")
         self.btn_poly_select.setStyleSheet("QPushButton { background: #d8e8d8; font-weight: bold; padding: 6px; } QPushButton:hover { background: #c8d8c8; }")
         self.btn_poly_select.clicked.connect(self._start_polygon_select)
-        fl.addWidget(self.btn_poly_select, 3, 2, 1, 2)
+        fl.addWidget(self.btn_poly_select, 5, 2, 1, 2)
 
         route_tabs.addTab(tab_flat, "面状航线")
 
@@ -1369,6 +1381,31 @@ class MainWindow(QMainWindow):
             self.viewer.add_route(self.waypoints)
             self._check_safety_distance()
         print(f"[Safety] 起飞高度={self.edt_takeoff_z.text()}m, 初始偏航角={self.edt_takeoff_yaw.text()}°")
+
+    def _calc_overlap_spacing(self):
+        """根据相机FOV和重叠率自动计算航点距离和线间距"""
+        import math
+        try:
+            h = float(self.edt_z.text())
+            fov = float(self.edt_camera_fov.text())
+            fwd_overlap = float(self.edt_forward_overlap.text()) / 100.0
+            side_overlap = float(self.edt_side_overlap.text()) / 100.0
+        except ValueError:
+            QMessageBox.warning(self, "提示", "请输入有效数值")
+            return
+        if h <= 0 or fov <= 0 or fov >= 180:
+            QMessageBox.warning(self, "提示", "高度和FOV需为正数，FOV<180°")
+            return
+        if not (0 <= fwd_overlap < 1) or not (0 <= side_overlap < 1):
+            QMessageBox.warning(self, "提示", "重叠率需在0~99%之间")
+            return
+        # 地面覆盖宽度 = 2 * H * tan(FOV/2)
+        cover = 2.0 * h * math.tan(math.radians(fov / 2.0))
+        wp_spacing = round(cover * (1.0 - fwd_overlap), 2)
+        line_spacing = round(cover * (1.0 - side_overlap), 2)
+        self.edt_wp_spacing.setText(str(max(0.1, wp_spacing)))
+        self.edt_spacing.setText(str(max(0.1, line_spacing)))
+        print(f"[Overlap] H={h}m FOV={fov}° 覆盖={cover:.1f}m → 航点间距={wp_spacing}m 线间距={line_spacing}m")
 
     def _apply_flat_params(self):
         """应用面状航线参数并重新生成航线"""
