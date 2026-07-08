@@ -259,6 +259,27 @@ class VTKViewer(QWidget):
                 layout.addWidget(QLabel("VTK not installed.\nRun: pip install vtk"))
                 return
 
+        # 保存 VTK 类为实例属性，供其他方法使用
+        self._vtk = vtk
+        self._QVTKRenderWindowInteractor = QVTKRenderWindowInteractor
+        self._numpy_to_vtk = numpy_to_vtk
+        self._vtkActor = vtkActor
+        self._vtkPolyDataMapper = vtkPolyDataMapper
+        self._vtkRenderer = vtkRenderer
+        self._vtkPoints = vtkPoints
+        self._vtkPolyData = vtkPolyData
+        self._vtkVertexGlyphFilter = vtkVertexGlyphFilter
+        self._vtkSphereSource = vtkSphereSource
+        self._vtkLineSource = vtkLineSource
+        self._vtkArrowSource = vtkArrowSource
+        self._vtkCellArray = vtkCellArray
+        self._vtkPolyLine = vtkPolyLine
+        self._vtkBillboardTextActor3D = vtkBillboardTextActor3D
+        self._vtkTransformPolyDataFilter = vtkTransformPolyDataFilter
+        self._vtkTransform = vtkTransform
+        self._vtkGlyph3D = vtkGlyph3D
+        self._vtkInteractorStyleUser = vtkInteractorStyleUser
+
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -348,7 +369,6 @@ class VTKViewer(QWidget):
 
     def add_point_cloud(self, points):
         """显示点云（按高度着色，大点云自动降采样渲染）"""
-        import vtk
         if not self._vtk_available or len(points) == 0:
             return
         self.clear_actors()
@@ -362,12 +382,12 @@ class VTKViewer(QWidget):
         else:
             render_points = points
 
-        vtk_points = vtkPoints()
-        vtk_array = numpy_to_vtk(render_points.astype(np.float64), deep=True)
+        vtk_points = self._vtkPoints()
+        vtk_array = self._numpy_to_vtk(render_points.astype(np.float64), deep=True)
         vtk_array.SetName('Points')
         vtk_points.SetData(vtk_array)
 
-        polydata = vtkPolyData()
+        polydata = self._vtkPolyData()
         polydata.SetPoints(vtk_points)
 
         z_vals = render_points[:, 2]
@@ -397,36 +417,36 @@ class VTKViewer(QWidget):
         g[mask] = ((1.0 - t[mask]) * 4 * 255).astype(np.uint8)
 
         rgb = np.column_stack([r, g, b]).astype(np.uint8)
-        vtk_colors = numpy_to_vtk(rgb, deep=True, array_type=vtk.VTK_UNSIGNED_CHAR)
+        vtk_colors = self._numpy_to_vtk(rgb, deep=True, array_type=self._vtk.VTK_UNSIGNED_CHAR)
         vtk_colors.SetName('Colors')
         polydata.GetPointData().SetScalars(vtk_colors)
 
         SPHERE_THRESHOLD = 200_000
         if len(render_points) <= SPHERE_THRESHOLD:
             # 小点云：用球体渲染
-            sphere = vtkSphereSource()
+            sphere = self._vtkSphereSource()
             sphere.SetRadius(0.05)
             sphere.SetThetaResolution(6)
             sphere.SetPhiResolution(6)
-            glyph = vtkGlyph3D()
+            glyph = self._vtkGlyph3D()
             glyph.SetInputData(polydata)
             glyph.SetSourceConnection(sphere.GetOutputPort())
             glyph.ScalingOff()
             glyph.Update()
-            mapper = vtkPolyDataMapper()
+            mapper = self._vtkPolyDataMapper()
             mapper.SetInputConnection(glyph.GetOutputPort())
             mapper.ScalarVisibilityOn()
         else:
             # 大点云：用像素点渲染
-            glyph = vtkVertexGlyphFilter()
+            glyph = self._vtkVertexGlyphFilter()
             glyph.SetInputData(polydata)
             glyph.Update()
-            mapper = vtkPolyDataMapper()
+            mapper = self._vtkPolyDataMapper()
             mapper.SetInputConnection(glyph.GetOutputPort())
             mapper.ScalarVisibilityOn()
             mapper.SetScalarModeToDefault()
 
-        actor = vtkActor()
+        actor = self._vtkActor()
         actor.SetMapper(mapper)
         if len(render_points) > SPHERE_THRESHOLD:
             actor.GetProperty().SetPointSize(2)
@@ -525,25 +545,25 @@ class VTKViewer(QWidget):
         BATCH_THRESHOLD = 50
 
         # ── 航线路径 ──
-        vtk_pts = vtkPoints()
+        vtk_pts = self._vtkPoints()
         for wp in waypoints:
             vtk_pts.InsertNextPoint(wp['pos'].tolist())
 
-        polyline = vtkPolyLine()
+        polyline = self._vtkPolyLine()
         polyline.GetPointIds().SetNumberOfIds(n)
         for i in range(n):
             polyline.GetPointIds().SetId(i, i)
 
-        cells = vtkCellArray()
+        cells = self._vtkCellArray()
         cells.InsertNextCell(polyline)
 
-        polydata = vtkPolyData()
+        polydata = self._vtkPolyData()
         polydata.SetPoints(vtk_pts)
         polydata.SetLines(cells)
 
-        mapper = vtkPolyDataMapper()
+        mapper = self._vtkPolyDataMapper()
         mapper.SetInputData(polydata)
-        actor = vtkActor()
+        actor = self._vtkActor()
         actor.SetMapper(mapper)
         actor.GetProperty().SetColor(0.0, 1.0, 0.3)
         actor.GetProperty().SetLineWidth(3.5)
@@ -558,12 +578,12 @@ class VTKViewer(QWidget):
 
         path_points = [origin, takeoff_pt, safe_pt, first_wp]
         for k in range(len(path_points) - 1):
-            line = vtkLineSource()
+            line = self._vtkLineSource()
             line.SetPoint1(path_points[k])
             line.SetPoint2(path_points[k + 1])
-            mapper = vtkPolyDataMapper()
+            mapper = self._vtkPolyDataMapper()
             mapper.SetInputConnection(line.GetOutputPort())
-            actor = vtkActor()
+            actor = self._vtkActor()
             actor.SetMapper(mapper)
             actor.GetProperty().SetColor(0.2, 0.5, 1.0)
             actor.GetProperty().SetLineWidth(3)
@@ -572,26 +592,26 @@ class VTKViewer(QWidget):
             self._actors.append(actor)
 
         # 起飞点球体
-        takeoff_sphere = vtkSphereSource()
+        takeoff_sphere = self._vtkSphereSource()
         takeoff_sphere.SetCenter(takeoff_pt)
         takeoff_sphere.SetRadius(0.2)
         takeoff_sphere.Update()
-        tm = vtkPolyDataMapper()
+        tm = self._vtkPolyDataMapper()
         tm.SetInputConnection(takeoff_sphere.GetOutputPort())
-        ta = vtkActor()
+        ta = self._vtkActor()
         ta.SetMapper(tm)
         ta.GetProperty().SetColor(0.2, 0.5, 1.0)
         self.renderer.AddActor(ta)
         self._actors.append(ta)
 
         # 安全点球体（绿色）
-        safe_sphere = vtkSphereSource()
+        safe_sphere = self._vtkSphereSource()
         safe_sphere.SetCenter(safe_pt)
         safe_sphere.SetRadius(0.25)
         safe_sphere.Update()
-        sm = vtkPolyDataMapper()
+        sm = self._vtkPolyDataMapper()
         sm.SetInputConnection(safe_sphere.GetOutputPort())
-        sa = vtkActor()
+        sa = self._vtkActor()
         sa.SetMapper(sm)
         sa.GetProperty().SetColor(0.2, 0.9, 0.3)
         self.renderer.AddActor(sa)
@@ -602,12 +622,12 @@ class VTKViewer(QWidget):
         arrow_dir = np.array([np.cos(yaw_rad), np.sin(yaw_rad), 0])
         arrow_len = 2.0
         arrow_end = np.array(takeoff_pt) + arrow_dir * arrow_len
-        arrow_line = vtkLineSource()
+        arrow_line = self._vtkLineSource()
         arrow_line.SetPoint1(takeoff_pt)
         arrow_line.SetPoint2(arrow_end.tolist())
-        arrow_mapper = vtkPolyDataMapper()
+        arrow_mapper = self._vtkPolyDataMapper()
         arrow_mapper.SetInputConnection(arrow_line.GetOutputPort())
-        arrow_actor = vtkActor()
+        arrow_actor = self._vtkActor()
         arrow_actor.SetMapper(arrow_mapper)
         arrow_actor.GetProperty().SetColor(1.0, 0.5, 0.0)
         arrow_actor.GetProperty().SetLineWidth(3)
@@ -624,26 +644,26 @@ class VTKViewer(QWidget):
 
         if n > BATCH_THRESHOLD:
             # ── 批量模式：用 vtkGlyph3D 一次性渲染所有球体 ──
-            glyph_pts = vtkPoints()
+            glyph_pts = self._vtkPoints()
             for wp in waypoints:
                 glyph_pts.InsertNextPoint(wp['pos'].tolist())
-            glyph_poly = vtkPolyData()
+            glyph_poly = self._vtkPolyData()
             glyph_poly.SetPoints(glyph_pts)
 
-            glyph_src = vtkSphereSource()
+            glyph_src = self._vtkSphereSource()
             glyph_src.SetRadius(0.15)
             glyph_src.SetThetaResolution(8)
             glyph_src.SetPhiResolution(8)
 
-            glyph = vtkGlyph3D()
+            glyph = self._vtkGlyph3D()
             glyph.SetInputData(glyph_poly)
             glyph.SetSourceConnection(glyph_src.GetOutputPort())
             glyph.ScalingOff()
             glyph.Update()
 
-            sm = vtkPolyDataMapper()
+            sm = self._vtkPolyDataMapper()
             sm.SetInputConnection(glyph.GetOutputPort())
-            sa = vtkActor()
+            sa = self._vtkActor()
             sa.SetMapper(sm)
             sa.GetProperty().SetColor(1.0, 0.2, 0.2)
             self.renderer.AddActor(sa)
@@ -652,13 +672,13 @@ class VTKViewer(QWidget):
         else:
             # ── 少量航点：逐个创建（支持单独拖拽编辑）──
             for wp in waypoints:
-                sphere = vtkSphereSource()
+                sphere = self._vtkSphereSource()
                 sphere.SetCenter(wp['pos'].tolist())
                 sphere.SetRadius(0.15)
                 sphere.Update()
-                m = vtkPolyDataMapper()
+                m = self._vtkPolyDataMapper()
                 m.SetInputConnection(sphere.GetOutputPort())
-                a = vtkActor()
+                a = self._vtkActor()
                 a.SetMapper(m)
                 a.GetProperty().SetColor(1.0, 0.2, 0.2)
                 self.renderer.AddActor(a)
@@ -667,7 +687,7 @@ class VTKViewer(QWidget):
 
             # 标签只在少量航点时显示
             for i, wp in enumerate(waypoints):
-                label = vtkBillboardTextActor3D()
+                label = self._vtkBillboardTextActor3D()
                 label.SetInput(str(i + 1))
                 label.SetPosition(wp['pos'][0], wp['pos'][1], wp['pos'][2] + label_offset * 2)
                 label.SetScale(label_offset * 0.6, label_offset * 0.6, label_offset * 0.6)
@@ -689,24 +709,24 @@ class VTKViewer(QWidget):
 
             if n > BATCH_THRESHOLD:
                 # 批量合并所有方向线（用 numpy 直接构建线段 polydata）
-                line_pts = vtkPoints()
-                line_cells = vtkCellArray()
+                line_pts = self._vtkPoints()
+                line_cells = self._vtkCellArray()
                 for i, wp in enumerate(waypoints):
                     pos = wp['pos']
                     end = pos + headings[i] * line_len
                     idx = line_pts.InsertNextPoint(pos.tolist())
                     line_pts.InsertNextPoint(end.tolist())
-                    line = vtkPolyLine()
+                    line = self._vtkPolyLine()
                     line.GetPointIds().SetNumberOfIds(2)
                     line.GetPointIds().SetId(0, idx)
                     line.GetPointIds().SetId(1, idx + 1)
                     line_cells.InsertNextCell(line)
-                line_poly = vtkPolyData()
+                line_poly = self._vtkPolyData()
                 line_poly.SetPoints(line_pts)
                 line_poly.SetLines(line_cells)
-                lm = vtkPolyDataMapper()
+                lm = self._vtkPolyDataMapper()
                 lm.SetInputData(line_poly)
-                la = vtkActor()
+                la = self._vtkActor()
                 la.SetMapper(lm)
                 la.GetProperty().SetColor(0.0, 0.9, 1.0)
                 la.GetProperty().SetLineWidth(5)
@@ -716,12 +736,12 @@ class VTKViewer(QWidget):
                 for i, wp in enumerate(waypoints):
                     pos = wp['pos']
                     end = pos + headings[i] * line_len
-                    line = vtkLineSource()
+                    line = self._vtkLineSource()
                     line.SetPoint1(pos.tolist())
                     line.SetPoint2(end.tolist())
-                    mapper = vtkPolyDataMapper()
+                    mapper = self._vtkPolyDataMapper()
                     mapper.SetInputConnection(line.GetOutputPort())
-                    actor = vtkActor()
+                    actor = self._vtkActor()
                     actor.SetMapper(mapper)
                     actor.GetProperty().SetLineWidth(5)
                     if self._is_corner(waypoints, i):
@@ -741,9 +761,8 @@ class VTKViewer(QWidget):
         if z_plane is not None:
             return self._ray_z_plane(screen_x, screen_y, z_plane)
 
-        import vtk
         # 用 VTK PointPicker 拾取渲染表面最近点
-        picker = vtk.vtkPointPicker()
+        picker = self._vtk.vtkPointPicker()
         picker.PickFromListOn()
         if self._cloud_actor:
             picker.AddPickList(self._cloud_actor)
@@ -939,13 +958,13 @@ class VTKViewer(QWidget):
         self._clear_place_preview()
         self._place_preview_pos = pos
 
-        sphere = vtkSphereSource()
+        sphere = self._vtkSphereSource()
         sphere.SetCenter(pos.tolist())
         sphere.SetRadius(0.3)
         sphere.Update()
-        m = vtkPolyDataMapper()
+        m = self._vtkPolyDataMapper()
         m.SetInputConnection(sphere.GetOutputPort())
-        a = vtkActor()
+        a = self._vtkActor()
         a.SetMapper(m)
         a.GetProperty().SetColor(0.2, 0.8, 0.2)
         a.GetProperty().SetOpacity(0.7)
@@ -961,13 +980,13 @@ class VTKViewer(QWidget):
     def _add_polygon_point(self, pos):
         self._poly_points.append(pos)
 
-        sphere = vtkSphereSource()
+        sphere = self._vtkSphereSource()
         sphere.SetCenter(pos.tolist())
         sphere.SetRadius(0.3)
         sphere.Update()
-        m = vtkPolyDataMapper()
+        m = self._vtkPolyDataMapper()
         m.SetInputConnection(sphere.GetOutputPort())
-        a = vtkActor()
+        a = self._vtkActor()
         a.SetMapper(m)
         a.GetProperty().SetColor(1.0, 1.0, 0.0)
         self.renderer.AddActor(a)
@@ -985,25 +1004,25 @@ class VTKViewer(QWidget):
         if n < 2:
             return
 
-        vtk_pts = vtkPoints()
+        vtk_pts = self._vtkPoints()
         for p in self._poly_points:
             vtk_pts.InsertNextPoint(p.tolist())
 
-        polyline = vtkPolyLine()
+        polyline = self._vtkPolyLine()
         polyline.GetPointIds().SetNumberOfIds(n)
         for i in range(n):
             polyline.GetPointIds().SetId(i, i)
 
-        cells = vtkCellArray()
+        cells = self._vtkCellArray()
         cells.InsertNextCell(polyline)
 
-        polydata = vtkPolyData()
+        polydata = self._vtkPolyData()
         polydata.SetPoints(vtk_pts)
         polydata.SetLines(cells)
 
-        mapper = vtkPolyDataMapper()
+        mapper = self._vtkPolyDataMapper()
         mapper.SetInputData(polydata)
-        actor = vtkActor()
+        actor = self._vtkActor()
         actor.SetMapper(mapper)
         actor.GetProperty().SetColor(1.0, 1.0, 0.0)
         actor.GetProperty().SetLineWidth(2)
@@ -1095,37 +1114,37 @@ class VTKViewer(QWidget):
             ((0, 0, 1), (-90, 0, 1, 0)),           # Z轴：绕Y旋转-90°
         ]
         for color, rot in axes_config:
-            arrow = vtkArrowSource()
+            arrow = self._vtkArrowSource()
             arrow.SetShaftRadius(0.03)
             arrow.SetTipRadius(0.08)
             arrow.SetTipLength(0.25)
             arrow.Update()
 
-            transform = vtkTransform()
+            transform = self._vtkTransform()
             if rot:
                 angle, ax_x, ax_y, ax_z = rot
                 transform.RotateWXYZ(angle, ax_x, ax_y, ax_z)
             transform.Scale(arrow_len, arrow_len, arrow_len)
-            filt = vtkTransformPolyDataFilter()
+            filt = self._vtkTransformPolyDataFilter()
             filt.SetInputConnection(arrow.GetOutputPort())
             filt.SetTransform(transform)
             filt.Update()
-            m = vtkPolyDataMapper()
+            m = self._vtkPolyDataMapper()
             m.SetInputConnection(filt.GetOutputPort())
 
-            a = vtkActor()
+            a = self._vtkActor()
             a.SetMapper(m)
             a.GetProperty().SetColor(color)
             self.renderer.AddActor(a)
             self._actors.append(a)
 
-        grid_pts = vtkPoints()
-        grid_cells = vtkCellArray()
+        grid_pts = self._vtkPoints()
+        grid_cells = self._vtkCellArray()
         idx = 0
         for i in range(-20, 21, 2):
             grid_pts.InsertNextPoint(i, -20, 0)
             grid_pts.InsertNextPoint(i, 20, 0)
-            line = vtkPolyLine()
+            line = self._vtkPolyLine()
             line.GetPointIds().SetNumberOfIds(2)
             line.GetPointIds().SetId(0, idx)
             line.GetPointIds().SetId(1, idx + 1)
@@ -1133,19 +1152,19 @@ class VTKViewer(QWidget):
             idx += 2
             grid_pts.InsertNextPoint(-20, i, 0)
             grid_pts.InsertNextPoint(20, i, 0)
-            line = vtkPolyLine()
+            line = self._vtkPolyLine()
             line.GetPointIds().SetNumberOfIds(2)
             line.GetPointIds().SetId(0, idx)
             line.GetPointIds().SetId(1, idx + 1)
             grid_cells.InsertNextCell(line)
             idx += 2
 
-        grid_poly = vtkPolyData()
+        grid_poly = self._vtkPolyData()
         grid_poly.SetPoints(grid_pts)
         grid_poly.SetLines(grid_cells)
-        m = vtkPolyDataMapper()
+        m = self._vtkPolyDataMapper()
         m.SetInputData(grid_poly)
-        a = vtkActor()
+        a = self._vtkActor()
         a.SetMapper(m)
         a.GetProperty().SetColor(0.5, 0.5, 0.5)
         a.GetProperty().SetOpacity(0.6)
@@ -1163,7 +1182,7 @@ class VTKViewer(QWidget):
         self.interactor.Initialize()
 
         # 用空 style 替换默认的 TrackballCamera，避免它抢先处理鼠标事件
-        self.interactor.SetInteractorStyle(vtkInteractorStyleUser())
+        self.interactor.SetInteractorStyle(self._vtkInteractorStyleUser())
 
         style = FoxgloveInteractorStyle()
         style.set_viewer(self)
