@@ -28,9 +28,118 @@ class NoWheelSlider(QSlider):
 class MainWindow(QMainWindow):
     """桥梁巡检航线规划工具 - 主窗口"""
 
+    # ─── 中英文翻译字典 ───
+    _T = {
+        "zh": {
+            "win_title": "桥梁巡检无人机航线规划工具",
+            "menu_file": "文件", "menu_view": "展示",
+            "act_load_pc": "加载点云", "act_save_ros": "保存ROS航线",
+            "act_load_route": "加载航线", "act_export_maicro": "导出maicro航线文件",
+            "act_clip": "裁剪框", "menu_render": "渲染模式", "menu_size": "点云大小",
+            "menu_lang": "语言", "lang_zh": "中文", "lang_en": "English",
+            "grp_mode": "工作模式", "btn_preview": "预览模式", "btn_route": "航线模式",
+            "grp_load": "加载点云", "btn_open_pcd": "打开 PCD 文件",
+            "lbl_pc_info": "未加载点云",
+            "grp_bridge": "桥梁参数", "lbl_bridge_name": "桥梁名称:",
+            "lbl_bridge_type": "桥型:", "lbl_bridge_len": "桥长(m):",
+            "lbl_bridge_wid": "桥宽(m):", "lbl_clearance": "净空(m):",
+            "lbl_span": "跨距(m):", "btn_apply": "应用",
+            "grp_safe": "安全设置", "lbl_safe_dist": "安全距离(m):",
+            "lbl_takeoff_z": "起飞高度(m):", "lbl_takeoff_yaw": "起飞偏航角(°):",
+            "lbl_safe_point": "安全点(x,y,z):", "lbl_min_z": "最低飞行Z值(m):",
+            "lbl_min_z_hint": "低于此值视为碰撞",
+            "lbl_wp_hint": "Ctrl+左键点击航点可拖动编辑位置",
+            "lbl_route_type": "航线类型:",
+            "route_flat": "面状航线", "route_cube": "立方体航线",
+            "route_cyl": "圆柱体航线", "route_line": "直线航线",
+            "route_inspect": "点状航线",
+            "lbl_height_z": "高度Z:", "lbl_line_spacing": "线间距:",
+            "lbl_wp_spacing": "航点距离:", "lbl_speed": "速度(m/s):",
+            "lbl_camera": "相机型号:", "lbl_fov": "FOV(°):",
+            "lbl_fwd_overlap": "航向重叠(%):", "lbl_side_overlap": "旁向重叠(%):",
+            "btn_calc_overlap": "自动算间距", "lbl_curvature": "曲度:",
+            "btn_pick_area": "点击放置（右键确认生成）",
+            "lbl_center": "底面中心(x,y,z):", "lbl_len_x": "长(X):",
+            "lbl_wid_y": "宽(Y):", "lbl_height_z2": "高(Z):",
+            "lbl_dist": "离柱距离:", "lbl_h_step": "水平步距:",
+            "lbl_v_step": "垂直步距:", "lbl_speed2": "速度:",
+            "lbl_start_angle": "起始角度(°):", "btn_auto": "自动",
+            "lbl_diam": "直径:", "lbl_h_step_angle": "水平步距(°):",
+            "lbl_path": "路径:", "lbl_start_pt": "起点(x,y,z):",
+            "lbl_end_pt": "终点(x,y,z):", "btn_pick_endpoints": "选择起终点",
+            "btn_gen_line": "生成直线航线",
+            "lbl_inspect_list": "巡检点列表:", "btn_select_inspect": "选择巡检点",
+            "btn_clear": "清除", "lbl_inspect_dist": "巡检距离:",
+            "btn_gen_inspect": "生成点状航线",
+            "grp_route_mgmt": "航线管理", "lbl_wp_count": "航点: 0",
+            "btn_clear_route": "清除航线", "btn_save_ros2": "保存ROS航线",
+            "btn_copy": "复制航线到剪贴板", "btn_load_route2": "加载航线 (JSON)",
+            "chk_heading": "显示机头方向",
+            "lbl_shortcuts": "快捷键: 1=俯视 2=正视 3=侧视 4=透视 5=仰视  Esc=取消",
+            "clip_enable": "启用", "btn_clip_apply": "应用",
+            "lbl_clip_x": "X:", "lbl_clip_y": "Y:", "lbl_clip_z": "Z:",
+            "lbl_render": "渲染:", "lbl_size": "大小:",
+            "btn_gen_cube": "应用", "btn_gen_cube2": "点击放置（右键确认生成）",
+            "btn_gen_cyl": "应用", "btn_gen_cyl2": "点击放置（右键确认生成）",
+        },
+        "en": {
+            "win_title": "Bridge Inspection Drone Route Planner",
+            "menu_file": "File", "menu_view": "View",
+            "act_load_pc": "Load Point Cloud", "act_save_ros": "Save ROS Route",
+            "act_load_route": "Load Route", "act_export_maicro": "Export Maicro Route",
+            "act_clip": "Clip Box", "menu_render": "Render Mode", "menu_size": "Point Size",
+            "menu_lang": "Language", "lang_zh": "中文", "lang_en": "English",
+            "grp_mode": "Mode", "btn_preview": "Preview", "btn_route": "Route",
+            "grp_load": "Point Cloud", "btn_open_pcd": "Open PCD File",
+            "lbl_pc_info": "No point cloud loaded",
+            "grp_bridge": "Bridge Params", "lbl_bridge_name": "Bridge Name:",
+            "lbl_bridge_type": "Type:", "lbl_bridge_len": "Length(m):",
+            "lbl_bridge_wid": "Width(m):", "lbl_clearance": "Clearance(m):",
+            "lbl_span": "Span(m):", "btn_apply": "Apply",
+            "grp_safe": "Safety", "lbl_safe_dist": "Safe Dist(m):",
+            "lbl_takeoff_z": "Takeoff Z(m):", "lbl_takeoff_yaw": "Takeoff Yaw(°):",
+            "lbl_safe_point": "Safe Point(x,y,z):", "lbl_min_z": "Min Z(m):",
+            "lbl_min_z_hint": "Below this = collision",
+            "lbl_wp_hint": "Ctrl+Click waypoint to drag",
+            "lbl_route_type": "Route Type:",
+            "route_flat": "Flat", "route_cube": "Cube",
+            "route_cyl": "Cylinder", "route_line": "Line",
+            "route_inspect": "Inspect",
+            "lbl_height_z": "Height Z:", "lbl_line_spacing": "Line Spacing:",
+            "lbl_wp_spacing": "WP Spacing:", "lbl_speed": "Speed(m/s):",
+            "lbl_camera": "Camera:", "lbl_fov": "FOV(°):",
+            "lbl_fwd_overlap": "Fwd Overlap(%):", "lbl_side_overlap": "Side Overlap(%):",
+            "btn_calc_overlap": "Auto Calc", "lbl_curvature": "Curvature:",
+            "btn_pick_area": "Place (Right-click to confirm)",
+            "lbl_center": "Center(x,y,z):", "lbl_len_x": "Len(X):",
+            "lbl_wid_y": "Wid(Y):", "lbl_height_z2": "H(Z):",
+            "lbl_dist": "Distance:", "lbl_h_step": "H Step:",
+            "lbl_v_step": "V Step:", "lbl_speed2": "Speed:",
+            "lbl_start_angle": "Start Angle(°):", "btn_auto": "Auto",
+            "lbl_diam": "Diameter:", "lbl_h_step_angle": "H Step(°):",
+            "lbl_path": "Path:", "lbl_start_pt": "Start(x,y,z):",
+            "lbl_end_pt": "End(x,y,z):", "btn_pick_endpoints": "Pick Points",
+            "btn_gen_line": "Generate Line Route",
+            "lbl_inspect_list": "Inspection Points:", "btn_select_inspect": "Select Points",
+            "btn_clear": "Clear", "lbl_inspect_dist": "Inspect Dist(m):",
+            "btn_gen_inspect": "Generate Inspect Route",
+            "grp_route_mgmt": "Route Mgmt", "lbl_wp_count": "Waypoints: 0",
+            "btn_clear_route": "Clear Route", "btn_save_ros2": "Save ROS Route",
+            "btn_copy": "Copy to Clipboard", "btn_load_route2": "Load Route (JSON)",
+            "chk_heading": "Show Heading",
+            "lbl_shortcuts": "Keys: 1=Top 2=Front 3=Side 4=Persp 5=Bottom  Esc=Cancel",
+            "clip_enable": "Enable", "btn_clip_apply": "Apply",
+            "lbl_clip_x": "X:", "lbl_clip_y": "Y:", "lbl_clip_z": "Z:",
+            "lbl_render": "Render:", "lbl_size": "Size:",
+            "btn_gen_cube": "Apply", "btn_gen_cube2": "Place (Right-click to confirm)",
+            "btn_gen_cyl": "Apply", "btn_gen_cyl2": "Place (Right-click to confirm)",
+        },
+    }
+
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("桥梁巡检无人机航线规划工具")
+        self._lang = 'zh'
+        self.setWindowTitle(self._T['zh']['win_title'])
         self.resize(1400, 900)
 
         # ─── 菜单栏 ───
@@ -99,6 +208,21 @@ class MainWindow(QMainWindow):
             act = QAction(f"{val * 0.01:.2f}", self)
             act.triggered.connect(lambda checked, v=val: self._on_menu_point_size(v))
             size_menu.addAction(act)
+
+        view_menu.addSeparator()
+        lang_menu = view_menu.addMenu("语言")
+        self._lang_group = QActionGroup(self)
+        self._act_lang_zh = QAction("中文", self)
+        self._act_lang_zh.setCheckable(True)
+        self._act_lang_zh.setChecked(True)
+        self._act_lang_zh.setActionGroup(self._lang_group)
+        self._act_lang_zh.triggered.connect(lambda: self._switch_language('zh'))
+        lang_menu.addAction(self._act_lang_zh)
+        self._act_lang_en = QAction("English", self)
+        self._act_lang_en.setCheckable(True)
+        self._act_lang_en.setActionGroup(self._lang_group)
+        self._act_lang_en.triggered.connect(lambda: self._switch_language('en'))
+        lang_menu.addAction(self._act_lang_en)
 
     def _init_ui(self):
         central = QWidget()
@@ -873,6 +997,69 @@ class MainWindow(QMainWindow):
     def _on_menu_point_size(self, val):
         """菜单栏点云大小切换"""
         self.sld_point_size.setValue(val)
+
+    def _switch_language(self, lang):
+        """切换界面语言"""
+        if lang == self._lang:
+            return
+        self._lang = lang
+        self._apply_language()
+
+    def _apply_language(self):
+        """应用当前语言到所有UI文本"""
+        t = self._T[self._lang]
+        self.setWindowTitle(t["win_title"])
+        # 菜单栏重建最简单，但为避免复杂度，这里只更新已知控件
+        # GroupBox 标题
+        for grp, key in [
+            ("grp_mode", "grp_mode"), ("grp_load", "grp_load"),
+            ("grp_bridge", "grp_bridge"), ("grp_pick", "grp_safe"),
+            ("grp_route_mgmt", "grp_route_mgmt"),
+            ("_clip_group", "act_clip"),
+        ]:
+            w = getattr(self, grp, None)
+            if w:
+                w.setTitle(t.get(key, w.title()))
+        # 按钮
+        for btn, key in [
+            ("btn_mode_preview", "btn_preview"), ("btn_mode_route", "btn_route"),
+            ("btn_load", "btn_open_pcd"), ("btn_apply_bridge", "btn_apply"),
+            ("btn_apply_safety", "btn_apply"),
+            ("btn_poly_select", "btn_pick_area"),
+            ("btn_pick_line", "btn_pick_endpoints"),
+            ("btn_inspect", "btn_select_inspect"),
+            ("btn_clear_inspect", "btn_clear"),
+            ("btn_gen_inspect", "btn_gen_inspect"),
+            ("btn_gen_line", "btn_gen_line"),
+            ("btn_clear", "btn_clear_route"),
+            ("btn_save", "btn_save_ros2"),
+            ("btn_copy", "btn_copy"),
+            ("btn_load_route", "btn_load_route2"),
+            ("btn_calc_overlap", "btn_calc_overlap"),
+            ("btn_clip_apply", "btn_clip_apply"),
+        ]:
+            w = getattr(self, btn, None)
+            if w:
+                w.setText(t.get(key, w.text()))
+        # ComboBox 航线类型
+        route_names = [t["route_flat"], t["route_cube"], t["route_cyl"],
+                       t["route_line"], t["route_inspect"]]
+        idx = self.cmb_route_type.currentIndex()
+        self.cmb_route_type.clear()
+        self.cmb_route_type.addItems(route_names)
+        self.cmb_route_type.setCurrentIndex(idx)
+        # Labels（通过 setText 更新）
+        for lbl, key in [
+            ("lbl_pc_info", "lbl_pc_info"), ("lbl_wp_hint", "lbl_wp_hint"),
+            ("lbl_help", "lbl_shortcuts"),
+        ]:
+            w = getattr(self, lbl, None)
+            if w:
+                w.setText(t.get(key, w.text()))
+        # CheckBox
+        self.chk_show_heading.setText(t.get("chk_heading", self.chk_show_heading.text()))
+        self.chk_clip.setText(t.get("clip_enable", self.chk_clip.text()))
+        print(f"[Lang] Switched to {self._lang}")
 
     def _apply_clip(self):
         if self.points is None or len(self.points) == 0:
