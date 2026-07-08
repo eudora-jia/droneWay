@@ -935,7 +935,8 @@ class MainWindow(QMainWindow):
                     'pos': pos,
                     'quat': quat,
                     'speed': speed,
-                    'action': 'fly'
+                    'action': 'fly',
+                    'gimbal_pitch': -90.0
                 })
 
             # 下一条扫描线
@@ -1009,12 +1010,14 @@ class MainWindow(QMainWindow):
                     heading = np.array([1.0, 0.0, 0.0])
                 target = pos + heading
                 quat = look_at_quaternion(target, pos)
-
+                cyl_center = np.array([cx, cy, z])
+                gimbal_pitch = self._calc_gimbal_pitch(pos, cyl_center)
                 self.waypoints.append({
                     'pos': pos,
                     'quat': quat,
                     'speed': speed,
-                    'action': 'scan'
+                    'action': 'scan',
+                    'gimbal_pitch': gimbal_pitch
                 })
 
         elif route_type == "Z字形":
@@ -1045,11 +1048,14 @@ class MainWindow(QMainWindow):
                     pos = np.array([rx, ry, z])
                     target = pos + heading
                     quat = look_at_quaternion(target, pos)
+                    cyl_center = np.array([cx, cy, z])
+                    gimbal_pitch = self._calc_gimbal_pitch(pos, cyl_center)
                     self.waypoints.append({
                         'pos': pos,
                         'quat': quat,
                         'speed': speed,
-                        'action': 'scan'
+                        'action': 'scan',
+                        'gimbal_pitch': gimbal_pitch
                     })
 
         self._display_route()
@@ -1094,7 +1100,8 @@ class MainWindow(QMainWindow):
                 'pos': pos,
                 'quat': quat,
                 'speed': speed,
-                'action': 'fly'
+                'action': 'fly',
+                'gimbal_pitch': -90.0
             })
 
         self._display_route()
@@ -1209,11 +1216,13 @@ class MainWindow(QMainWindow):
 
             # 朝向巡检目标点
             quat = look_at_quaternion(target, pos)
+            gimbal_pitch = self._calc_gimbal_pitch(pos, target)
             self.waypoints.append({
                 'pos': pos,
                 'quat': quat,
                 'speed': 1.0,
-                'action': 'scan'
+                'action': 'scan',
+                'gimbal_pitch': gimbal_pitch
             })
 
         self._display_route()
@@ -1330,11 +1339,14 @@ class MainWindow(QMainWindow):
                     pos = np.array([pos_2d[0], pos_2d[1], z])
                     target = pos + heading
                     quat = look_at_quaternion(target, pos)
+                    cube_center = np.array([cx, cy, z])
+                    gimbal_pitch = self._calc_gimbal_pitch(pos, cube_center)
                     self.waypoints.append({
                         'pos': pos,
                         'quat': quat,
                         'speed': speed,
-                        'action': 'scan'
+                        'action': 'scan',
+                        'gimbal_pitch': gimbal_pitch
                     })
 
         self._display_route()
@@ -1698,6 +1710,21 @@ class MainWindow(QMainWindow):
         self.viewer.add_route(self.waypoints)
         self.lbl_info.setText(f"航点: {len(self.waypoints)}")
         self._check_safety_distance()
+
+    @staticmethod
+    def _calc_gimbal_pitch(drone_pos, target_pos):
+        """计算云台pitch角度（度），使目标点位于相机画面中心
+        drone_pos: 无人机位置 [x,y,z]
+        target_pos: 目标点位置 [x,y,z]
+        返回: pitch角度（负值=朝下，-90=垂直朝下）
+        """
+        d = np.array(drone_pos)
+        t = np.array(target_pos)
+        drop = d[2] - t[2]  # 垂直落差
+        h_dist = np.sqrt((d[0] - t[0])**2 + (d[1] - t[1])**2)  # 水平距离
+        if h_dist < 1e-6:
+            return -90.0  # 垂直朝下
+        return -np.degrees(np.arctan(drop / h_dist))
 
     def _get_takeoff_params(self):
         """解析起飞高度和初始偏航角，返回 (takeoff_z, takeoff_yaw)"""
