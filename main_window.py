@@ -260,37 +260,56 @@ class MainWindow(QMainWindow):
         fl.addWidget(QLabel("速度(m/s):"), 1, 2)
         self.edt_flat_speed = QLineEdit("1"); fl.addWidget(self.edt_flat_speed, 1, 3)
 
-        fl.addWidget(QLabel("相机FOV(°):"), 2, 0)
-        self.edt_camera_fov = QLineEdit("80"); fl.addWidget(self.edt_camera_fov, 2, 1)
-        fl.addWidget(QLabel("航向重叠(%):"), 2, 2)
-        self.edt_forward_overlap = QLineEdit("10"); fl.addWidget(self.edt_forward_overlap, 2, 3)
+        # 相机型号 → FOV 映射
+        self._camera_fov_map = {
+            "DJI Mavic 3E": 84,
+            "DJI Mavic 3T": 82,
+            "DJI Matrice 4T": 82,
+            "DJI M350+P1(24mm)": 84,
+            "DJI M350+P1(35mm)": 54,
+            "DJI M350+P1(50mm)": 40,
+            "DJI M350+L2(雷达)": 70,
+            "自定义": 80,
+        }
 
-        fl.addWidget(QLabel("旁向重叠(%):"), 3, 0)
-        self.edt_side_overlap = QLineEdit("10"); fl.addWidget(self.edt_side_overlap, 3, 1)
+        fl.addWidget(QLabel("相机型号:"), 2, 0)
+        self.cmb_camera = QComboBox()
+        self.cmb_camera.addItems(self._camera_fov_map.keys())
+        fl.addWidget(self.cmb_camera, 2, 1)
+        self.cmb_camera.currentTextChanged.connect(self._on_camera_changed)
+
+        fl.addWidget(QLabel("FOV(°):"), 2, 2)
+        self.edt_camera_fov = QLineEdit("84"); fl.addWidget(self.edt_camera_fov, 2, 3)
+
+        fl.addWidget(QLabel("航向重叠(%):"), 3, 0)
+        self.edt_forward_overlap = QLineEdit("60"); fl.addWidget(self.edt_forward_overlap, 3, 1)
+        fl.addWidget(QLabel("旁向重叠(%):"), 3, 2)
+        self.edt_side_overlap = QLineEdit("30"); fl.addWidget(self.edt_side_overlap, 3, 3)
+
         btn_calc_overlap = QPushButton("自动算间距")
         btn_calc_overlap.setStyleSheet("QPushButton { background: #e8e0d0; padding: 4px; } QPushButton:hover { background: #d8d0c0; }")
         btn_calc_overlap.clicked.connect(self._calc_overlap_spacing)
-        fl.addWidget(btn_calc_overlap, 3, 2, 1, 2)
+        fl.addWidget(btn_calc_overlap, 4, 0, 1, 4)
 
-        fl.addWidget(QLabel("曲度:"), 4, 0)
+        fl.addWidget(QLabel("曲度:"), 5, 0)
         self.sld_curvature = NoWheelSlider(Qt.Horizontal)
         self.sld_curvature.setRange(0, 100)
         self.sld_curvature.setValue(0)
-        fl.addWidget(self.sld_curvature, 4, 1, 1, 2)
+        fl.addWidget(self.sld_curvature, 5, 1, 1, 2)
         self.lbl_curvature_val = QLabel("0.00")
         self.lbl_curvature_val.setMinimumWidth(30)
-        fl.addWidget(self.lbl_curvature_val, 4, 3)
+        fl.addWidget(self.lbl_curvature_val, 5, 3)
         self.sld_curvature.valueChanged.connect(lambda v: self.lbl_curvature_val.setText(f"{v/100:.2f}"))
 
         btn_apply_flat = QPushButton("应用")
         btn_apply_flat.setStyleSheet("QPushButton { background: #d0d8e8; padding: 4px; } QPushButton:hover { background: #c0c8d8; }")
         btn_apply_flat.clicked.connect(self._apply_flat_params)
-        fl.addWidget(btn_apply_flat, 5, 0, 1, 2)
+        fl.addWidget(btn_apply_flat, 6, 0, 1, 2)
 
         self.btn_poly_select = QPushButton("点击放置（右键确认生成）")
         self.btn_poly_select.setStyleSheet("QPushButton { background: #d8e8d8; font-weight: bold; padding: 6px; } QPushButton:hover { background: #c8d8c8; }")
         self.btn_poly_select.clicked.connect(self._start_polygon_select)
-        fl.addWidget(self.btn_poly_select, 5, 2, 1, 2)
+        fl.addWidget(self.btn_poly_select, 6, 2, 1, 2)
 
         route_tabs.addTab(tab_flat, "面状航线")
 
@@ -1381,6 +1400,11 @@ class MainWindow(QMainWindow):
             self.viewer.add_route(self.waypoints)
             self._check_safety_distance()
         print(f"[Safety] 起飞高度={self.edt_takeoff_z.text()}m, 初始偏航角={self.edt_takeoff_yaw.text()}°")
+
+    def _on_camera_changed(self, name):
+        """相机型号切换时自动填入FOV"""
+        fov = self._camera_fov_map.get(name, 80)
+        self.edt_camera_fov.setText(str(fov))
 
     def _calc_overlap_spacing(self):
         """根据相机FOV和重叠率自动计算航点距离和线间距"""
