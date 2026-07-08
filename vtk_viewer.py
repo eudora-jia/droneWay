@@ -378,6 +378,7 @@ class VTKViewer(QWidget):
 
         self._actors = []
         self.points_data = None
+        self._cloud_tree = None
         self._cloud_actor = None
 
         # ─── 点击放置模式 ───
@@ -435,6 +436,7 @@ class VTKViewer(QWidget):
         self.clear_actors()
         self._add_scene_axes()
         self.points_data = points
+        self._cloud_tree = None  # 重建KDTree缓存
 
         MAX_RENDER_POINTS = 5_000_000
         if len(points) > MAX_RENDER_POINTS:
@@ -767,58 +769,70 @@ class VTKViewer(QWidget):
                 self.renderer.AddActor(label)
                 self._actors.append(label)
 
-        # ── 机头方向 ──
-        if getattr(self, 'show_heading', True) and n >= 2:
-            dists = [np.linalg.norm(waypoints[i+1]['pos'] - waypoints[i]['pos']) for i in range(n-1)]
-            avg_dist = np.mean(dists)
-            line_len = np.clip(avg_dist * 0.6, 0.5, 4.0)
-            headings = self._compute_forward_headings(waypoints)
-
-            if n > BATCH_THRESHOLD:
-                # 批量合并所有方向线（用 numpy 直接构建线段 polydata）
-                line_pts = self._vtkPoints()
-                line_cells = self._vtkCellArray()
-                for i, wp in enumerate(waypoints):
-                    pos = wp['pos']
-                    end = pos + headings[i] * line_len
-                    idx = line_pts.InsertNextPoint(pos.tolist())
-                    line_pts.InsertNextPoint(end.tolist())
-                    line = self._vtkPolyLine()
-                    line.GetPointIds().SetNumberOfIds(2)
-                    line.GetPointIds().SetId(0, idx)
-                    line.GetPointIds().SetId(1, idx + 1)
-                    line_cells.InsertNextCell(line)
-                line_poly = self._vtkPolyData()
-                line_poly.SetPoints(line_pts)
-                line_poly.SetLines(line_cells)
-                lm = self._vtkPolyDataMapper()
-                lm.SetInputData(line_poly)
-                la = self._vtkActor()
-                la.SetMapper(lm)
-                la.GetProperty().SetColor(0.0, 0.9, 1.0)
-                la.GetProperty().SetLineWidth(5)
-                self.renderer.AddActor(la)
-                self._actors.append(la)
-            else:
-                for i, wp in enumerate(waypoints):
-                    pos = wp['pos']
-                    end = pos + headings[i] * line_len
+        # ── 投影线：航点 → 目标方向投射到点云上的点 ──
+        has_target = any('target_pos' in wp for wp in waypoints)
+        if has_target:
+            for i, wp in enumerate(waypoints):
+                if 'target_pos' not in wp:
+                    continue
+                pos = wp['pos']
+                tgt = wp['target_pos']
+                proj_pt = self._project_to_cloud(pos, tgt)
+                if proj_pt is not None:
+                    # 连线：航点 → 投影点
                     line = self._vtkLineSource()
                     line.SetPoint1(pos.tolist())
-                    line.SetPoint2(end.tolist())
+                    line.SetPoint2(proj_pt.tolist())
                     mapper = self._vtkPolyDataMapper()
                     mapper.SetInputConnection(line.GetOutputPort())
                     actor = self._vtkActor()
                     actor.SetMapper(mapper)
-                    actor.GetProperty().SetLineWidth(5)
-                    if self._is_corner(waypoints, i):
-                        actor.GetProperty().SetColor(1.0, 0.9, 0.0)
-                    else:
-                        actor.GetProperty().SetColor(0.0, 0.9, 1.0)
+                    actor.GetProperty().SetColor(1.0, 0.8, 0.0)
+                    actor.GetProperty().SetLineWidth(2)
                     self.renderer.AddActor(actor)
                     self._actors.append(actor)
+                    # 投影点标记（小黄色球体）
+                    sphere = self._vtkSphereSource()
+                    sphere.SetCenter(proj_pt.tolist())
+                    sphere.SetRadius(0.12)
+                    sphere.Update()
+                    sm = self._vtkPolyDataMapper()
+                    sm.SetInputConnection(sphere.GetOutputPort())
+                    sa = self._vtkActor()
+                    sa.SetMapper(sm)
+                    sa.GetProperty().SetColor(1.0, 0.9, 0.2)
+                    self.renderer.AddActor(sa)
+                    self._actors.append(sa)
 
         self._update_view()
+
+    def _project_to_cloud(self, pos, target_pos, max_dist=50.0, steps=200):
+        """从航点沿目标方向投射射线，找到与点云的最近交点
+        pos: 航点位置 [x,y,z]
+        target_pos: 目标点位置 [x,y,z]
+        返回: 投影点 np.array 或 None
+        """
+        if self.points_data is None or len(self.points_data) == 0:
+            return None
+        origin = np.array(pos)
+        direction = np.array(target_pos) - origin
+        dist = np.linalg.norm(direction)
+        if dist < 1e-6:
+            return None
+        direction = direction / dist
+        # 沿射线采样
+        t_vals = np.linspace(0.1, min(max_dist, dist * 1.5), steps)
+        sample_pts = origin + t_vals[:, np.newaxis] * direction[np.newaxis, :]
+        # KDTree 查询每个采样点到最近点云点的距离
+        from scipy.spatial import cKDTree
+        if not hasattr(self, '_cloud_tree') or self._cloud_tree is None:
+            self._cloud_tree = cKDTree(self.points_data)
+        dists, idxs = self._cloud_tree.query(sample_pts)
+        # 找到距离最小的采样点（射线与点云相交处）
+        min_idx = np.argmin(dists)
+        if dists[min_idx] < 1.5:  # 射线经过点云附近
+            return self.points_data[idxs[min_idx]]
+        return None
 
     def _pick_3d(self, screen_x, screen_y, z_plane=None):
         """屏幕坐标拾取3D点

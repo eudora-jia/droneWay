@@ -936,7 +936,8 @@ class MainWindow(QMainWindow):
                     'quat': quat,
                     'speed': speed,
                     'action': 'fly',
-                    'gimbal_pitch': -90.0
+                    'gimbal_pitch': -90.0,
+                    'target_pos': np.array([pos[0], pos[1], 0.0])
                 })
 
             # 下一条扫描线
@@ -1017,7 +1018,8 @@ class MainWindow(QMainWindow):
                     'quat': quat,
                     'speed': speed,
                     'action': 'scan',
-                    'gimbal_pitch': gimbal_pitch
+                    'gimbal_pitch': gimbal_pitch,
+                    'target_pos': cyl_center.copy()
                 })
 
         elif route_type == "Z字形":
@@ -1055,7 +1057,8 @@ class MainWindow(QMainWindow):
                         'quat': quat,
                         'speed': speed,
                         'action': 'scan',
-                        'gimbal_pitch': gimbal_pitch
+                        'gimbal_pitch': gimbal_pitch,
+                        'target_pos': cyl_center.copy()
                     })
 
         self._display_route()
@@ -1101,7 +1104,8 @@ class MainWindow(QMainWindow):
                 'quat': quat,
                 'speed': speed,
                 'action': 'fly',
-                'gimbal_pitch': -90.0
+                'gimbal_pitch': -90.0,
+                'target_pos': np.array([pos[0], pos[1], 0.0])
             })
 
         self._display_route()
@@ -1222,7 +1226,8 @@ class MainWindow(QMainWindow):
                 'quat': quat,
                 'speed': 1.0,
                 'action': 'scan',
-                'gimbal_pitch': gimbal_pitch
+                'gimbal_pitch': gimbal_pitch,
+                'target_pos': target.copy()
             })
 
         self._display_route()
@@ -1346,7 +1351,8 @@ class MainWindow(QMainWindow):
                         'quat': quat,
                         'speed': speed,
                         'action': 'scan',
-                        'gimbal_pitch': gimbal_pitch
+                        'gimbal_pitch': gimbal_pitch,
+                        'target_pos': cube_center.copy()
                     })
 
         self._display_route()
