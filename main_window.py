@@ -1003,6 +1003,64 @@ class MainWindow(QMainWindow):
         self._lang = lang
         self._apply_language()
 
+    # 内联 QLabel 的中文→英文映射（用于递归翻译）
+    _INLINE_LABELS = {
+        "工作模式": "Mode",
+        "加载点云": "Point Cloud",
+        "桥梁参数": "Bridge Params",
+        "安全设置": "Safety",
+        "航线管理": "Route Mgmt",
+        "裁剪框": "Clip Box",
+        "桥梁名称:": "Bridge Name:",
+        "桥型:": "Type:",
+        "跨河桥": "River Bridge", "跨线桥": "Overpass", "高架桥": "Viaduct",
+        "桥长(m):": "Length(m):",
+        "桥宽(m):": "Width(m):",
+        "净空(m):": "Clearance(m):",
+        "跨距(m):": "Span(m):",
+        "安全距离(m):": "Safe Dist(m):",
+        "起飞高度(m):": "Takeoff Z(m):",
+        "起飞偏航角(°):": "Takeoff Yaw(°):",
+        "安全点(x,y,z):": "Safe Pt(x,y,z):",
+        "最低飞行Z值(m):": "Min Z(m):",
+        "低于此值视为碰撞": "Below this = collision",
+        "航线类型:": "Route Type:",
+        "高度Z:": "Height Z:",
+        "线间距:": "Line Spacing:",
+        "航点距离:": "WP Spacing:",
+        "速度(m/s):": "Speed(m/s):",
+        "相机型号:": "Camera:",
+        "FOV(°):": "FOV(°):",
+        "航向重叠(%):": "Fwd Overlap(%):",
+        "旁向重叠(%):": "Side Overlap(%):",
+        "曲度:": "Curvature:",
+        "底面中心(x,y,z):": "Center(x,y,z):",
+        "长(X):": "Len(X):",
+        "宽(Y):": "Wid(Y):",
+        "高(Z):": "Ht(Z):",
+        "离柱距离:": "Distance:",
+        "水平步距:": "H Step:",
+        "垂直步距:": "V Step:",
+        "速度:": "Speed:",
+        "起始角度(°):": "Start Angle(°):",
+        "直径:": "Diameter:",
+        "水平步距(°):": "H Step(°):",
+        "路径:": "Path:",
+        "螺旋线": "Spiral", "Z字形": "Zigzag",
+        "起点(x,y,z):": "Start(x,y,z):",
+        "终点(x,y,z):": "End(x,y,z):",
+        "巡检点列表:": "Inspect Points:",
+        "巡检距离:": "Inspect Dist(m):",
+        "m": "m",
+        "自动": "Auto", "球体": "Sphere", "立方体": "Cube", "像素": "Pixel",
+        "启用": "Enable",
+        "X:": "X:", "Y:": "Y:", "Z:": "Z:",
+        "渲染:": "Render:",
+        "大小:": "Size:",
+        "快捷键: 1=俯视 2=正视 3=侧视 4=透视 5=仰视  Esc=取消":
+            "Keys: 1=Top 2=Front 3=Side 4=Persp 5=Bottom  Esc=Cancel",
+    }
+
     def _apply_language(self):
         """应用当前语言到所有UI文本"""
         t = self._T[self._lang]
@@ -1022,37 +1080,68 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle(t["win_title"])
 
-        # GroupBox 标题
-        for grp, key in [
-            ("grp_mode", "grp_mode"), ("grp_load", "grp_load"),
-            ("grp_bridge", "grp_bridge"), ("grp_pick", "grp_safe"),
-            ("grp_route_mgmt", "grp_route_mgmt"),
-            ("_clip_group", "act_clip"),
-        ]:
-            w = getattr(self, grp, None)
-            if w:
-                w.setTitle(t.get(key, w.title()))
+        # ─── 构建翻译映射 ───
+        if self._lang == 'zh':
+            # 英→中：用 _INLINE_LABELS 的反向映射
+            text_map = {v: k for k, v in self._INLINE_LABELS.items()}
+            # 已知控件的翻译
+            known = {
+                "Preview": "预览模式", "Route": "航线模式",
+                "Apply": "应用",
+                "Place (Right-click to confirm)": "点击放置（右键确认生成）",
+                "Pick Points": "选择起终点",
+                "Generate Line Route": "生成直线航线",
+                "Select Points": "选择巡检点",
+                "Clear": "清除",
+                "Generate Inspect Route": "生成点状航线",
+                "Clear Route": "清除航线",
+                "Auto Calc": "自动算间距",
+                "Show Heading": "显示机头方向",
+                "Waypoints: 0": "航点: 0",
+                "No point cloud loaded": "未加载点云",
+            }
+            text_map.update(known)
+        else:
+            # 中→英
+            text_map = dict(self._INLINE_LABELS)
+            known = {
+                "预览模式": "Preview", "航线模式": "Route",
+                "应用": "Apply",
+                "点击放置（右键确认生成）": "Place (Right-click to confirm)",
+                "选择起终点": "Pick Points",
+                "生成直线航线": "Generate Line Route",
+                "选择巡检点": "Select Points",
+                "清除": "Clear",
+                "生成点状航线": "Generate Inspect Route",
+                "清除航线": "Clear Route",
+                "自动算间距": "Auto Calc",
+                "显示机头方向": "Show Heading",
+                "航点: 0": "Waypoints: 0",
+                "未加载点云": "No point cloud loaded",
+            }
+            text_map.update(known)
 
-        # 按钮
-        for btn, key in [
-            ("btn_mode_preview", "btn_preview"), ("btn_mode_route", "btn_route"),
-            ("btn_apply_bridge", "btn_apply"),
-            ("btn_apply_safety", "btn_apply"),
-            ("btn_poly_select", "btn_pick_area"),
-            ("btn_pick_line", "btn_pick_endpoints"),
-            ("btn_inspect", "btn_select_inspect"),
-            ("btn_clear_inspect", "btn_clear"),
-            ("btn_gen_inspect", "btn_gen_inspect"),
-            ("btn_gen_line", "btn_gen_line"),
-            ("btn_clear", "btn_clear_route"),
-            ("btn_calc_overlap", "btn_calc_overlap"),
-            ("btn_clip_apply", "btn_clip_apply"),
-        ]:
-            w = getattr(self, btn, None)
-            if w:
-                w.setText(t.get(key, w.text()))
+        # ─── 递归遍历所有控件，批量替换文本 ───
+        def _translate_widgets(widget):
+            from PyQt5.QtWidgets import QGroupBox, QPushButton, QCheckBox, QLabel, QComboBox
+            for child in widget.findChildren(QWidget):
+                if isinstance(child, QGroupBox):
+                    old = child.title()
+                    if old in text_map:
+                        child.setTitle(text_map[old])
+                elif isinstance(child, (QPushButton, QCheckBox)):
+                    old = child.text()
+                    if old in text_map:
+                        child.setText(text_map[old])
+                elif isinstance(child, QLabel):
+                    old = child.text()
+                    if old in text_map:
+                        child.setText(text_map[old])
 
-        # ComboBox 航线类型
+        _translate_widgets(self.centralWidget())
+        _translate_widgets(self.menuBar())
+
+        # ComboBox 航线类型（需要特殊处理，因为 items 是列表）
         route_names = [t["route_flat"], t["route_cube"], t["route_cyl"],
                        t["route_line"], t["route_inspect"]]
         idx = self.cmb_route_type.currentIndex()
@@ -1060,18 +1149,17 @@ class MainWindow(QMainWindow):
         self.cmb_route_type.addItems(route_names)
         self.cmb_route_type.setCurrentIndex(idx)
 
-        # Labels
-        for lbl, key in [
-            ("lbl_pc_info", "lbl_pc_info"), ("lbl_wp_hint", "lbl_wp_hint"),
-            ("lbl_help", "lbl_shortcuts"),
-        ]:
-            w = getattr(self, lbl, None)
-            if w:
-                w.setText(t.get(key, w.text()))
+        # ComboBox 相机型号
+        cam_idx = self.cmb_camera.currentIndex()
+        cam_names = list(self._camera_fov_map.keys())
+        if self._lang == 'en':
+            cam_names = [n.replace("自定义", "Custom") for n in cam_names]
+        else:
+            cam_names = [n.replace("Custom", "自定义") for n in cam_names]
+        self.cmb_camera.clear()
+        self.cmb_camera.addItems(cam_names)
+        self.cmb_camera.setCurrentIndex(cam_idx)
 
-        # CheckBox
-        self.chk_show_heading.setText(t.get("chk_heading", self.chk_show_heading.text()))
-        self.chk_clip.setText(t.get("clip_enable", self.chk_clip.text()))
         print(f"[Lang] Switched to {self._lang}")
 
     def _apply_clip(self):
