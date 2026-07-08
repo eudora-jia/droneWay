@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
     QProgressBar, QCheckBox, QGridLayout, QScrollArea, QTabWidget
 )
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QFont, QFontDatabase
+from PyQt5.QtGui import QFont
 
 from pcd_parser import parse_pcd
 from quaternion_utils import look_at_quaternion, quat_map_to_odom
@@ -89,6 +89,27 @@ class MainWindow(QMainWindow):
         self.progress_bar.setTextVisible(False)
         self.progress_bar.setVisible(False)
         gl.addWidget(self.progress_bar)
+
+        # Z值过滤
+        z_filter_row = QHBoxLayout()
+        self.chk_z_filter = QCheckBox("Z过滤:")
+        self.chk_z_filter.setChecked(False)
+        z_filter_row.addWidget(self.chk_z_filter)
+        self.edt_z_filter_min = QLineEdit("-999")
+        self.edt_z_filter_min.setMaximumWidth(60)
+        self.edt_z_filter_min.setEnabled(False)
+        z_filter_row.addWidget(QLabel("从"))
+        z_filter_row.addWidget(self.edt_z_filter_min)
+        self.edt_z_filter_max = QLineEdit("999")
+        self.edt_z_filter_max.setMaximumWidth(60)
+        self.edt_z_filter_max.setEnabled(False)
+        z_filter_row.addWidget(QLabel("到"))
+        z_filter_row.addWidget(self.edt_z_filter_max)
+        self.btn_z_filter_apply = QPushButton("应用")
+        self.btn_z_filter_apply.setMaximumWidth(50)
+        self.btn_z_filter_apply.setEnabled(False)
+        z_filter_row.addWidget(self.btn_z_filter_apply)
+        gl.addLayout(z_filter_row)
         ctrl_layout.addWidget(grp_load)
 
         self._route_widgets = []
@@ -139,9 +160,10 @@ class MainWindow(QMainWindow):
 
         tk_row = QHBoxLayout()
         tk_row.addWidget(QLabel("起飞高度(m):"))
-        self.edt_takeoff_z = QLineEdit("1.0")
+        self.edt_takeoff_z = QLineEdit("1.2")
         self.edt_takeoff_z.setMaximumWidth(60)
-        self.edt_takeoff_z.textChanged.connect(self._on_takeoff_z_changed)
+        self.edt_takeoff_z.setReadOnly(True)
+        self.edt_takeoff_z.setStyleSheet("QLineEdit { background: #eee; color: #666; }")
         tk_row.addWidget(self.edt_takeoff_z)
         tk_row.addWidget(QLabel("初始偏航角(°):"))
         self.edt_takeoff_yaw = QLineEdit("-90")
@@ -149,6 +171,17 @@ class MainWindow(QMainWindow):
         tk_row.addWidget(self.edt_takeoff_yaw)
         tk_row.addStretch()
         pk.addLayout(tk_row)
+
+        safe_row = QHBoxLayout()
+        safe_row.addWidget(QLabel("安全点(x,y,z):"))
+        self.edt_safe_x = QLineEdit("0"); self.edt_safe_x.setMaximumWidth(50)
+        self.edt_safe_y = QLineEdit("0"); self.edt_safe_y.setMaximumWidth(50)
+        self.edt_safe_z = QLineEdit("5.0"); self.edt_safe_z.setMaximumWidth(50)
+        safe_row.addWidget(self.edt_safe_x)
+        safe_row.addWidget(self.edt_safe_y)
+        safe_row.addWidget(self.edt_safe_z)
+        safe_row.addStretch()
+        pk.addLayout(safe_row)
 
         minz_row = QHBoxLayout()
         minz_row.addWidget(QLabel("最低飞行Z值(m):"))
@@ -365,6 +398,8 @@ class MainWindow(QMainWindow):
 
         # -- 信号连接 --
         self.btn_load.clicked.connect(self.load_point_cloud)
+        self.chk_z_filter.toggled.connect(self._on_z_filter_toggled)
+        self.btn_z_filter_apply.clicked.connect(self._apply_z_filter)
         self.btn_clear.clicked.connect(self.clear_route)
         self.btn_save.clicked.connect(self.save_route)
         self.btn_load_route.clicked.connect(self.load_route)
@@ -404,37 +439,31 @@ class MainWindow(QMainWindow):
             self.edt_dy.setText(self.edt_dx.text())
 
     def _apply_style(self):
-        available = QFontDatabase().families()
-        cn_font = "Microsoft YaHei"
-        for candidate in ["Microsoft YaHei", "SimHei", "WenQuanYi Micro Hei", "Noto Sans CJK SC", "PingFang SC"]:
-            if candidate in available:
-                cn_font = candidate
-                break
-
-        self.setStyleSheet(f"""
-            QMainWindow {{ background: #f0f0ee; }}
-            QWidget {{ color: #000; font-family: "{cn_font}", "Segoe UI", Arial; font-size: 12px; }}
-            QGroupBox {{
+        # 跳过 QFontDatabase().families() 扫描（Windows 下很慢），直接用 CSS 回退列表
+        self.setStyleSheet("""
+            QMainWindow { background: #f0f0ee; }
+            QWidget { color: #000; font-family: "Microsoft YaHei", "SimHei", "WenQuanYi Micro Hei", "Noto Sans CJK SC", "PingFang SC", "Segoe UI", Arial; font-size: 12px; }
+            QGroupBox {
                 border: 1px solid #ccc; border-radius: 6px;
                 margin-top: 8px; padding: 10px 8px; font-weight: bold; color: #000;
-            }}
-            QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 4px; color: #000; }}
-            QLineEdit {{
+            }
+            QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 4px; color: #000; }
+            QLineEdit {
                 background: #fff; border: 1px solid #bbb; border-radius: 3px;
                 padding: 3px 6px; color: #000;
-            }}
-            QLineEdit:focus {{ border-color: #4a9eff; }}
-            QPushButton {{
+            }
+            QLineEdit:focus { border-color: #4a9eff; }
+            QPushButton {
                 background: #e0e0de; border: 1px solid #bbb; border-radius: 4px;
                 padding: 6px 14px; color: #000; min-height: 24px;
-            }}
-            QPushButton:hover {{ background: #d0d0ce; }}
-            QPushButton:pressed {{ background: #c0c0be; }}
-            QComboBox {{
+            }
+            QPushButton:hover { background: #d0d0ce; }
+            QPushButton:pressed { background: #c0c0be; }
+            QComboBox {
                 background: #fff; border: 1px solid #bbb; border-radius: 3px;
                 padding: 3px 6px; color: #000;
-            }}
-            QComboBox QAbstractItemView {{ background: #fff; color: #000; selection-background-color: #4a9eff; }}
+            }
+            QComboBox QAbstractItemView { background: #fff; color: #000; selection-background-color: #4a9eff; }
         """)
 
     # ─── 多边形选择 ──────────────────────────────────────────
@@ -504,11 +533,12 @@ class MainWindow(QMainWindow):
                 mn = self.points.min(axis=0)
                 mx = self.points.max(axis=0)
 
-                # 起飞Z = 最低那批点的平均值（底部1%的点）
-                z_sorted = np.sort(self.points[:, 2])
-                bottom_n = max(1, int(len(z_sorted) * 0.01))
-                takeoff_z = float(np.mean(z_sorted[:bottom_n]))
-                self.edt_takeoff_z.setText(f"{takeoff_z:.1f}")
+                # 起飞Z 固定 1.2m
+                self.edt_takeoff_z.setText("1.2")
+
+                # 安全点 Z = 点云最高点 + 2m
+                safe_z = float(mx[2]) + 2.0
+                self.edt_safe_z.setText(f"{safe_z:.1f}")
 
                 # 最低飞行Z值 = 点云最低点
                 self.edt_min_z.setText(f"{float(mn[2]):.1f}")
@@ -579,6 +609,44 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "错误", f"加载点云失败:\n{str(e)}")
         finally:
             self.progress_bar.setVisible(False)
+
+        # 设置Z过滤默认范围
+        if self.points is not None and len(self.points) > 0:
+            mn_z = float(self.points[:, 2].min())
+            mx_z = float(self.points[:, 2].max())
+            self.edt_z_filter_min.setText(f"{mn_z:.1f}")
+            self.edt_z_filter_max.setText(f"{mx_z:.1f}")
+
+    # ─── Z值过滤 ───
+    def _on_z_filter_toggled(self, checked):
+        self.edt_z_filter_min.setEnabled(checked)
+        self.edt_z_filter_max.setEnabled(checked)
+        self.btn_z_filter_apply.setEnabled(checked)
+        if checked:
+            self._apply_z_filter()
+        else:
+            # 取消过滤，显示全部点云
+            if self.points is not None:
+                self.viewer.add_point_cloud(self.points)
+
+    def _apply_z_filter(self):
+        if self.points is None or len(self.points) == 0:
+            return
+        try:
+            z_min = float(self.edt_z_filter_min.text())
+            z_max = float(self.edt_z_filter_max.text())
+        except ValueError:
+            QMessageBox.warning(self, "输入错误", "请输入有效的Z值范围")
+            return
+        mask = (self.points[:, 2] >= z_min) & (self.points[:, 2] <= z_max)
+        filtered = self.points[mask]
+        if len(filtered) == 0:
+            QMessageBox.information(self, "提示", "过滤后无点云数据")
+            return
+        self.viewer.add_point_cloud(filtered)
+        n_total = len(self.points)
+        n_show = len(filtered)
+        self.lbl_pc_info.setText(f"已加载: {n_total:,} 点 (显示 {n_show:,})")
 
     # ─── 生成平面航线 ───
     def generate_flat_route(self):
@@ -1256,6 +1324,14 @@ class MainWindow(QMainWindow):
         takeoff_z, takeoff_yaw = self._get_takeoff_params()
         self.viewer._takeoff_z = takeoff_z
         self.viewer._takeoff_yaw = takeoff_yaw
+        try:
+            self.viewer._safe_point = (
+                float(self.edt_safe_x.text()),
+                float(self.edt_safe_y.text()),
+                float(self.edt_safe_z.text()),
+            )
+        except ValueError:
+            self.viewer._safe_point = (0.0, 0.0, 5.0)
         self.viewer.add_route(self.waypoints)
         self.lbl_info.setText(f"航点: {len(self.waypoints)}")
         self._check_safety_distance()
@@ -1304,7 +1380,7 @@ class MainWindow(QMainWindow):
                 self.viewer._waypoint_actors[j].GetProperty().SetColor(1.0, 0.0, 0.0)
 
         for idx, dist in collisions:
-            if idx < len(self.viewer._waypoint_actors):
+            if idx >= 0 and idx < len(self.viewer._waypoint_actors):
                 self.viewer._waypoint_actors[idx].GetProperty().SetColor(1.0, 0.0, 1.0)
 
         try:
@@ -1316,11 +1392,15 @@ class MainWindow(QMainWindow):
                 self.viewer._waypoint_actors[idx].GetProperty().SetColor(1.0, 0.5, 0.0)
 
         collision_dist = safe_dist * 0.5
+        seg_collisions = set(idx for idx, _ in collisions if idx >= 0)
+        safe_collision = any(idx == -1 for idx, _ in collisions)
         msgs = [f"航点: {len(self.waypoints)}"]
         if violations:
             msgs.append(f"{len(violations)} 对过近 (<{safe_dist}m)")
-        if collisions:
-            msgs.append(f"{len(collisions)} 个碰撞 (<{collision_dist:.1f}m)")
+        if seg_collisions:
+            msgs.append(f"{len(seg_collisions)} 航点碰撞 (<{collision_dist:.1f}m)")
+        if safe_collision:
+            msgs.append("安全点路径碰撞")
         if low_z:
             msgs.append(f"{len(low_z)} 个低于Z={min_z}m")
         self.lbl_info.setText(" | ".join(msgs))
@@ -1329,27 +1409,58 @@ class MainWindow(QMainWindow):
     def _collect_collision_warnings(self):
         """收集碰撞检测数据，返回 (violations, collisions, low_z)
         violations: [(i, j, dist), ...] 航点间距过近
-        collisions: [(idx, dist), ...] 航点距点云过近
+        collisions: [(idx, dist), ...] 航点距点云过近（含线段采样）
         low_z: [(idx, z_val), ...] 航点低于最低Z值
         """
         safe_dist = self.viewer._safe_distance
         collision_dist = safe_dist * 0.5
+        sample_step = safe_dist * 0.5
 
+        # ── 航点间距检测（向量化）──
         violations = []
-        for i in range(len(self.waypoints) - 1):
-            d = np.linalg.norm(self.waypoints[i+1]['pos'] - self.waypoints[i]['pos'])
-            if d < safe_dist:
-                violations.append((i, i+1, d))
+        if len(self.waypoints) >= 2:
+            positions = np.array([wp['pos'] for wp in self.waypoints])
+            diffs = np.diff(positions, axis=0)
+            dists = np.linalg.norm(diffs, axis=1)
+            too_close = np.where(dists < safe_dist)[0]
+            violations = [(int(i), int(i + 1), float(dists[i])) for i in too_close]
 
+        # 构建完整路径点列表：安全点 + 所有航点
+        try:
+            sx = float(self.edt_safe_x.text())
+            sy = float(self.edt_safe_y.text())
+            sz = float(self.edt_safe_z.text())
+        except ValueError:
+            sx, sy, sz = 0.0, 0.0, 5.0
+        safe_pos = np.array([sx, sy, sz])
+        all_positions = [safe_pos] + [wp['pos'] for wp in self.waypoints]
+
+        # ── 线段采样碰撞检测（批量查询）──
         collisions = []
         tree = self._get_kdtree()
-        if tree is not None:
-            wp_positions = np.array([wp['pos'] for wp in self.waypoints])
-            dists, _ = tree.query(wp_positions)
-            for i, dist in enumerate(dists):
-                if dist < collision_dist:
-                    collisions.append((i, dist))
+        if tree is not None and len(all_positions) >= 2:
+            all_pts = []
+            seg_labels = []
+            for seg_i in range(len(all_positions) - 1):
+                p1 = all_positions[seg_i]
+                p2 = all_positions[seg_i + 1]
+                d = np.linalg.norm(p2 - p1)
+                if d < 1e-10:
+                    continue
+                n_samples = max(2, int(d / sample_step) + 1)
+                ts = np.linspace(0, 1, n_samples + 1)
+                pts = p1[None, :] + ts[:, None] * (p2 - p1)[None, :]
+                all_pts.append(pts)
+                label = -1 if seg_i == 0 else seg_i
+                seg_labels.extend([label] * len(pts))
 
+            if all_pts:
+                all_pts_arr = np.vstack(all_pts)
+                dists, _ = tree.query(all_pts_arr)
+                hit_mask = dists < collision_dist
+                collisions = [(seg_labels[i], float(dists[i])) for i in np.where(hit_mask)[0]]
+
+        # ── 最低Z值检测 ──
         low_z = []
         try:
             min_z = float(self.edt_min_z.text())
@@ -1406,7 +1517,10 @@ class MainWindow(QMainWindow):
         for i, j, d in violations:
             warnings.append(f"{i+1}-{j+1} 号航点间距 {d:.2f}m < {safe_dist}m")
         for idx, dist in collisions:
-            warnings.append(f"{idx+1} 号航点碰撞 (距点云 {dist:.2f}m)")
+            if idx == -1:
+                warnings.append(f"安全点路径碰撞 (距点云 {dist:.2f}m)")
+            else:
+                warnings.append(f"{idx+1} 号航点碰撞 (距点云 {dist:.2f}m)")
         try:
             min_z = float(self.edt_min_z.text())
         except ValueError:
@@ -1464,6 +1578,7 @@ class MainWindow(QMainWindow):
             }
 
         poses = []
+        # Pose 0: origin (0,0,0)
         poses.append({
             "header": {"stamp": {"sec": 0, "nsec": 0}, "frame_id": "camera_init"},
             "pose": {
@@ -1476,6 +1591,40 @@ class MainWindow(QMainWindow):
                 }
             }
         })
+
+        # Pose 1: safety point
+        try:
+            sx = float(self.edt_safe_x.text())
+            sy = float(self.edt_safe_y.text())
+            sz = float(self.edt_safe_z.text())
+        except ValueError:
+            sx, sy, sz = 0.0, 0.0, 5.0
+        safe_pos = np.array([sx, sy, sz])
+        # 安全点朝向第一个航点
+        first_wp_pos = self.waypoints[0]['pos']
+        safe_heading = first_wp_pos - safe_pos
+        safe_heading[2] = 0
+        if np.linalg.norm(safe_heading) > 1e-10:
+            safe_target = safe_pos + safe_heading
+            safe_quat = look_at_quaternion(safe_target, safe_pos)
+        else:
+            safe_quat = takeoff_quat
+        safe_quat_odom = quat_map_to_odom(safe_quat)
+        poses.append({
+            "header": {"stamp": {"sec": 0, "nsec": 0}, "frame_id": "camera_init"},
+            "pose": {
+                "position": {
+                    "x": round(sx, 4), "y": round(sy, 4), "z": round(sz, 4)
+                },
+                "orientation": {
+                    "x": round(float(safe_quat_odom[1]), 6),
+                    "y": round(float(safe_quat_odom[2]), 6),
+                    "z": round(float(safe_quat_odom[3]), 6),
+                    "w": round(float(safe_quat_odom[0]), 6)
+                }
+            }
+        })
+
         for wp in self.waypoints:
             poses.append(_wp_to_pose(wp))
 
