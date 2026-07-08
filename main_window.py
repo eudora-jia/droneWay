@@ -372,6 +372,33 @@ class MainWindow(QMainWindow):
         cyl.addWidget(self.btn_cyl_place, 6, 2, 1, 2)
         route_tabs.addTab(tab_cyl, "圆柱体航线")
 
+        # -- Tab 4: 直线航线 --
+        tab_line = QWidget()
+        ll = QGridLayout(tab_line)
+        ll.setSpacing(4)
+
+        ll.addWidget(QLabel("起点(x,y,z):"), 0, 0)
+        self.edt_line_x1 = QLineEdit("0"); ll.addWidget(self.edt_line_x1, 0, 1)
+        self.edt_line_y1 = QLineEdit("0"); ll.addWidget(self.edt_line_y1, 0, 2)
+        self.edt_line_z1 = QLineEdit("5"); ll.addWidget(self.edt_line_z1, 0, 3)
+
+        ll.addWidget(QLabel("终点(x,y,z):"), 1, 0)
+        self.edt_line_x2 = QLineEdit("10"); ll.addWidget(self.edt_line_x2, 1, 1)
+        self.edt_line_y2 = QLineEdit("0"); ll.addWidget(self.edt_line_y2, 1, 2)
+        self.edt_line_z2 = QLineEdit("5"); ll.addWidget(self.edt_line_z2, 1, 3)
+
+        ll.addWidget(QLabel("航点距离:"), 2, 0)
+        self.edt_line_spacing = QLineEdit("2"); ll.addWidget(self.edt_line_spacing, 2, 1)
+        ll.addWidget(QLabel("速度(m/s):"), 2, 2)
+        self.edt_line_speed = QLineEdit("1"); ll.addWidget(self.edt_line_speed, 2, 3)
+
+        btn_apply_line = QPushButton("生成直线航线")
+        btn_apply_line.setStyleSheet("QPushButton { background: #d0d8e8; padding: 6px; font-weight: bold; } QPushButton:hover { background: #c0c8d8; }")
+        btn_apply_line.clicked.connect(self.generate_line_route)
+        ll.addWidget(btn_apply_line, 3, 0, 1, 4)
+
+        route_tabs.addTab(tab_line, "直线航线")
+
         ctrl_layout.addWidget(route_tabs)
         self._route_widgets.append(route_tabs)
 
@@ -925,6 +952,51 @@ class MainWindow(QMainWindow):
 
         self._display_route()
         print(f"[Cylinder] Generated {len(self.waypoints)} waypoints ({route_type})")
+
+    # ─── 生成直线航线 ───
+    def generate_line_route(self):
+        try:
+            x1 = float(self.edt_line_x1.text())
+            y1 = float(self.edt_line_y1.text())
+            z1 = float(self.edt_line_z1.text())
+            x2 = float(self.edt_line_x2.text())
+            y2 = float(self.edt_line_y2.text())
+            z2 = float(self.edt_line_z2.text())
+            spacing = float(self.edt_line_spacing.text())
+            speed = float(self.edt_line_speed.text())
+        except ValueError:
+            QMessageBox.warning(self, "输入错误", "请输入有效数字")
+            return
+
+        if spacing <= 0:
+            QMessageBox.warning(self, "输入错误", "航点距离必须为正数")
+            return
+
+        p1 = np.array([x1, y1, z1])
+        p2 = np.array([x2, y2, z2])
+        length = np.linalg.norm(p2 - p1)
+        if length < 1e-10:
+            QMessageBox.warning(self, "输入错误", "起点和终点不能重合")
+            return
+
+        n_pts = max(2, int(length / spacing) + 1)
+        direction = (p2 - p1) / length
+
+        self.waypoints = []
+        for i in range(n_pts):
+            t = i / (n_pts - 1)
+            pos = p1 + t * (p2 - p1)
+            target = pos + direction
+            quat = look_at_quaternion(target, pos)
+            self.waypoints.append({
+                'pos': pos,
+                'quat': quat,
+                'speed': speed,
+                'action': 'fly'
+            })
+
+        self._display_route()
+        print(f"[Line] Generated {len(self.waypoints)} waypoints")
 
     # ─── 生成立方体航线 ───
     def generate_cube_route(self):
