@@ -279,13 +279,14 @@ class MainWindow(QMainWindow):
         # -- 加载点云 --
         grp_load = QGroupBox("加载点云")
         gl = QVBoxLayout(grp_load)
-        self.lbl_pc_info = QLabel("未加载点云")
-        gl.addWidget(self.lbl_pc_info)
         self.progress_bar = QProgressBar()
         self.progress_bar.setMaximumHeight(12)
         self.progress_bar.setTextVisible(False)
         self.progress_bar.setVisible(False)
         gl.addWidget(self.progress_bar)
+
+        # 状态栏
+        self.statusBar().showMessage("未加载点云")
 
         # 裁剪框（XYZ过滤）— 通过菜单"展示→裁剪框"控制显隐
         self._clip_group = QGroupBox("裁剪框")
@@ -851,7 +852,7 @@ class MainWindow(QMainWindow):
 
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)
-        self.lbl_pc_info.setText(f"正在加载 {os.path.basename(path)}...")
+        self.statusBar().showMessage(f"正在加载 {os.path.basename(path)}...")
         QApplication.processEvents()
 
         try:
@@ -865,7 +866,7 @@ class MainWindow(QMainWindow):
             QApplication.processEvents()
 
             n = len(self.points)
-            self.lbl_pc_info.setText(f"已加载: {os.path.basename(path)} ({n:,} 点)")
+            self.statusBar().showMessage(f"已加载: {os.path.basename(path)} ({n:,} 点)")
 
             if n > 0:
                 mn = self.points.min(axis=0)
@@ -1094,6 +1095,11 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle(t["win_title"])
 
+        # 状态栏（仅在未加载点云时切换文本）
+        status = self.statusBar().currentMessage()
+        if "未加载" in status or "No point cloud" in status:
+            self.statusBar().showMessage(t["lbl_pc_info"])
+
         # ─── 构建翻译映射 ───
         if self._lang == 'zh':
             # 英→中：用 _INLINE_LABELS 的反向映射
@@ -1198,7 +1204,7 @@ class MainWindow(QMainWindow):
         self.viewer.add_point_cloud(filtered, self._get_render_mode(), self._get_point_size())
         n_total = len(self.points)
         n_show = len(filtered)
-        self.lbl_pc_info.setText(f"已加载: {n_total:,} 点 (显示 {n_show:,})")
+        self.statusBar().showMessage(f"已加载: {n_total:,} 点 (显示 {n_show:,})")
 
     # ─── 生成平面航线 ───
     def generate_flat_route(self):
