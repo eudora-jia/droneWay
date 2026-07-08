@@ -243,8 +243,7 @@ class MainWindow(QMainWindow):
         # ─── 设置 ───
         self._settings_menu = menubar.addMenu("设置")
         self._act_bridge_params = QAction("桥梁参数", self)
-        self._act_bridge_params.setCheckable(True)
-        self._act_bridge_params.triggered.connect(self._toggle_bridge_panel)
+        self._act_bridge_params.triggered.connect(self._show_bridge_dialog)
         self._settings_menu.addAction(self._act_bridge_params)
 
     def _init_ui(self):
@@ -335,39 +334,13 @@ class MainWindow(QMainWindow):
 
         self._route_widgets = []
 
-        # -- 桥梁参数（浮动面板，通过设置菜单切换显隐）--
-        self._bridge_panel = QWidget(self.viewer)
-        self._bridge_panel.setStyleSheet(
-            "QWidget { background: rgba(240,240,238,220); border: 1px solid #aaa; border-radius: 4px; }"
-        )
-        self._bridge_panel.setVisible(False)
-        bp = QGridLayout(self._bridge_panel)
-        bp.setContentsMargins(8, 8, 8, 8)
-        bp.setSpacing(4)
-
-        bp.addWidget(QLabel("桥梁名称:"), 0, 0)
-        self.edt_bridge_name = QLineEdit("我的桥梁")
-        bp.addWidget(self.edt_bridge_name, 0, 1, 1, 3)
-
-        bp.addWidget(QLabel("桥型:"), 1, 0)
-        self.cmb_bridge_type = QComboBox()
-        self.cmb_bridge_type.addItems(["跨河桥", "跨线桥", "高架桥"])
-        bp.addWidget(self.cmb_bridge_type, 1, 1, 1, 3)
-
-        bp.addWidget(QLabel("桥长(m):"), 2, 0)
-        self.edt_bridge_len = QLineEdit("100"); bp.addWidget(self.edt_bridge_len, 2, 1)
-        bp.addWidget(QLabel("桥宽(m):"), 2, 2)
-        self.edt_bridge_wid = QLineEdit("15"); bp.addWidget(self.edt_bridge_wid, 2, 3)
-
-        bp.addWidget(QLabel("净空(m):"), 3, 0)
-        self.edt_bridge_clr = QLineEdit("8"); bp.addWidget(self.edt_bridge_clr, 3, 1)
-        bp.addWidget(QLabel("跨距(m):"), 3, 2)
-        self.edt_bridge_span = QLineEdit("30"); bp.addWidget(self.edt_bridge_span, 3, 3)
-
-        btn_apply_bridge = QPushButton("应用")
-        btn_apply_bridge.setStyleSheet("QPushButton { background: #d0d8e8; padding: 6px; } QPushButton:hover { background: #c0c8d8; }")
-        btn_apply_bridge.clicked.connect(self._apply_bridge_params)
-        bp.addWidget(btn_apply_bridge, 4, 0, 1, 4)
+        # -- 桥梁参数（默认值，通过设置菜单弹窗编辑）--
+        self._bridge_name_val = "我的桥梁"
+        self._bridge_type_val = 0
+        self._bridge_len_val = "100"
+        self._bridge_wid_val = "15"
+        self._bridge_clr_val = "8"
+        self._bridge_span_val = "30"
 
         # -- 安全距离 --
         grp_pick = QGroupBox("安全设置")
@@ -969,25 +942,52 @@ class MainWindow(QMainWindow):
         """菜单栏点云大小切换"""
         self.sld_point_size.setValue(val)
 
-    def _toggle_bridge_panel(self):
-        """切换桥梁参数浮动面板显隐"""
-        visible = not self._bridge_panel.isVisible()
-        self._bridge_panel.setVisible(visible)
-        self._act_bridge_params.setChecked(visible)
-        if visible:
-            self._position_bridge_panel()
+    def _show_bridge_dialog(self):
+        """弹出桥梁参数对话框"""
+        from PyQt5.QtWidgets import QDialog, QDialogButtonBox
+        dlg = QDialog(self)
+        dlg.setWindowTitle("桥梁参数")
+        dlg.setMinimumWidth(300)
+        layout = QGridLayout(dlg)
+        layout.setSpacing(6)
 
-    def _position_bridge_panel(self):
-        """定位浮动面板到渲染区右上角"""
-        vr = self.viewer.size()
-        pw = self._bridge_panel.sizeHint()
-        self._bridge_panel.move(vr.width() - pw.width() - 10, 10)
+        layout.addWidget(QLabel("桥梁名称:"), 0, 0)
+        edt_name = QLineEdit(self._bridge_name_val)
+        layout.addWidget(edt_name, 0, 1, 1, 3)
 
-    def resizeEvent(self, event):
-        """窗口大小变化时重新定位浮动面板"""
-        super().resizeEvent(event)
-        if self._bridge_panel.isVisible():
-            self._position_bridge_panel()
+        layout.addWidget(QLabel("桥型:"), 1, 0)
+        cmb_type = QComboBox()
+        cmb_type.addItems(["跨河桥", "跨线桥", "高架桥"])
+        cmb_type.setCurrentIndex(self._bridge_type_val)
+        layout.addWidget(cmb_type, 1, 1, 1, 3)
+
+        layout.addWidget(QLabel("桥长(m):"), 2, 0)
+        edt_len = QLineEdit(self._bridge_len_val)
+        layout.addWidget(edt_len, 2, 1)
+        layout.addWidget(QLabel("桥宽(m):"), 2, 2)
+        edt_wid = QLineEdit(self._bridge_wid_val)
+        layout.addWidget(edt_wid, 2, 3)
+
+        layout.addWidget(QLabel("净空(m):"), 3, 0)
+        edt_clr = QLineEdit(self._bridge_clr_val)
+        layout.addWidget(edt_clr, 3, 1)
+        layout.addWidget(QLabel("跨距(m):"), 3, 2)
+        edt_span = QLineEdit(self._bridge_span_val)
+        layout.addWidget(edt_span, 3, 3)
+
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        layout.addWidget(btns, 4, 0, 1, 4)
+
+        if dlg.exec_() == QDialog.Accepted:
+            self._bridge_name_val = edt_name.text()
+            self._bridge_type_val = cmb_type.currentIndex()
+            self._bridge_len_val = edt_len.text()
+            self._bridge_wid_val = edt_wid.text()
+            self._bridge_clr_val = edt_clr.text()
+            self._bridge_span_val = edt_span.text()
+            self._apply_bridge_params()
 
     def _switch_language(self, lang):
         """切换界面语言"""
@@ -1738,15 +1738,15 @@ class MainWindow(QMainWindow):
 
     def _apply_bridge_params(self):
         try:
-            bridge_len = float(self.edt_bridge_len.text())
-            bridge_wid = float(self.edt_bridge_wid.text())
-            clearance = float(self.edt_bridge_clr.text())
-            span = float(self.edt_bridge_span.text())
+            bridge_len = float(self._bridge_len_val)
+            bridge_wid = float(self._bridge_wid_val)
+            clearance = float(self._bridge_clr_val)
+            span = float(self._bridge_span_val)
         except ValueError:
             QMessageBox.warning(self, "输入错误", "请输入有效的桥梁参数")
             return
 
-        bridge_type = self.cmb_bridge_type.currentIndex()
+        bridge_type = self._bridge_type_val
 
         if bridge_type == 0:
             z_offset = 3.0
@@ -1783,9 +1783,9 @@ class MainWindow(QMainWindow):
         spacing = max(span / 5, 2.0)
         self.edt_spacing.setText(f"{spacing:.1f}")
 
-        bridge_name = self.edt_bridge_name.text().strip()
+        bridge_name = self._bridge_name_val.strip()
         if not bridge_name:
-            bridge_name = self.cmb_bridge_type.currentText()
+            bridge_name = ["跨河桥", "跨线桥", "高架桥"][self._bridge_type_val]
         self._bridge_name = bridge_name
         print(f"[Bridge] Applied: {bridge_name}, L={bridge_len}m, W={bridge_wid}m, Clearance={clearance}m, Span={span}m")
         self.lbl_info.setText(f"桥梁: {bridge_name}, {bridge_len}m x {bridge_wid}m")
@@ -2407,12 +2407,12 @@ class MainWindow(QMainWindow):
             "header": {"stamp": {"sec": 0, "nsec": 0}, "frame_id": "camera_init"},
             "poses": poses,
             "bridge": {
-                "type": self.cmb_bridge_type.currentText(),
-                "type_index": self.cmb_bridge_type.currentIndex(),
-                "length_m": self.edt_bridge_len.text(),
-                "width_m": self.edt_bridge_wid.text(),
-                "clearance_m": self.edt_bridge_clr.text(),
-                "span_m": self.edt_bridge_span.text()
+                "type": ["跨河桥", "跨线桥", "高架桥"][self._bridge_type_val],
+                "type_index": self._bridge_type_val,
+                "length_m": self._bridge_len_val,
+                "width_m": self._bridge_wid_val,
+                "clearance_m": self._bridge_clr_val,
+                "span_m": self._bridge_span_val
             }
         }
 
@@ -2683,12 +2683,12 @@ class MainWindow(QMainWindow):
             bridge = data.get('bridge', {})
             if bridge:
                 idx = bridge.get('type_index', 0)
-                if 0 <= idx < self.cmb_bridge_type.count():
-                    self.cmb_bridge_type.setCurrentIndex(idx)
-                self.edt_bridge_len.setText(str(bridge.get('length_m', '100')))
-                self.edt_bridge_wid.setText(str(bridge.get('width_m', '15')))
-                self.edt_bridge_clr.setText(str(bridge.get('clearance_m', '8')))
-                self.edt_bridge_span.setText(str(bridge.get('span_m', '30')))
+                if 0 <= idx < 3:
+                    self._bridge_type_val = idx
+                self._bridge_len_val = str(bridge.get('length_m', '100'))
+                self._bridge_wid_val = str(bridge.get('width_m', '15'))
+                self._bridge_clr_val = str(bridge.get('clearance_m', '8'))
+                self._bridge_span_val = str(bridge.get('span_m', '30'))
 
             self._display_route()
             QMessageBox.information(self, "已加载", f"已加载 {len(self.waypoints)} 个航点")
