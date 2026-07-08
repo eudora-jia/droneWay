@@ -39,6 +39,7 @@ class MainWindow(QMainWindow):
             "act_copy_maicro": "复制maicro航线到剪贴板",
             "act_clip": "裁剪框", "menu_render": "渲染模式", "menu_size": "点云大小",
             "menu_lang": "语言", "lang_zh": "中文", "lang_en": "English",
+            "menu_settings": "设置", "act_bridge_params": "桥梁参数",
             "grp_mode": "工作模式", "btn_route": "航线模式",
             "grp_load": "点云渲染",
             "lbl_pc_info": "未加载点云",
@@ -93,6 +94,7 @@ class MainWindow(QMainWindow):
             "act_copy_maicro": "Copy Maicro Route to Clipboard",
             "act_clip": "Clip Box", "menu_render": "Render Mode", "menu_size": "Point Size",
             "menu_lang": "Language", "lang_zh": "中文", "lang_en": "English",
+            "menu_settings": "Settings", "act_bridge_params": "Bridge Params",
             "grp_mode": "Mode", "btn_route": "Route",
             "grp_load": "Point Cloud Render",
             "lbl_pc_info": "No point cloud loaded",
@@ -240,6 +242,13 @@ class MainWindow(QMainWindow):
         self._act_lang_en.triggered.connect(lambda: self._switch_language('en'))
         self._lang_menu.addAction(self._act_lang_en)
 
+        # ─── 设置 ───
+        self._settings_menu = menubar.addMenu("设置")
+        self._act_bridge_params = QAction("桥梁参数", self)
+        self._act_bridge_params.setCheckable(True)
+        self._act_bridge_params.triggered.connect(self._toggle_bridge_panel)
+        self._settings_menu.addAction(self._act_bridge_params)
+
     def _init_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
@@ -338,9 +347,14 @@ class MainWindow(QMainWindow):
 
         self._route_widgets = []
 
-        # -- 桥梁参数 --
-        grp_bridge = QGroupBox("桥梁参数")
-        bp = QGridLayout(grp_bridge)
+        # -- 桥梁参数（浮动面板，通过设置菜单切换显隐）--
+        self._bridge_panel = QWidget(self.viewer)
+        self._bridge_panel.setStyleSheet(
+            "QWidget { background: rgba(240,240,238,220); border: 1px solid #aaa; border-radius: 4px; }"
+        )
+        self._bridge_panel.setVisible(False)
+        bp = QGridLayout(self._bridge_panel)
+        bp.setContentsMargins(8, 8, 8, 8)
         bp.setSpacing(4)
 
         bp.addWidget(QLabel("桥梁名称:"), 0, 0)
@@ -366,9 +380,6 @@ class MainWindow(QMainWindow):
         btn_apply_bridge.setStyleSheet("QPushButton { background: #d0d8e8; padding: 6px; } QPushButton:hover { background: #c0c8d8; }")
         btn_apply_bridge.clicked.connect(self._apply_bridge_params)
         bp.addWidget(btn_apply_bridge, 4, 0, 1, 4)
-
-        ctrl_layout.addWidget(grp_bridge)
-        self._route_widgets.append(grp_bridge)
 
         # -- 安全距离 --
         grp_pick = QGroupBox("安全设置")
@@ -970,6 +981,26 @@ class MainWindow(QMainWindow):
         """菜单栏点云大小切换"""
         self.sld_point_size.setValue(val)
 
+    def _toggle_bridge_panel(self):
+        """切换桥梁参数浮动面板显隐"""
+        visible = not self._bridge_panel.isVisible()
+        self._bridge_panel.setVisible(visible)
+        self._act_bridge_params.setChecked(visible)
+        if visible:
+            self._position_bridge_panel()
+
+    def _position_bridge_panel(self):
+        """定位浮动面板到渲染区右上角"""
+        vr = self.viewer.size()
+        pw = self._bridge_panel.sizeHint()
+        self._bridge_panel.move(vr.width() - pw.width() - 10, 10)
+
+    def resizeEvent(self, event):
+        """窗口大小变化时重新定位浮动面板"""
+        super().resizeEvent(event)
+        if self._bridge_panel.isVisible():
+            self._position_bridge_panel()
+
     def _switch_language(self, lang):
         """切换界面语言"""
         if lang == self._lang:
@@ -1059,6 +1090,8 @@ class MainWindow(QMainWindow):
             act.setText(new_name)
         self._size_menu.setTitle(t["menu_size"])
         self._lang_menu.setTitle(t["menu_lang"])
+        self._settings_menu.setTitle(t["menu_settings"])
+        self._act_bridge_params.setText(t["act_bridge_params"])
 
         self.setWindowTitle(t["win_title"])
 
