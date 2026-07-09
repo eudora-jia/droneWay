@@ -341,6 +341,14 @@ class MainWindow(QMainWindow):
         self._bridge_wid_val = "15"
         self._bridge_clr_val = "8"
         self._bridge_span_val = "30"
+        self._bridge_render = False
+        self._bridge_info_label = QLabel(self.viewer)
+        self._bridge_info_label.setStyleSheet(
+            "QLabel { background: rgba(0,0,0,160); color: #fff; padding: 6px 10px; "
+            "border-radius: 4px; font-size: 12px; }"
+        )
+        self._bridge_info_label.setVisible(False)
+        self._bridge_info_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
 
         # -- 安全距离 --
         grp_pick = QGroupBox("安全设置")
@@ -975,10 +983,14 @@ class MainWindow(QMainWindow):
         edt_span = QLineEdit(self._bridge_span_val)
         layout.addWidget(edt_span, 3, 3)
 
+        chk_render = QCheckBox("渲染")
+        chk_render.setChecked(self._bridge_render)
+        layout.addWidget(chk_render, 4, 0, 1, 2)
+
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         btns.accepted.connect(dlg.accept)
         btns.rejected.connect(dlg.reject)
-        layout.addWidget(btns, 4, 0, 1, 4)
+        layout.addWidget(btns, 5, 0, 1, 4)
 
         if dlg.exec_() == QDialog.Accepted:
             self._bridge_name_val = edt_name.text()
@@ -987,7 +999,37 @@ class MainWindow(QMainWindow):
             self._bridge_wid_val = edt_wid.text()
             self._bridge_clr_val = edt_clr.text()
             self._bridge_span_val = edt_span.text()
+            self._bridge_render = chk_render.isChecked()
             self._apply_bridge_params()
+            self._update_bridge_info_label()
+
+    def _update_bridge_info_label(self):
+        """更新渲染区右上角的桥梁参数信息标签"""
+        if self._bridge_render:
+            type_names = ["跨河桥", "跨线桥", "高架桥"]
+            type_name = type_names[self._bridge_type_val]
+            text = (f"桥梁: {self._bridge_name_val}\n"
+                    f"类型: {type_name}\n"
+                    f"长: {self._bridge_len_val}m  宽: {self._bridge_wid_val}m\n"
+                    f"净空: {self._bridge_clr_val}m  跨距: {self._bridge_span_val}m")
+            self._bridge_info_label.setText(text)
+            self._bridge_info_label.adjustSize()
+            self._bridge_info_label.setVisible(True)
+            self._position_bridge_info_label()
+        else:
+            self._bridge_info_label.setVisible(False)
+
+    def _position_bridge_info_label(self):
+        """定位桥梁信息标签到渲染区右上角"""
+        vr = self.viewer.size()
+        lb = self._bridge_info_label.size()
+        self._bridge_info_label.move(vr.width() - lb.width() - 10, 10)
+
+    def resizeEvent(self, event):
+        """窗口大小变化时重新定位信息标签"""
+        super().resizeEvent(event)
+        if self._bridge_info_label.isVisible():
+            self._position_bridge_info_label()
 
     def _switch_language(self, lang):
         """切换界面语言"""
