@@ -417,11 +417,137 @@ class VTKViewer(QWidget):
         self._line_points = []
         self._line_markers = []
 
+        # ─── 裁剪平面 ───
+        self._clip_plane_actors = {}  # {'x': actor, 'y': actor, 'z': actor}
+        self._clip_plane_positions = {'x': 0.0, 'y': 0.0, 'z': 0.0}
+        self._clip_plane_visible = {'x': False, 'y': False, 'z': False}
+        self._clip_bounds = None  # 点云包围盒，用于确定平面大小
+
         self._timer_id = self.startTimer(30)
 
     def timerEvent(self, event):
         if getattr(self, '_vtk_available', False) and getattr(self, 'interactor', None):
             self.interactor.ProcessEvents()
+
+    def _create_clip_plane_actor(self, axis, color):
+        """创建裁剪平面actor（半透明矩形）"""
+        vtk = self._vtk
+        plane_source = vtk.vtkPlaneSource()
+        mapper = self._vtkPolyDataMapper()
+        mapper.SetInputConnection(plane_source.GetOutputPort())
+        actor = self._vtkActor()
+        actor.SetMapper(mapper)
+        actor.GetProperty().SetColor(color)
+        actor.GetProperty().SetOpacity(0.3)
+        actor.GetProperty().SetLighting(False)
+        actor.SetVisibility(False)
+        # 保存plane_source引用以便后续更新
+        actor._plane_source = plane_source
+        actor._axis = axis
+        self.renderer.AddActor(actor)
+        return actor
+
+    def _update_clip_plane_geometry(self, axis, position):
+        """更新裁剪平面的几何形状（位置和大小）"""
+        if axis not in self._clip_plane_actors:
+            return
+        actor = self._clip_plane_actors[axis]
+        plane_source = actor._plane_source
+
+        # 获取点云包围盒
+        bounds = self._clip_bounds
+        if bounds is None:
+            return
+
+        # 计算平面大小（取包围盒在另外两个轴上的范围）
+        if axis == 'x':
+            y_range = bounds['y_max'] - bounds['y_min']
+            z_range = bounds['z_max'] - bounds['z_min']
+            size = max(y_range, z_range) * 1.2
+            center = [position, (bounds['y_min'] + bounds['y_max']) / 2, (bounds['z_min'] + bounds['z_max']) / 2]
+            normal = [1, 0, 0]
+            # 设置平面的两个角点
+            p1 = [position, bounds['y_min'] - size * 0.1, bounds['z_min'] - size * 0.1]
+            p2 = [position, bounds['y_max'] + size * 0.1, bounds['z_min'] - size * 0.1]
+            p3 = [position, bounds['y_min'] - size * 0.1, bounds['z_max'] + size * 0.1]
+        elif axis == 'y':
+            x_range = bounds['x_max'] - bounds['x_min']
+            z_range = bounds['z_max'] - bounds['z_min']
+            size = max(x_range, z_range) * 1.2
+            center = [(bounds['x_min'] + bounds['x_max']) / 2, position, (bounds['z_min'] + bounds['z_max']) / 2]
+            normal = [0, 1, 0]
+            p1 = [bounds['x_min'] - size * 0.1, position, bounds['z_min'] - size * 0.1]
+            p2 = [bounds['x_max'] + size * 0.1, position, bounds['z_min'] - size * 0.1]
+            p3 = [bounds['x_min'] - size * 0.1, position, bounds['z_max'] + size * 0.1]
+        else:  # z
+            x_range = bounds['x_max'] - bounds['x_min']
+            y_range = bounds['y_max'] - bounds['y_min']
+            size = max(x_range, y_range) * 1.2
+            center = [(bounds['x_min'] + bounds['x_max']) / 2, (bounds['y_min'] + bounds['y_max']) / 2, position]
+            normal = [0, 0, 1]
+            p1 = [bounds['x_min'] - size * 0.1, bounds['y_min'] - size * 0.1, position]
+            p2 = [bounds['x_max'] + size * 0.1, bounds['y_min'] - size * 0.1, position]
+            p3 = [bounds['x_min'] - size * 0.1, bounds['y_max'] + size * 0.1, position]
+
+        plane_source.SetOrigin(p1)
+        plane_source.SetPoint1(p2)
+        plane_source.SetPoint2(p3)
+        plane_source.SetNormal(normal)
+        plane_source.Update()
+
+    def set_clip_plane(self, axis, position):
+        """设置裁剪平面位置"""
+        if not self._vtk_available:
+            return
+        self._clip_plane_positions[axis] = position
+        if axis in self._clip_plane_actors:
+            self._update_clip_plane_geometry(axis, position)
+            self.vtk_widget.GetRenderWindow().Render()
+
+    def show_clip_plane(self, axis, visible):
+        """显示/隐藏裁剪平面"""
+        if not self._vtk_available:
+            return
+        self._clip_plane_visible[axis] = visible
+        if visible and axis not in self._clip_plane_actors:
+            # 创建平面actor
+            colors = {'x': (1, 0.3, 0.3), 'y': (0.3, 1, 0.3), 'z': (0.3, 0.3, 1)}
+            self._clip_plane_actors[axis] = self._create_clip_plane_actor(axis, colors[axis])
+            # 设置初始位置
+            if self._clip_bounds is not None:
+                if axis == 'x':
+                    pos = self._clip_bounds['x_max']
+                elif axis == 'y':
+                    pos = self._clip_bounds['y_max']
+                else:
+                    pos = self._clip_bounds['z_max']
+                self._clip_plane_positions[axis] = pos
+            self._update_clip_plane_geometry(axis, self._clip_plane_positions[axis])
+        if axis in self._clip_plane_actors:
+            self._clip_plane_actors[axis].SetVisibility(visible)
+            self.vtk_widget.GetRenderWindow().Render()
+
+    def _update_clip_bounds(self, points):
+        """更新点云包围盒，用于裁剪平面大小"""
+        if points is None or len(points) == 0:
+            self._clip_bounds = None
+            return
+        mn = points.min(axis=0)
+        mx = points.max(axis=0)
+        self._clip_bounds = {
+            'x_min': mn[0], 'x_max': mx[0],
+            'y_min': mn[1], 'y_max': mx[1],
+            'z_min': mn[2], 'z_max': mx[2],
+        }
+
+    def clear_clip_planes(self):
+        """清除所有裁剪平面"""
+        for axis, actor in self._clip_plane_actors.items():
+            self.renderer.RemoveActor(actor)
+        self._clip_plane_actors.clear()
+        self._clip_plane_visible = {'x': False, 'y': False, 'z': False}
+        if self.vtk_widget.GetRenderWindow():
+            self.vtk_widget.GetRenderWindow().Render()
 
     def clear_actors(self):
         for actor in self._actors:
@@ -437,6 +563,7 @@ class VTKViewer(QWidget):
         self._add_scene_axes()
         self.points_data = points
         self._cloud_tree = None  # 重建KDTree缓存
+        self._update_clip_bounds(points)  # 更新裁剪平面包围盒
 
         MAX_RENDER_POINTS = 5_000_000
         if len(points) > MAX_RENDER_POINTS:

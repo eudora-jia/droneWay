@@ -199,8 +199,7 @@ class MainWindow(QMainWindow):
         self._view_menu = menubar.addMenu("展示")
 
         self._act_clip_toggle = QAction("裁剪框", self)
-        self._act_clip_toggle.setCheckable(True)
-        self._act_clip_toggle.triggered.connect(self._on_menu_clip_toggle)
+        self._act_clip_toggle.triggered.connect(self._show_clip_dialog)
         self._view_menu.addAction(self._act_clip_toggle)
 
         self._view_menu.addSeparator()
@@ -277,49 +276,9 @@ class MainWindow(QMainWindow):
         # 状态栏
         self.statusBar().showMessage("未加载点云")
 
-        # 裁剪框（XYZ过滤）— 通过菜单"展示→裁剪框"控制显隐
-        self._clip_group = QGroupBox("裁剪框")
-        self._clip_group.setVisible(False)
-        clip_lay = QVBoxLayout(self._clip_group)
-        clip_lay.setSpacing(3)
-
-        clip_row0 = QHBoxLayout()
-        self.chk_clip = QCheckBox("启用")
-        self.chk_clip.setChecked(False)
-        clip_row0.addWidget(self.chk_clip)
-        self.btn_clip_apply = QPushButton("应用")
-        self.btn_clip_apply.setMaximumWidth(50)
-        self.btn_clip_apply.setEnabled(False)
-        clip_row0.addWidget(self.btn_clip_apply)
-        clip_lay.addLayout(clip_row0)
-
-        clip_row_x = QHBoxLayout()
-        clip_row_x.addWidget(QLabel("X:"))
-        self.edt_clip_xmin = QLineEdit("-999"); self.edt_clip_xmin.setMaximumWidth(60); self.edt_clip_xmin.setEnabled(False)
-        self.edt_clip_xmax = QLineEdit("999"); self.edt_clip_xmax.setMaximumWidth(60); self.edt_clip_xmax.setEnabled(False)
-        clip_row_x.addWidget(self.edt_clip_xmin)
-        clip_row_x.addWidget(QLabel("~"))
-        clip_row_x.addWidget(self.edt_clip_xmax)
-        clip_lay.addLayout(clip_row_x)
-
-        clip_row_y = QHBoxLayout()
-        clip_row_y.addWidget(QLabel("Y:"))
-        self.edt_clip_ymin = QLineEdit("-999"); self.edt_clip_ymin.setMaximumWidth(60); self.edt_clip_ymin.setEnabled(False)
-        self.edt_clip_ymax = QLineEdit("999"); self.edt_clip_ymax.setMaximumWidth(60); self.edt_clip_ymax.setEnabled(False)
-        clip_row_y.addWidget(self.edt_clip_ymin)
-        clip_row_y.addWidget(QLabel("~"))
-        clip_row_y.addWidget(self.edt_clip_ymax)
-        clip_lay.addLayout(clip_row_y)
-
-        clip_row_z = QHBoxLayout()
-        clip_row_z.addWidget(QLabel("Z:"))
-        self.edt_clip_zmin = QLineEdit("-999"); self.edt_clip_zmin.setMaximumWidth(60); self.edt_clip_zmin.setEnabled(False)
-        self.edt_clip_zmax = QLineEdit("999"); self.edt_clip_zmax.setMaximumWidth(60); self.edt_clip_zmax.setEnabled(False)
-        clip_row_z.addWidget(self.edt_clip_zmin)
-        clip_row_z.addWidget(QLabel("~"))
-        clip_row_z.addWidget(self.edt_clip_zmax)
-        clip_lay.addLayout(clip_row_z)
-        ctrl_layout.addWidget(self._clip_group)
+        # 裁剪状态（通过弹窗控制，展示菜单触发）
+        self._clip_enabled = {'x': False, 'y': False, 'z': False}
+        self._clip_positions = {'x': 0.0, 'y': 0.0, 'z': 0.0}
 
         # 点云渲染模式 + 大小（隐藏，通过展示菜单控制）
         self.cmb_render_mode = QComboBox()
@@ -702,8 +661,6 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(scroll)
 
         # -- 信号连接 --
-        self.chk_clip.toggled.connect(self._on_clip_toggled)
-        self.btn_clip_apply.clicked.connect(self._apply_clip)
         self.cmb_render_mode.currentTextChanged.connect(self._on_render_mode_changed)
         self.sld_point_size.valueChanged.connect(self._on_point_size_changed)
         self.btn_clear.clicked.connect(self.clear_route)
@@ -924,23 +881,10 @@ class MainWindow(QMainWindow):
         self._refresh_point_cloud()
 
     def _refresh_point_cloud(self):
-        if self.chk_clip.isChecked():
+        if any(self._clip_enabled.values()):
             self._apply_clip()
         elif self.points is not None:
             self.viewer.add_point_cloud(self.points, self._get_render_mode(), self._get_point_size())
-
-    def _on_clip_toggled(self, checked):
-        for w in [self.edt_clip_xmin, self.edt_clip_xmax,
-                  self.edt_clip_ymin, self.edt_clip_ymax,
-                  self.edt_clip_zmin, self.edt_clip_zmax, self.btn_clip_apply]:
-            w.setEnabled(checked)
-        self._act_clip_toggle.setChecked(checked)
-        self._refresh_point_cloud()
-
-    def _on_menu_clip_toggle(self, checked):
-        """菜单栏裁剪框开关"""
-        self.chk_clip.setChecked(checked)
-        self._clip_group.setVisible(checked)
 
     def _on_menu_render_mode(self, name):
         """菜单栏渲染模式切换"""
@@ -1211,20 +1155,17 @@ class MainWindow(QMainWindow):
         print(f"[Lang] Switched to {self._lang}")
 
     def _apply_clip(self):
+        """应用裁剪：根据启用的轴和位置过滤点云"""
         if self.points is None or len(self.points) == 0:
             return
-        try:
-            xmin = float(self.edt_clip_xmin.text())
-            xmax = float(self.edt_clip_xmax.text())
-            ymin = float(self.edt_clip_ymin.text())
-            ymax = float(self.edt_clip_ymax.text())
-            zmin = float(self.edt_clip_zmin.text())
-            zmax = float(self.edt_clip_zmax.text())
-        except ValueError:
-            QMessageBox.warning(self, "输入错误", "请输入有效的裁剪范围")
-            return
         p = self.points
-        mask = (p[:,0]>=xmin)&(p[:,0]<=xmax)&(p[:,1]>=ymin)&(p[:,1]<=ymax)&(p[:,2]>=zmin)&(p[:,2]<=zmax)
+        mask = np.ones(len(p), dtype=bool)
+        axis_map = {'x': 0, 'y': 1, 'z': 2}
+        for axis in ['x', 'y', 'z']:
+            if self._clip_enabled[axis]:
+                idx = axis_map[axis]
+                pos = self._clip_positions[axis]
+                mask &= (p[:, idx] <= pos)
         filtered = p[mask]
         if len(filtered) == 0:
             QMessageBox.information(self, "提示", "裁剪后无点云数据")
@@ -1233,6 +1174,134 @@ class MainWindow(QMainWindow):
         n_total = len(self.points)
         n_show = len(filtered)
         self.statusBar().showMessage(f"已加载: {n_total:,} 点 (显示 {n_show:,})")
+
+    def _show_clip_dialog(self):
+        """弹出裁剪对话框"""
+        from PyQt5.QtWidgets import QDialog, QDialogButtonBox, QSlider
+        if self.points is None or len(self.points) == 0:
+            QMessageBox.information(self, "提示", "请先加载点云")
+            return
+
+        mn = self.points.min(axis=0)
+        mx = self.points.max(axis=0)
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("裁剪")
+        dlg.setMinimumWidth(350)
+        layout = QGridLayout(dlg)
+        layout.setSpacing(8)
+
+        # X轴裁剪
+        chk_x = QCheckBox("X轴裁剪")
+        chk_x.setChecked(self._clip_enabled['x'])
+        layout.addWidget(chk_x, 0, 0)
+        sld_x = QSlider(Qt.Horizontal)
+        sld_x.setRange(0, 1000)
+        x_val = self._clip_positions.get('x', mx[0])
+        sld_x.setValue(int((x_val - mn[0]) / (mx[0] - mn[0]) * 1000) if mx[0] > mn[0] else 1000)
+        sld_x.setEnabled(self._clip_enabled['x'])
+        layout.addWidget(sld_x, 0, 1)
+        lbl_x = QLabel(f"位置: {x_val:.1f}")
+        layout.addWidget(lbl_x, 0, 2)
+
+        # Y轴裁剪
+        chk_y = QCheckBox("Y轴裁剪")
+        chk_y.setChecked(self._clip_enabled['y'])
+        layout.addWidget(chk_y, 1, 0)
+        sld_y = QSlider(Qt.Horizontal)
+        sld_y.setRange(0, 1000)
+        y_val = self._clip_positions.get('y', mx[1])
+        sld_y.setValue(int((y_val - mn[1]) / (mx[1] - mn[1]) * 1000) if mx[1] > mn[1] else 1000)
+        sld_y.setEnabled(self._clip_enabled['y'])
+        layout.addWidget(sld_y, 1, 1)
+        lbl_y = QLabel(f"位置: {y_val:.1f}")
+        layout.addWidget(lbl_y, 1, 2)
+
+        # Z轴裁剪
+        chk_z = QCheckBox("Z轴裁剪")
+        chk_z.setChecked(self._clip_enabled['z'])
+        layout.addWidget(chk_z, 2, 0)
+        sld_z = QSlider(Qt.Horizontal)
+        sld_z.setRange(0, 1000)
+        z_val = self._clip_positions.get('z', mx[2])
+        sld_z.setValue(int((z_val - mn[2]) / (mx[2] - mn[2]) * 1000) if mx[2] > mn[2] else 1000)
+        sld_z.setEnabled(self._clip_enabled['z'])
+        layout.addWidget(sld_z, 2, 1)
+        lbl_z = QLabel(f"位置: {z_val:.1f}")
+        layout.addWidget(lbl_z, 2, 2)
+
+        # 滑块值变化时更新标签和平面
+        def on_x_changed(val):
+            pos = mn[0] + (mx[0] - mn[0]) * val / 1000
+            lbl_x.setText(f"位置: {pos:.1f}")
+            if chk_x.isChecked():
+                self.viewer.set_clip_plane('x', pos)
+        def on_y_changed(val):
+            pos = mn[1] + (mx[1] - mn[1]) * val / 1000
+            lbl_y.setText(f"位置: {pos:.1f}")
+            if chk_y.isChecked():
+                self.viewer.set_clip_plane('y', pos)
+        def on_z_changed(val):
+            pos = mn[2] + (mx[2] - mn[2]) * val / 1000
+            lbl_z.setText(f"位置: {pos:.1f}")
+            if chk_z.isChecked():
+                self.viewer.set_clip_plane('z', pos)
+        sld_x.valueChanged.connect(on_x_changed)
+        sld_y.valueChanged.connect(on_y_changed)
+        sld_z.valueChanged.connect(on_z_changed)
+
+        # 勾选时显示/隐藏平面
+        def on_x_toggled(checked):
+            sld_x.setEnabled(checked)
+            self.viewer.show_clip_plane('x', checked)
+            if checked:
+                pos = mn[0] + (mx[0] - mn[0]) * sld_x.value() / 1000
+                self.viewer.set_clip_plane('x', pos)
+        def on_y_toggled(checked):
+            sld_y.setEnabled(checked)
+            self.viewer.show_clip_plane('y', checked)
+            if checked:
+                pos = mn[1] + (mx[1] - mn[1]) * sld_y.value() / 1000
+                self.viewer.set_clip_plane('y', pos)
+        def on_z_toggled(checked):
+            sld_z.setEnabled(checked)
+            self.viewer.show_clip_plane('z', checked)
+            if checked:
+                pos = mn[2] + (mx[2] - mn[2]) * sld_z.value() / 1000
+                self.viewer.set_clip_plane('z', pos)
+        chk_x.toggled.connect(on_x_toggled)
+        chk_y.toggled.connect(on_y_toggled)
+        chk_z.toggled.connect(on_z_toggled)
+
+        # 确定/取消按钮
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        layout.addWidget(btns, 3, 0, 1, 3)
+
+        def on_accept():
+            self._clip_enabled['x'] = chk_x.isChecked()
+            self._clip_enabled['y'] = chk_y.isChecked()
+            self._clip_enabled['z'] = chk_z.isChecked()
+            if chk_x.isChecked():
+                self._clip_positions['x'] = mn[0] + (mx[0] - mn[0]) * sld_x.value() / 1000
+            if chk_y.isChecked():
+                self._clip_positions['y'] = mn[1] + (mx[1] - mn[1]) * sld_y.value() / 1000
+            if chk_z.isChecked():
+                self._clip_positions['z'] = mn[2] + (mx[2] - mn[2]) * sld_z.value() / 1000
+            self._apply_clip()
+            dlg.accept()
+
+        def on_reject():
+            # 恢复原始状态
+            for axis in ['x', 'y', 'z']:
+                self.viewer.show_clip_plane(axis, self._clip_enabled[axis])
+                if self._clip_enabled[axis]:
+                    self.viewer.set_clip_plane(axis, self._clip_positions[axis])
+            dlg.reject()
+
+        btns.accepted.connect(on_accept)
+        btns.rejected.connect(on_reject)
+
+        dlg.exec_()
 
     # ─── 生成平面航线 ───
     def generate_flat_route(self):
