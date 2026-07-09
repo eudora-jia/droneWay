@@ -40,6 +40,7 @@ class MainWindow(QMainWindow):
             "act_clip": "裁剪框", "menu_render": "渲染模式", "menu_size": "点云大小",
             "menu_lang": "语言", "lang_zh": "中文", "lang_en": "English",
             "menu_settings": "设置", "act_bridge_params": "桥梁参数",
+            "act_camera_params": "相机参数",
             "grp_mode": "工作模式", "btn_route": "航线模式",
             "lbl_pc_info": "未加载点云",
             "grp_bridge": "桥梁参数", "lbl_bridge_name": "桥梁名称:",
@@ -63,7 +64,7 @@ class MainWindow(QMainWindow):
             "btn_pick_area": "点击放置（右键确认生成）",
             "lbl_center": "底面中心(x,y,z):", "lbl_len_x": "长(X):",
             "lbl_wid_y": "宽(Y):", "lbl_height_z2": "高(Z):",
-            "lbl_dist": "离柱距离:", "lbl_h_step": "水平步距:",
+            "lbl_dist": "巡检距离:", "lbl_h_step": "水平步距:",
             "lbl_v_step": "垂直步距:", "lbl_speed2": "速度:",
             "lbl_start_angle": "起始角度(°):", "btn_auto": "自动",
             "lbl_diam": "直径:", "lbl_h_step_angle": "水平步距(°):",
@@ -94,6 +95,7 @@ class MainWindow(QMainWindow):
             "act_clip": "Clip Box", "menu_render": "Render Mode", "menu_size": "Point Size",
             "menu_lang": "Language", "lang_zh": "中文", "lang_en": "English",
             "menu_settings": "Settings", "act_bridge_params": "Bridge Params",
+            "act_camera_params": "Camera Params",
             "grp_mode": "Mode", "btn_route": "Route",
             "lbl_pc_info": "No point cloud loaded",
             "grp_bridge": "Bridge Params", "lbl_bridge_name": "Bridge Name:",
@@ -117,7 +119,7 @@ class MainWindow(QMainWindow):
             "btn_pick_area": "Place (Right-click to confirm)",
             "lbl_center": "Center(x,y,z):", "lbl_len_x": "Len(X):",
             "lbl_wid_y": "Wid(Y):", "lbl_height_z2": "H(Z):",
-            "lbl_dist": "Distance:", "lbl_h_step": "H Step:",
+            "lbl_dist": "Inspect Dist(m):", "lbl_h_step": "H Step:",
             "lbl_v_step": "V Step:", "lbl_speed2": "Speed:",
             "lbl_start_angle": "Start Angle(°):", "btn_auto": "Auto",
             "lbl_diam": "Diameter:", "lbl_h_step_angle": "H Step(°):",
@@ -145,6 +147,24 @@ class MainWindow(QMainWindow):
         self._lang = 'zh'
         self.setWindowTitle(self._T['zh']['win_title'])
         self.resize(1400, 900)
+
+        # 相机型号 → FOV 映射（所有航线共用）
+        self._camera_fov_map = {
+            "DJI Mavic 3E": 84,
+            "DJI Mavic 3T": 82,
+            "M4T 广角": 82,
+            "M4T 中长焦": 35,
+            "M4T 长焦": 15,
+            "DJI M350+P1(24mm)": 84,
+            "DJI M350+P1(35mm)": 54,
+            "DJI M350+P1(50mm)": 40,
+            "DJI M350+L2(雷达)": 70,
+            "自定义": 80,
+        }
+        self._camera_name = "DJI Mavic 3E"
+        self._camera_fov = 84
+        self._forward_overlap = 60
+        self._side_overlap = 30
 
         # ─── 菜单栏 ───
         self._init_menu_bar()
@@ -244,6 +264,10 @@ class MainWindow(QMainWindow):
         self._act_bridge_params = QAction("桥梁参数", self)
         self._act_bridge_params.triggered.connect(self._show_bridge_dialog)
         self._settings_menu.addAction(self._act_bridge_params)
+
+        self._act_camera_params = QAction("相机参数", self)
+        self._act_camera_params.triggered.connect(self._show_camera_dialog)
+        self._settings_menu.addAction(self._act_camera_params)
 
     def _init_ui(self):
         central = QWidget()
@@ -394,58 +418,28 @@ class MainWindow(QMainWindow):
         fl.addWidget(QLabel("速度(m/s):"), 1, 2)
         self.edt_flat_speed = QLineEdit("1"); fl.addWidget(self.edt_flat_speed, 1, 3)
 
-        # 相机型号 → FOV 映射
-        self._camera_fov_map = {
-            "DJI Mavic 3E": 84,
-            "DJI Mavic 3T": 82,
-            "M4T 广角": 82,
-            "M4T 中长焦": 35,
-            "M4T 长焦": 15,
-            "DJI M350+P1(24mm)": 84,
-            "DJI M350+P1(35mm)": 54,
-            "DJI M350+P1(50mm)": 40,
-            "DJI M350+L2(雷达)": 70,
-            "自定义": 80,
-        }
+        fl.addWidget(QLabel("巡检距离(m):"), 2, 0)
+        self.edt_flat_inspect_dist = QLineEdit("3.0"); fl.addWidget(self.edt_flat_inspect_dist, 2, 1)
 
-        fl.addWidget(QLabel("相机型号:"), 2, 0)
-        self.cmb_camera = QComboBox()
-        self.cmb_camera.addItems(self._camera_fov_map.keys())
-        fl.addWidget(self.cmb_camera, 2, 1)
-        self.cmb_camera.currentTextChanged.connect(self._on_camera_changed)
-
-        fl.addWidget(QLabel("FOV(°):"), 2, 2)
-        self.edt_camera_fov = QLineEdit("84"); fl.addWidget(self.edt_camera_fov, 2, 3)
-
-        fl.addWidget(QLabel("航向重叠(%):"), 3, 0)
-        self.edt_forward_overlap = QLineEdit("60"); fl.addWidget(self.edt_forward_overlap, 3, 1)
-        fl.addWidget(QLabel("旁向重叠(%):"), 3, 2)
-        self.edt_side_overlap = QLineEdit("30"); fl.addWidget(self.edt_side_overlap, 3, 3)
-
-        btn_calc_overlap = QPushButton("自动算间距")
-        btn_calc_overlap.setStyleSheet("QPushButton { background: #e8e0d0; padding: 4px; } QPushButton:hover { background: #d8d0c0; }")
-        btn_calc_overlap.clicked.connect(self._calc_overlap_spacing)
-        fl.addWidget(btn_calc_overlap, 4, 0, 1, 4)
-
-        fl.addWidget(QLabel("曲度:"), 5, 0)
+        fl.addWidget(QLabel("曲度:"), 3, 0)
         self.sld_curvature = NoWheelSlider(Qt.Horizontal)
         self.sld_curvature.setRange(0, 100)
         self.sld_curvature.setValue(0)
-        fl.addWidget(self.sld_curvature, 5, 1, 1, 2)
+        fl.addWidget(self.sld_curvature, 3, 1, 1, 2)
         self.lbl_curvature_val = QLabel("0.00")
         self.lbl_curvature_val.setMinimumWidth(30)
-        fl.addWidget(self.lbl_curvature_val, 5, 3)
+        fl.addWidget(self.lbl_curvature_val, 3, 3)
         self.sld_curvature.valueChanged.connect(lambda v: self.lbl_curvature_val.setText(f"{v/100:.2f}"))
 
         btn_apply_flat = QPushButton("应用")
         btn_apply_flat.setStyleSheet("QPushButton { background: #d0d8e8; padding: 4px; } QPushButton:hover { background: #c0c8d8; }")
         btn_apply_flat.clicked.connect(self._apply_flat_params)
-        fl.addWidget(btn_apply_flat, 6, 0, 1, 2)
+        fl.addWidget(btn_apply_flat, 4, 0, 1, 2)
 
         self.btn_poly_select = QPushButton("点击放置（右键确认生成）")
         self.btn_poly_select.setStyleSheet("QPushButton { background: #d8e8d8; font-weight: bold; padding: 6px; } QPushButton:hover { background: #c8d8c8; }")
         self.btn_poly_select.clicked.connect(self._start_polygon_select)
-        fl.addWidget(self.btn_poly_select, 6, 2, 1, 2)
+        fl.addWidget(self.btn_poly_select, 4, 2, 1, 2)
 
         self._route_stack.addWidget(tab_flat)
 
@@ -466,7 +460,7 @@ class MainWindow(QMainWindow):
 
         cl.addWidget(QLabel("高(Z):"), 2, 0)
         self.edt_dz = QLineEdit("2"); cl.addWidget(self.edt_dz, 2, 1)
-        cl.addWidget(QLabel("离柱距离:"), 2, 2)
+        cl.addWidget(QLabel("巡检距离(m):"), 2, 2)
         self.edt_dist = QLineEdit("1"); cl.addWidget(self.edt_dist, 2, 3)
 
         cl.addWidget(QLabel("水平步距:"), 3, 0)
@@ -517,7 +511,7 @@ class MainWindow(QMainWindow):
         cyl.addWidget(QLabel("高(Z):"), 1, 2)
         self.edt_cyl_h = QLineEdit("2"); cyl.addWidget(self.edt_cyl_h, 1, 3)
 
-        cyl.addWidget(QLabel("离柱距离:"), 2, 0)
+        cyl.addWidget(QLabel("巡检距离(m):"), 2, 0)
         self.edt_cyl_dist = QLineEdit("1"); cyl.addWidget(self.edt_cyl_dist, 2, 1)
         cyl.addWidget(QLabel("水平步距(°):"), 2, 2)
         self.edt_cyl_astep = QLineEdit("15"); cyl.addWidget(self.edt_cyl_astep, 2, 3)
@@ -608,11 +602,14 @@ class MainWindow(QMainWindow):
         self.lst_inspect.setMaximumHeight(100)
         il.addWidget(self.lst_inspect, 1, 0, 1, 3)
 
-        il.addWidget(QLabel("巡检距离:"), 2, 0)
+        il.addWidget(QLabel("巡检距离(m):"), 2, 0)
         self.edt_inspect_dist = QLineEdit("3.0")
         self.edt_inspect_dist.setMaximumWidth(50)
         il.addWidget(self.edt_inspect_dist, 2, 1)
-        il.addWidget(QLabel("m"), 2, 2)
+        il.addWidget(QLabel("速度(m/s):"), 2, 2)
+        self.edt_inspect_speed = QLineEdit("1.0")
+        self.edt_inspect_speed.setMaximumWidth(50)
+        il.addWidget(self.edt_inspect_speed, 2, 3)
 
         self.btn_gen_inspect = QPushButton("生成点状航线")
         self.btn_gen_inspect.setStyleSheet("QPushButton { background: #d0e8d0; font-weight: bold; padding: 6px; } QPushButton:hover { background: #c0d8c0; }")
@@ -975,6 +972,50 @@ class MainWindow(QMainWindow):
         if self._bridge_info_label.isVisible():
             self._position_bridge_info_label()
 
+    def _show_camera_dialog(self):
+        """弹出相机参数对话框"""
+        from PyQt5.QtWidgets import QDialog, QDialogButtonBox
+        dlg = QDialog(self)
+        dlg.setWindowTitle("相机参数")
+        dlg.setMinimumWidth(350)
+        layout = QGridLayout(dlg)
+        layout.setSpacing(6)
+
+        layout.addWidget(QLabel("相机型号:"), 0, 0)
+        cmb_camera = QComboBox()
+        cmb_camera.addItems(self._camera_fov_map.keys())
+        cmb_camera.setCurrentText(self._camera_name)
+        layout.addWidget(cmb_camera, 0, 1, 1, 3)
+
+        layout.addWidget(QLabel("FOV(°):"), 1, 0)
+        edt_fov = QLineEdit(str(self._camera_fov))
+        edt_fov.setReadOnly(True)
+        edt_fov.setStyleSheet("QLineEdit { background: #eee; color: #666; }")
+        layout.addWidget(edt_fov, 1, 1)
+
+        def on_camera_changed(name):
+            fov = self._camera_fov_map.get(name, 80)
+            edt_fov.setText(str(fov))
+        cmb_camera.currentTextChanged.connect(on_camera_changed)
+
+        layout.addWidget(QLabel("航向重叠(%):"), 2, 0)
+        edt_fwd = QLineEdit(str(self._forward_overlap))
+        layout.addWidget(edt_fwd, 2, 1)
+        layout.addWidget(QLabel("旁向重叠(%):"), 2, 2)
+        edt_side = QLineEdit(str(self._side_overlap))
+        layout.addWidget(edt_side, 2, 3)
+
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        layout.addWidget(btns, 3, 0, 1, 4)
+
+        if dlg.exec_() == QDialog.Accepted:
+            self._camera_name = cmb_camera.currentText()
+            self._camera_fov = int(edt_fov.text())
+            self._forward_overlap = int(edt_fwd.text())
+            self._side_overlap = int(edt_side.text())
+
     def _switch_language(self, lang):
         """切换界面语言"""
         if lang == self._lang:
@@ -1017,7 +1058,7 @@ class MainWindow(QMainWindow):
         "长(X):": "Len(X):",
         "宽(Y):": "Wid(Y):",
         "高(Z):": "Ht(Z):",
-        "离柱距离:": "Distance:",
+        "巡检距离(m):": "Inspect Dist(m):",
         "水平步距:": "H Step:",
         "垂直步距:": "V Step:",
         "速度:": "Speed:",
@@ -1066,6 +1107,7 @@ class MainWindow(QMainWindow):
         self._lang_menu.setTitle(t["menu_lang"])
         self._settings_menu.setTitle(t["menu_settings"])
         self._act_bridge_params.setText(t["act_bridge_params"])
+        self._act_camera_params.setText(t["act_camera_params"])
 
         self.setWindowTitle(t["win_title"])
 
