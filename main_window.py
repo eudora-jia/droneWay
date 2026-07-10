@@ -427,6 +427,11 @@ class MainWindow(QMainWindow):
         fl.addWidget(QLabel("巡检距离(m):"), 2, 0)
         self.edt_flat_inspect_dist = QLineEdit("3.0"); fl.addWidget(self.edt_flat_inspect_dist, 2, 1)
 
+        btn_calc_overlap = QPushButton("自动算间距")
+        btn_calc_overlap.setStyleSheet("QPushButton { background: #e8e0d0; padding: 4px; } QPushButton:hover { background: #d8d0c0; }")
+        btn_calc_overlap.clicked.connect(self._calc_overlap_spacing)
+        fl.addWidget(btn_calc_overlap, 2, 2, 1, 2)
+
         fl.addWidget(QLabel("曲度:"), 3, 0)
         self.sld_curvature = NoWheelSlider(Qt.Horizontal)
         self.sld_curvature.setRange(0, 100)
@@ -2138,29 +2143,30 @@ class MainWindow(QMainWindow):
         self.edt_camera_fov.setText(str(fov))
 
     def _calc_overlap_spacing(self):
-        """根据相机FOV和重叠率自动计算航点距离和线间距"""
+        """根据相机FOV、巡检距离和重叠率自动计算航点距离和线间距"""
         import math
         try:
-            h = float(self.edt_z.text())
-            fov = float(self.edt_camera_fov.text())
-            fwd_overlap = float(self.edt_forward_overlap.text()) / 100.0
-            side_overlap = float(self.edt_side_overlap.text()) / 100.0
+            # 使用巡检距离（目标距离）而非飞行高度
+            inspect_dist = float(self.edt_flat_inspect_dist.text())
+            fov = self._camera_fov
+            fwd_overlap = self._forward_overlap / 100.0
+            side_overlap = self._side_overlap / 100.0
         except ValueError:
             QMessageBox.warning(self, "提示", "请输入有效数值")
             return
-        if h <= 0 or fov <= 0 or fov >= 180:
-            QMessageBox.warning(self, "提示", "高度和FOV需为正数，FOV<180°")
+        if inspect_dist <= 0 or fov <= 0 or fov >= 180:
+            QMessageBox.warning(self, "提示", "巡检距离和FOV需为正数，FOV<180°")
             return
         if not (0 <= fwd_overlap < 1) or not (0 <= side_overlap < 1):
             QMessageBox.warning(self, "提示", "重叠率需在0~99%之间")
             return
-        # 地面覆盖宽度 = 2 * H * tan(FOV/2)
-        cover = 2.0 * h * math.tan(math.radians(fov / 2.0))
+        # 拍摄范围 = 2 × 巡检距离 × tan(FOV/2)
+        cover = 2.0 * inspect_dist * math.tan(math.radians(fov / 2.0))
         wp_spacing = round(cover * (1.0 - fwd_overlap), 2)
         line_spacing = round(cover * (1.0 - side_overlap), 2)
         self.edt_wp_spacing.setText(str(max(0.1, wp_spacing)))
         self.edt_spacing.setText(str(max(0.1, line_spacing)))
-        print(f"[Overlap] H={h}m FOV={fov}° 覆盖={cover:.1f}m → 航点间距={wp_spacing}m 线间距={line_spacing}m")
+        print(f"[Overlap] 巡检距离={inspect_dist}m FOV={fov}° 覆盖={cover:.1f}m → 航点间距={wp_spacing}m 线间距={line_spacing}m")
 
     def _apply_flat_params(self):
         """应用面状航线参数并重新生成航线"""
