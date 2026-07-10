@@ -1253,7 +1253,6 @@ class MainWindow(QMainWindow):
         "起点(x,y,z):": "Start(x,y,z):",
         "终点(x,y,z):": "End(x,y,z):",
         "巡检点列表:": "Inspect Points:",
-        "巡检距离:": "Inspect Dist(m):",
         "m": "m",
         "自动": "Auto", "球体": "Sphere", "立方体": "Cube", "像素": "Pixel",
         "启用": "Enable",
