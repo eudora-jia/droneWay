@@ -1366,17 +1366,6 @@ class MainWindow(QMainWindow):
         self.cmb_route_type.addItems(route_names)
         self.cmb_route_type.setCurrentIndex(idx)
 
-        # ComboBox 相机型号
-        cam_idx = self.cmb_camera.currentIndex()
-        cam_names = list(self._camera_fov_map.keys())
-        if self._lang == 'en':
-            cam_names = [n.replace("自定义", "Custom") for n in cam_names]
-        else:
-            cam_names = [n.replace("Custom", "自定义") for n in cam_names]
-        self.cmb_camera.clear()
-        self.cmb_camera.addItems(cam_names)
-        self.cmb_camera.setCurrentIndex(cam_idx)
-
         print(f"[Lang] Switched to {self._lang}")
 
     def _apply_clip(self):
@@ -2773,7 +2762,7 @@ class MainWindow(QMainWindow):
         ts = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
 
         # 获取相机参数
-        cam_name = self.cmb_camera.currentText()
+        cam_name = self._camera_name
         if "长焦" in cam_name:
             camera_source = "ZOOM_CAMERA"
         else:
@@ -2867,8 +2856,8 @@ class MainWindow(QMainWindow):
             return
 
         # 获取相机参数
-        cam_name = self.cmb_camera.currentText()
-        cam_fov = self._camera_fov_map.get(cam_name, 80)
+        cam_name = self._camera_name
+        cam_fov = self._camera_fov
         # maicro 相机源映射
         if "长焦" in cam_name:
             camera_source = "ZOOM_CAMERA"
