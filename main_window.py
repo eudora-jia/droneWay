@@ -41,6 +41,7 @@ class MainWindow(QMainWindow):
             "menu_lang": "语言", "lang_zh": "中文", "lang_en": "English",
             "menu_settings": "设置", "act_bridge_params": "桥梁参数",
             "act_camera_params": "相机参数",
+            "act_range_calc": "拍摄范围计算器",
             "grp_mode": "工作模式", "btn_route": "航线模式",
             "lbl_pc_info": "未加载点云",
             "grp_bridge": "桥梁参数", "lbl_bridge_name": "桥梁名称:",
@@ -96,6 +97,7 @@ class MainWindow(QMainWindow):
             "menu_lang": "Language", "lang_zh": "中文", "lang_en": "English",
             "menu_settings": "Settings", "act_bridge_params": "Bridge Params",
             "act_camera_params": "Camera Params",
+            "act_range_calc": "Coverage Calculator",
             "grp_mode": "Mode", "btn_route": "Route",
             "lbl_pc_info": "No point cloud loaded",
             "grp_bridge": "Bridge Params", "lbl_bridge_name": "Bridge Name:",
@@ -268,6 +270,10 @@ class MainWindow(QMainWindow):
         self._act_camera_params = QAction("相机参数", self)
         self._act_camera_params.triggered.connect(self._show_camera_dialog)
         self._settings_menu.addAction(self._act_camera_params)
+
+        self._act_range_calc = QAction("拍摄范围计算器", self)
+        self._act_range_calc.triggered.connect(self._show_range_calculator_dialog)
+        self._settings_menu.addAction(self._act_range_calc)
 
     def _init_ui(self):
         central = QWidget()
@@ -1016,6 +1022,178 @@ class MainWindow(QMainWindow):
             self._forward_overlap = int(edt_fwd.text())
             self._side_overlap = int(edt_side.text())
 
+    def _show_range_calculator_dialog(self):
+        """弹出拍摄范围计算器对话框"""
+        import math
+        from PyQt5.QtWidgets import QDialog, QDialogButtonBox, QSlider
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("拍摄范围计算器")
+        dlg.setMinimumWidth(400)
+        layout = QGridLayout(dlg)
+        layout.setSpacing(8)
+
+        # 相机型号选择
+        layout.addWidget(QLabel("相机型号:"), 0, 0)
+        cmb_camera = QComboBox()
+        cmb_camera.addItems(self._camera_fov_map.keys())
+        layout.addWidget(cmb_camera, 0, 1, 1, 3)
+
+        # 广角端焦距（根据相机型号自动填充）
+        layout.addWidget(QLabel("广角端焦距:"), 1, 0)
+        lbl_wide_focal = QLabel("24 mm")
+        layout.addWidget(lbl_wide_focal, 1, 1)
+
+        # 传感器尺寸（对角线，根据FOV和焦距反推）
+        layout.addWidget(QLabel("传感器尺寸:"), 1, 2)
+        lbl_sensor = QLabel("0 mm")
+        layout.addWidget(lbl_sensor, 1, 3)
+
+        # 光学变焦倍数
+        layout.addWidget(QLabel("光学变焦:"), 2, 0)
+        sld_optical = QSlider(Qt.Horizontal)
+        sld_optical.setRange(10, 1000)  # 1.0x ~ 100.0x
+        sld_optical.setValue(10)
+        layout.addWidget(sld_optical, 2, 1, 1, 2)
+        lbl_optical = QLabel("1.0 x")
+        layout.addWidget(lbl_optical, 2, 3)
+
+        # 数码变焦倍数
+        layout.addWidget(QLabel("数码变焦:"), 3, 0)
+        edt_digital = QLineEdit("1.0")
+        edt_digital.setMaximumWidth(80)
+        layout.addWidget(edt_digital, 3, 1)
+        layout.addWidget(QLabel("x"), 3, 2)
+
+        # 目标距离
+        layout.addWidget(QLabel("目标距离:"), 4, 0)
+        edt_distance = QLineEdit("10")
+        edt_distance.setMaximumWidth(80)
+        layout.addWidget(edt_distance, 4, 1)
+        layout.addWidget(QLabel("m"), 4, 2)
+
+        # 分隔线
+        from PyQt5.QtWidgets import QFrame
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setFrameShadow(QFrame.Sunken)
+        layout.addWidget(line, 5, 0, 1, 4)
+
+        # 计算结果
+        layout.addWidget(QLabel("当前焦距:"), 6, 0)
+        lbl_current_focal = QLabel("- mm")
+        lbl_current_focal.setStyleSheet("QLabel { font-weight: bold; }")
+        layout.addWidget(lbl_current_focal, 6, 1)
+
+        layout.addWidget(QLabel("FOV:"), 6, 2)
+        lbl_fov_result = QLabel("- °")
+        lbl_fov_result.setStyleSheet("QLabel { font-weight: bold; }")
+        layout.addWidget(lbl_fov_result, 6, 3)
+
+        layout.addWidget(QLabel("拍摄范围:"), 7, 0)
+        lbl_range = QLabel("- m × - m")
+        lbl_range.setStyleSheet("QLabel { font-weight: bold; color: #2196F3; }")
+        layout.addWidget(lbl_range, 7, 1, 1, 3)
+
+        # 相机焦距范围映射（广角端焦距, 最大光学变焦倍数）
+        camera_focal_range = {
+            "DJI Mavic 3E": (24, 1),
+            "DJI Mavic 3T": (24, 1),
+            "M4T 广角": (24, 1),
+            "M4T 中长焦": (72, 1),
+            "M4T 长焦": (24, 6.75),
+            "DJI M350+P1(24mm)": (24, 1),
+            "DJI M350+P1(35mm)": (35, 1),
+            "DJI M350+P1(50mm)": (50, 1),
+            "DJI M350+L2(雷达)": (24, 1),
+            "自定义": (24, 10),
+        }
+
+        def calculate():
+            """执行计算"""
+            try:
+                cam_name = cmb_camera.currentText()
+                wide_focal, max_optical = camera_focal_range.get(cam_name, (24, 1))
+
+                # 更新广角端焦距显示
+                lbl_wide_focal.setText(f"{wide_focal} mm")
+
+                # 计算传感器尺寸（用FOV和焦距反推）
+                fov = self._camera_fov_map.get(cam_name, 80)
+                fov_rad = math.radians(fov)
+                # 传感器对角线 = 2 × 焦距 × tan(FOV/2)
+                sensor_size = 2 * wide_focal * math.tan(fov_rad / 2)
+                lbl_sensor.setText(f"{sensor_size:.1f} mm")
+
+                # 更新滑块范围
+                sld_optical.setRange(10, int(max_optical * 10))
+
+                # 获取变焦倍数
+                optical_zoom = sld_optical.value() / 10.0
+                digital_zoom = float(edt_digital.text())
+                total_zoom = optical_zoom * digital_zoom
+
+                # 更新光学变焦显示
+                lbl_optical.setText(f"{optical_zoom:.1f} x")
+
+                # 计算当前焦距
+                current_focal = wide_focal * total_zoom
+                lbl_current_focal.setText(f"{current_focal:.1f} mm")
+
+                # 计算FOV
+                if current_focal > 0:
+                    current_fov = 2 * math.degrees(math.atan(sensor_size / (2 * current_focal)))
+                    lbl_fov_result.setText(f"{current_fov:.1f}°")
+                else:
+                    current_fov = 180
+                    lbl_fov_result.setText("180°")
+
+                # 计算拍摄范围
+                distance = float(edt_distance.text())
+                if current_fov < 180:
+                    fov_rad = math.radians(current_fov)
+                    range_size = 2 * distance * math.tan(fov_rad / 2)
+                    lbl_range.setText(f"{range_size:.1f} m × {range_size:.1f} m")
+                else:
+                    lbl_range.setText("∞")
+
+            except (ValueError, ZeroDivisionError):
+                pass
+
+        # 连接信号
+        cmb_camera.currentTextChanged.connect(lambda: calculate())
+        sld_optical.valueChanged.connect(lambda: calculate())
+        edt_digital.textChanged.connect(lambda: calculate())
+        edt_distance.textChanged.connect(lambda: calculate())
+
+        # 快捷按钮
+        from PyQt5.QtWidgets import QPushButton
+        btn_row = QHBoxLayout()
+        btn_wide = QPushButton("广角端")
+        btn_wide.clicked.connect(lambda: sld_optical.setValue(10))
+        btn_row.addWidget(btn_wide)
+        btn_tele = QPushButton("长焦端")
+        btn_tele.clicked.connect(lambda: sld_optical.setValue(sld_optical.maximum()))
+        btn_row.addWidget(btn_tele)
+        btn_current = QPushButton("当前相机")
+        def use_current_camera():
+            idx = cmb_camera.findText(self._camera_name)
+            if idx >= 0:
+                cmb_camera.setCurrentIndex(idx)
+        btn_current.clicked.connect(use_current_camera)
+        btn_row.addWidget(btn_current)
+        layout.addLayout(btn_row, 8, 0, 1, 4)
+
+        # 关闭按钮
+        btns = QDialogButtonBox(QDialogButtonBox.Close)
+        btns.rejected.connect(dlg.reject)
+        layout.addWidget(btns, 9, 0, 1, 4)
+
+        # 初始计算
+        calculate()
+
+        dlg.exec_()
+
     def _switch_language(self, lang):
         """切换界面语言"""
         if lang == self._lang:
@@ -1108,6 +1286,7 @@ class MainWindow(QMainWindow):
         self._settings_menu.setTitle(t["menu_settings"])
         self._act_bridge_params.setText(t["act_bridge_params"])
         self._act_camera_params.setText(t["act_camera_params"])
+        self._act_range_calc.setText(t["act_range_calc"])
 
         self.setWindowTitle(t["win_title"])
 
