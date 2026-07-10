@@ -44,6 +44,10 @@ class FoxgloveInteractorStyle(object):
             self._prev_pos = rwi.GetEventPosition()
             return
 
+        # FPV模式下左键不做普通操作
+        if v.fpv_mode:
+            return
+
         ctrl = rwi.GetControlKey()
         pos = rwi.GetEventPosition()
 
@@ -136,6 +140,9 @@ class FoxgloveInteractorStyle(object):
     def _on_right_down(self, obj, event):
         v = self._vtk_viewer
         rwi = self._rwi
+        # FPV模式下右键由FPV系统处理
+        if v and v.fpv_mode:
+            return
         if v and v.polygon_mode:
             if len(v._poly_points) >= 3:
                 pts = [p.tolist() for p in v._poly_points]
@@ -183,10 +190,14 @@ class FoxgloveInteractorStyle(object):
         self._prev_pos = None
 
     def _on_wheel_fwd(self, obj, event):
+        if self._vtk_viewer and self._vtk_viewer.fpv_mode:
+            return
         self._dolly(1.1)
         self._rwi.Render()
 
     def _on_wheel_bwd(self, obj, event):
+        if self._vtk_viewer and self._vtk_viewer.fpv_mode:
+            return
         self._dolly(0.9)
         self._rwi.Render()
 
@@ -204,6 +215,10 @@ class FoxgloveInteractorStyle(object):
     def _on_move(self, obj, event):
         v = self._vtk_viewer
         rwi = self._rwi
+
+        # FPV模式下由FPV系统处理鼠标，跳过普通相机操作
+        if v and v.fpv_mode:
+            return
 
         if v and v._wp_editing:
             pos = rwi.GetEventPosition()
@@ -423,11 +438,29 @@ class VTKViewer(QWidget):
         self._clip_plane_visible = {'x': False, 'y': False, 'z': False}
         self._clip_bounds = None  # 点云包围盒，用于确定平面大小
 
+        # ─── FPV 无人机视角模式 ───
+        self.fpv_mode = False
+        self._fpv_first_person = True  # True=第一人称, False=第三人称
+        self._fpv_pos = np.array([0.0, 0.0, 5.0])  # 无人机位置
+        self._fpv_yaw = 0.0    # 偏航角（度），0=朝+X方向
+        self._fpv_pitch = 0.0  # 俯仰角（度），0=水平，正=向下看
+        self._fpv_speed = 0.5  # 飞行速度（米/按键）
+        self._fpv_look_speed = 0.3  # 鼠标灵敏度
+        self._fpv_keys = set()  # 当前按下的键
+        self._fpv_mouse_active = False  # 右键按下时鼠标控制视角
+        self._fpv_prev_mouse = None
+        self._fpv_drone_actor = None  # 无人机模型actor
+        self._fpv_on_mark = None  # 打点回调函数
+        self._fpv_fov = 80.0  # FPV相机视场角
+
         self._timer_id = self.startTimer(30)
 
     def timerEvent(self, event):
         if getattr(self, '_vtk_available', False) and getattr(self, 'interactor', None):
             self.interactor.ProcessEvents()
+            # FPV模式下持续处理按键移动
+            if getattr(self, 'fpv_mode', False):
+                self.fpv_tick()
 
     def _create_clip_plane_actor(self, axis, color):
         """创建裁剪平面actor（半透明矩形）"""
@@ -549,11 +582,338 @@ class VTKViewer(QWidget):
         if self.vtk_widget.GetRenderWindow():
             self.vtk_widget.GetRenderWindow().Render()
 
+    # ─── FPV 无人机视角模式 ─────────────────────────────────────
+
+    def toggle_fpv(self, enable=None):
+        """切换FPV模式"""
+        if enable is None:
+            enable = not self.fpv_mode
+        self.fpv_mode = enable
+
+        if enable:
+            self._create_drone_model()
+            self._setup_fpv_keyboard()
+            self._enter_fpv_camera()
+        else:
+            self._remove_drone_model()
+            self._exit_fpv_camera()
+
+        if self.vtk_widget.GetRenderWindow():
+            self.vtk_widget.GetRenderWindow().Render()
+
+    def _create_drone_model(self):
+        """创建简单的无人机模型（十字机架 + 指示箭头）"""
+        if self._fpv_drone_actor is not None:
+            return
+        vtk = self._vtk
+
+        # 根据场景大小动态调整无人机尺寸
+        scene_size = 1.0
+        if self.points_data is not None and len(self.points_data) > 0:
+            mn = self.points_data.min(axis=0)
+            mx = self.points_data.max(axis=0)
+            scene_size = np.linalg.norm(mx - mn) * 0.02  # 场景对角线的2%
+
+        arm_len = max(0.5, scene_size)
+
+        # 用线框表示十字机架
+        pts = vtk.vtkPoints()
+        # 四个机臂端点
+        pts.InsertNextPoint(-arm_len, 0, 0)
+        pts.InsertNextPoint(arm_len, 0, 0)
+        pts.InsertNextPoint(0, -arm_len, 0)
+        pts.InsertNextPoint(0, arm_len, 0)
+        pts.InsertNextPoint(0, 0, 0)
+        # 机头方向指示（更长更明显）
+        pts.InsertNextPoint(0, 0, 0)
+        pts.InsertNextPoint(arm_len * 2, 0, 0)
+        # 机头箭头两翼
+        arrow_w = arm_len * 0.4
+        pts.InsertNextPoint(arm_len * 2, 0, 0)
+        pts.InsertNextPoint(arm_len * 1.5, arrow_w, 0)
+        pts.InsertNextPoint(arm_len * 2, 0, 0)
+        pts.InsertNextPoint(arm_len * 1.5, -arrow_w, 0)
+
+        lines = vtk.vtkCellArray()
+        for pair in [(0, 1), (2, 3), (4, 5), (6, 7), (8, 9)]:
+            line = vtk.vtkPolyLine()
+            line.GetPointIds().SetNumberOfIds(2)
+            line.GetPointIds().SetId(0, pair[0])
+            line.GetPointIds().SetId(1, pair[1])
+            lines.InsertNextCell(line)
+
+        polydata = vtk.vtkPolyData()
+        polydata.SetPoints(pts)
+        polydata.SetLines(lines)
+
+        mapper = self._vtkPolyDataMapper()
+        mapper.SetInputData(polydata)
+
+        actor = self._vtkActor()
+        actor.SetMapper(mapper)
+        actor.GetProperty().SetColor(0, 1, 0)  # 绿色
+        actor.GetProperty().SetLineWidth(3)
+        actor.GetProperty().SetLighting(False)
+
+        self.renderer.AddActor(actor)
+        self._actors.append(actor)
+        self._fpv_drone_actor = actor
+
+    def _remove_drone_model(self):
+        """移除无人机模型"""
+        if self._fpv_drone_actor is not None:
+            self.renderer.RemoveActor(self._fpv_drone_actor)
+            if self._fpv_drone_actor in self._actors:
+                self._actors.remove(self._fpv_drone_actor)
+            self._fpv_drone_actor = None
+
+    def _update_drone_model(self):
+        """更新无人机模型位置和朝向"""
+        if self._fpv_drone_actor is None:
+            return
+        vtk = self._vtk
+        t = vtk.vtkTransform()
+        t.Translate(self._fpv_pos.tolist())
+        t.RotateZ(self._fpv_yaw)
+        t.RotateX(-self._fpv_pitch)  # VTK的旋转方向
+        self._fpv_drone_actor.SetUserTransform(t)
+
+    def _setup_fpv_keyboard(self):
+        """设置FPV键盘事件"""
+        rwi = self.interactor
+        if rwi is None:
+            return
+        # 移除旧的键盘观察者（如果有）
+        if hasattr(self, '_fpv_key_press_obs'):
+            rwi.RemoveObserver(self._fpv_key_press_obs)
+            rwi.RemoveObserver(self._fpv_key_release_obs)
+        self._fpv_key_press_obs = rwi.AddObserver("KeyPressEvent", self._fpv_on_key_press)
+        self._fpv_key_release_obs = rwi.AddObserver("KeyReleaseEvent", self._fpv_on_key_release)
+        # 鼠标事件用于视角控制
+        if hasattr(self, '_fpv_right_press_obs'):
+            rwi.RemoveObserver(self._fpv_right_press_obs)
+            rwi.RemoveObserver(self._fpv_right_release_obs)
+            rwi.RemoveObserver(self._fpv_move_obs)
+        self._fpv_right_press_obs = rwi.AddObserver("RightButtonPressEvent", self._fpv_on_right_down)
+        self._fpv_right_release_obs = rwi.AddObserver("RightButtonReleaseEvent", self._fpv_on_right_up)
+        self._fpv_move_obs = rwi.AddObserver("MouseMoveEvent", self._fpv_on_mouse_move)
+
+    def _fpv_on_key_press(self, obj, event):
+        """FPV键盘按下"""
+        if not self.fpv_mode:
+            return
+        key = obj.GetKeySym().lower()
+        self._fpv_keys.add(key)
+
+        # 空格键 = 打点
+        if key == 'space':
+            self._fpv_mark_waypoint()
+            return
+
+        # V键 = 退出FPV
+        if key == 'v':
+            self.toggle_fpv(False)
+            return
+
+        # C键 = 切换第一人称/第三人称
+        if key == 'c':
+            self._fpv_first_person = not self._fpv_first_person
+            if self._fpv_drone_actor is not None:
+                self._fpv_drone_actor.SetVisibility(not self._fpv_first_person)
+            if not self._fpv_first_person:
+                # 第三人称：相机在无人机后方看过去
+                self._update_third_person_camera()
+            else:
+                # 第一人称：相机在无人机位置
+                self._update_fpv_camera()
+            return
+
+    def _fpv_on_key_release(self, obj, event):
+        """FPV键盘释放"""
+        key = obj.GetKeySym().lower()
+        self._fpv_keys.discard(key)
+
+    def _fpv_on_right_down(self, obj, event):
+        """FPV右键按下 - 开始鼠标控制视角"""
+        if not self.fpv_mode:
+            return
+        self._fpv_mouse_active = True
+        self._fpv_prev_mouse = obj.GetEventPosition()
+
+    def _fpv_on_right_up(self, obj, event):
+        """FPV右键释放"""
+        self._fpv_mouse_active = False
+        self._fpv_prev_mouse = None
+
+    def _fpv_on_mouse_move(self, obj, event):
+        """FPV鼠标移动 - 控制视角"""
+        if not self.fpv_mode or not self._fpv_mouse_active:
+            return
+        pos = obj.GetEventPosition()
+        if self._fpv_prev_mouse is not None:
+            dx = pos[0] - self._fpv_prev_mouse[0]
+            dy = pos[1] - self._fpv_prev_mouse[1]
+            self._fpv_yaw -= dx * self._fpv_look_speed
+            self._fpv_pitch += dy * self._fpv_look_speed
+            self._fpv_pitch = max(-89, min(89, self._fpv_pitch))
+        self._fpv_prev_mouse = pos
+        self._update_fpv_camera()
+
+    def _fpv_mark_waypoint(self):
+        """在当前位置记录航点"""
+        if self._fpv_on_mark is not None:
+            # 计算相机看向的方向，找到与点云的交点
+            direction = self._fpv_get_look_direction()
+            target = self._fpv_find_intersection(direction)
+            if target is not None:
+                self._fpv_on_mark(target, self._fpv_pos.copy(), self._fpv_yaw, self._fpv_pitch)
+
+    def _fpv_get_look_direction(self):
+        """获取FPV相机朝向的单位向量"""
+        yaw_rad = np.radians(self._fpv_yaw)
+        pitch_rad = np.radians(self._fpv_pitch)
+        dx = np.cos(pitch_rad) * np.cos(yaw_rad)
+        dy = np.cos(pitch_rad) * np.sin(yaw_rad)
+        dz = -np.sin(pitch_rad)
+        return np.array([dx, dy, dz])
+
+    def _fpv_find_intersection(self, direction, max_dist=100.0):
+        """从无人机位置沿方向射线，找到与点云的最近交点"""
+        if self.points_data is None or len(self.points_data) == 0:
+            return None
+        # 用KDTree快速查找
+        if self._cloud_tree is None:
+            from scipy.spatial import cKDTree
+            self._cloud_tree = cKDTree(self.points_data)
+
+        # 沿射线采样若干点
+        best_point = None
+        best_dist = max_dist
+        for t in np.arange(0.5, max_dist, 0.3):
+            sample = self._fpv_pos + direction * t
+            dist, idx = self._cloud_tree.query(sample)
+            if dist < 0.5 and t < best_dist:
+                best_dist = t
+                best_point = self.points_data[idx]
+
+        return best_point
+
+    def _enter_fpv_camera(self):
+        """进入FPV相机模式"""
+        cam = self.renderer.GetActiveCamera()
+        if self.points_data is not None and len(self.points_data) > 0:
+            # 把无人机放在点云前方
+            mn = self.points_data.min(axis=0)
+            mx = self.points_data.max(axis=0)
+            center = (mn + mx) / 2
+            # 放在点云X最小方向前方5米
+            self._fpv_pos = np.array([mn[0] - 5, center[1], center[2]])
+            # 朝向点云中心
+            self._fpv_yaw = 0.0
+            self._fpv_pitch = 0.0
+
+        # FPV视角下隐藏无人机模型（你从无人机里面看，看不到自己）
+        if self._fpv_drone_actor is not None:
+            self._fpv_drone_actor.SetVisibility(False)
+
+        self._update_fpv_camera()
+
+    def _exit_fpv_camera(self):
+        """退出FPV相机模式，恢复默认视角"""
+        self.renderer.ResetCamera()
+        self._fpv_keys.clear()
+        self._fpv_mouse_active = False
+
+    def _update_fpv_camera(self):
+        """更新FPV相机到无人机位置和朝向"""
+        cam = self.renderer.GetActiveCamera()
+        pos = self._fpv_pos
+        direction = self._fpv_get_look_direction()
+        focal = pos + direction * 10  # 看向的方向
+
+        cam.SetPosition(pos.tolist())
+        cam.SetFocalPoint(focal.tolist())
+        cam.SetViewUp(0, 0, 1)
+        cam.SetViewAngle(self._fpv_fov)
+        self.renderer.ResetCameraClippingRange()
+
+        self._update_drone_model()
+        # 直接渲染，不调用_update_view（它会重置相机）
+        if self.vtk_widget.GetRenderWindow():
+            self.vtk_widget.GetRenderWindow().Render()
+
+    def _update_third_person_camera(self):
+        """第三人称视角：相机在无人机后上方，跟随无人机"""
+        cam = self.renderer.GetActiveCamera()
+        pos = self._fpv_pos
+        yaw_rad = np.radians(self._fpv_yaw)
+
+        # 相机在无人机后方10米、上方5米
+        behind_dist = 10.0
+        up_dist = 5.0
+        cam_pos = np.array([
+            pos[0] - behind_dist * np.cos(yaw_rad),
+            pos[1] - behind_dist * np.sin(yaw_rad),
+            pos[2] + up_dist
+        ])
+
+        cam.SetPosition(cam_pos.tolist())
+        cam.SetFocalPoint(pos.tolist())
+        cam.SetViewUp(0, 0, 1)
+        cam.SetViewAngle(self._fpv_fov)
+        self.renderer.ResetCameraClippingRange()
+
+        self._update_drone_model()
+        if self.vtk_widget.GetRenderWindow():
+            self.vtk_widget.GetRenderWindow().Render()
+
+    def fpv_tick(self):
+        """FPV模式下每帧更新（处理持续按键移动）"""
+        if not self.fpv_mode:
+            return False
+
+        moved = False
+        yaw_rad = np.radians(self._fpv_yaw)
+        # 前进方向（水平面）
+        forward = np.array([np.cos(yaw_rad), np.sin(yaw_rad), 0])
+        right = np.array([-np.sin(yaw_rad), np.cos(yaw_rad), 0])
+
+        for key in self._fpv_keys:
+            if key == 'w':
+                self._fpv_pos += forward * self._fpv_speed
+                moved = True
+            elif key == 's':
+                self._fpv_pos -= forward * self._fpv_speed
+                moved = True
+            elif key == 'a':
+                self._fpv_pos -= right * self._fpv_speed
+                moved = True
+            elif key == 'd':
+                self._fpv_pos += right * self._fpv_speed
+                moved = True
+            elif key == 'q':
+                self._fpv_pos[2] += self._fpv_speed
+                moved = True
+            elif key == 'e':
+                self._fpv_pos[2] -= self._fpv_speed
+                moved = True
+
+        if moved:
+            if self._fpv_first_person:
+                self._update_fpv_camera()
+            else:
+                self._update_third_person_camera()
+        return moved
+
     def clear_actors(self):
         for actor in self._actors:
             self.renderer.RemoveActor(actor)
         self._actors.clear()
         self._cloud_actor = None
+        # FPV模式下保留无人机模型
+        if self._fpv_drone_actor is not None:
+            self.renderer.AddActor(self._fpv_drone_actor)
+            self._actors.append(self._fpv_drone_actor)
 
     def add_point_cloud(self, points, render_mode='auto', point_size=0.05, colors=None, normals=None):
         """显示点云（支持球体/立方体/像素/圆片渲染模式）
@@ -645,20 +1005,21 @@ class VTKViewer(QWidget):
 
         if use_splat and normals is not None:
             # 圆片渲染模式：每个点显示为朝法线方向的圆片
-            vtk_normals = self._numpy_to_vtk(normals.astype(np.float64), deep=True, array_type=self._vtk.VTK_FLOAT)
+            vtk_normals = self._numpy_to_vtk(normals.astype(np.float32), deep=True, array_type=self._vtk.VTK_FLOAT)
             vtk_normals.SetName('Normals')
             polydata.GetPointData().SetNormals(vtk_normals)
 
-            src = self._vtk.vtkDiskSource()
+            src = self._vtk.vtkRegularPolygonSource()
             src.SetRadius(point_size)
-            src.SetCircumferentialResolution(12)
-            src.SetRadialResolution(1)
+            src.SetNumberOfSides(12)
+            src.SetNormal(0, 0, 1)  # 默认法线，会被glyph旋转
             src.Update()
 
             glyph = self._vtkGlyph3D()
             glyph.SetInputData(polydata)
             glyph.SetSourceConnection(src.GetOutputPort())
             glyph.SetVectorModeToUseNormal()
+            glyph.OrientOn()
             glyph.SetScaleModeToDataScalingOff()
             glyph.Update()
             mapper = self._vtkPolyDataMapper()
@@ -1470,6 +1831,10 @@ class VTKViewer(QWidget):
 
     def _update_view(self):
         if not self._vtk_available:
+            return
+        # FPV模式下由FPV系统控制相机，跳过默认视角设置
+        if getattr(self, 'fpv_mode', False):
+            self.vtk_widget.GetRenderWindow().Render()
             return
         cam = self.renderer.GetActiveCamera()
         # 用场景中心而非原点

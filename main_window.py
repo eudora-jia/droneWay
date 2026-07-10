@@ -39,6 +39,7 @@ class MainWindow(QMainWindow):
             "act_copy_maicro": "复制maicro航线到剪贴板",
             "act_clip": "裁剪框", "menu_render": "渲染模式", "menu_size": "点云大小",
             "menu_upsample": "渲染增密",
+            "act_fpv": "FPV无人机视角",
             "menu_lang": "语言", "lang_zh": "中文", "lang_en": "English",
             "menu_settings": "设置", "act_bridge_params": "桥梁参数",
             "act_camera_params": "相机参数",
@@ -96,6 +97,7 @@ class MainWindow(QMainWindow):
             "act_copy_maicro": "Copy Maicro Route to Clipboard",
             "act_clip": "Clip Box", "menu_render": "Render Mode", "menu_size": "Point Size",
             "menu_upsample": "Display Upsample",
+            "act_fpv": "FPV Drone View",
             "menu_lang": "Language", "lang_zh": "中文", "lang_en": "English",
             "menu_settings": "Settings", "act_bridge_params": "Bridge Params",
             "act_camera_params": "Camera Params",
@@ -266,19 +268,11 @@ class MainWindow(QMainWindow):
             self._upsample_acts[factor] = act
 
         self._view_menu.addSeparator()
-        self._lang_menu = self._view_menu.addMenu("语言")
-        self._lang_group = QActionGroup(self)
-        self._act_lang_zh = QAction("中文", self)
-        self._act_lang_zh.setCheckable(True)
-        self._act_lang_zh.setChecked(True)
-        self._act_lang_zh.setActionGroup(self._lang_group)
-        self._act_lang_zh.triggered.connect(lambda: self._switch_language('zh'))
-        self._lang_menu.addAction(self._act_lang_zh)
-        self._act_lang_en = QAction("English", self)
-        self._act_lang_en.setCheckable(True)
-        self._act_lang_en.setActionGroup(self._lang_group)
-        self._act_lang_en.triggered.connect(lambda: self._switch_language('en'))
-        self._lang_menu.addAction(self._act_lang_en)
+
+        self._act_fpv = QAction("FPV无人机视角 (V)", self)
+        self._act_fpv.setCheckable(True)
+        self._act_fpv.triggered.connect(self._toggle_fpv_mode)
+        self._view_menu.addAction(self._act_fpv)
 
         # ─── 设置 ───
         self._settings_menu = menubar.addMenu("设置")
@@ -293,6 +287,21 @@ class MainWindow(QMainWindow):
         self._act_range_calc = QAction("拍摄范围计算器", self)
         self._act_range_calc.triggered.connect(self._show_range_calculator_dialog)
         self._settings_menu.addAction(self._act_range_calc)
+
+        self._settings_menu.addSeparator()
+        self._lang_menu = self._settings_menu.addMenu("语言")
+        self._lang_group = QActionGroup(self)
+        self._act_lang_zh = QAction("中文", self)
+        self._act_lang_zh.setCheckable(True)
+        self._act_lang_zh.setChecked(True)
+        self._act_lang_zh.setActionGroup(self._lang_group)
+        self._act_lang_zh.triggered.connect(lambda: self._switch_language('zh'))
+        self._lang_menu.addAction(self._act_lang_zh)
+        self._act_lang_en = QAction("English", self)
+        self._act_lang_en.setCheckable(True)
+        self._act_lang_en.setActionGroup(self._lang_group)
+        self._act_lang_en.triggered.connect(lambda: self._switch_language('en'))
+        self._lang_menu.addAction(self._act_lang_en)
 
     def _init_ui(self):
         central = QWidget()
@@ -796,20 +805,11 @@ class MainWindow(QMainWindow):
                 self.points = parse_pcd(path)
 
             self.progress_bar.setRange(0, 100)
-            self.progress_bar.setValue(30)
+            self.progress_bar.setValue(60)
             QApplication.processEvents()
 
-            # 估算法线（用于圆片渲染和增密）
             n = len(self.points)
-            if n > 0:
-                self.statusBar().showMessage(f"正在估算法线...")
-                QApplication.processEvents()
-                k = min(20, n - 1)
-                self._point_normals = self.viewer.estimate_normals(self.points, k=k)
-                self.progress_bar.setValue(50)
-                QApplication.processEvents()
-
-            self.viewer.add_point_cloud(self.points, self._get_render_mode(), self._get_point_size(), colors=self._point_colors, normals=self._point_normals)
+            self.viewer.add_point_cloud(self.points, self._get_render_mode(), self._get_point_size(), colors=self._point_colors)
             self.progress_bar.setValue(80)
             QApplication.processEvents()
 
@@ -896,6 +896,17 @@ class MainWindow(QMainWindow):
         finally:
             self.progress_bar.setVisible(False)
 
+    def _ensure_normals(self):
+        """确保法线已估算（延迟执行，只在需要时调用）"""
+        if self._point_normals is not None or self.points is None or len(self.points) == 0:
+            return
+        n = len(self.points)
+        self.statusBar().showMessage(f"正在估算法线 ({n:,} 点)...")
+        QApplication.processEvents()
+        k = min(20, n - 1)
+        self._point_normals = self.viewer.estimate_normals(self.points, k=k)
+        self.statusBar().showMessage(f"法线估算完成")
+
     # ─── Z值过滤 ───
     def _get_render_mode(self):
         """获取当前渲染模式: 'auto'/'sphere'/'cube'/'pixel'/'splat'"""
@@ -924,6 +935,11 @@ class MainWindow(QMainWindow):
         display_points = self.points
         display_colors = self._point_colors
         display_normals = self._point_normals
+
+        # 增密需要法线
+        if self._upsample_factor > 0:
+            self._ensure_normals()
+            display_normals = self._point_normals
 
         # 如果需要增密，且法线已估算
         if self._upsample_factor > 0 and self._point_normals is not None:
@@ -959,6 +975,9 @@ class MainWindow(QMainWindow):
         if any(self._clip_enabled.values()):
             self._apply_clip()
         elif self.points is not None:
+            # 圆片模式需要法线
+            if self._get_render_mode() == 'splat':
+                self._ensure_normals()
             self.viewer.add_point_cloud(self.points, self._get_render_mode(), self._get_point_size(), colors=self._point_colors, normals=self._point_normals)
 
     def _on_menu_render_mode(self, name):
@@ -968,6 +987,36 @@ class MainWindow(QMainWindow):
     def _on_menu_point_size(self, val):
         """菜单栏点云大小切换"""
         self.sld_point_size.setValue(val)
+
+    def _toggle_fpv_mode(self):
+        """切换FPV无人机视角模式"""
+        if self.points is None or len(self.points) == 0:
+            QMessageBox.information(self, "提示", "请先加载点云")
+            self._act_fpv.setChecked(False)
+            return
+
+        enable = self._act_fpv.isChecked()
+        if enable:
+            # 设置打点回调
+            self.viewer._fpv_on_mark = self._fpv_mark_waypoint
+            self.viewer.toggle_fpv(True)
+            self.statusBar().showMessage("FPV模式：WASD移动，QE升降，右键控制视角，空格打点，V退出")
+        else:
+            self.viewer.toggle_fpv(False)
+            self.statusBar().showMessage("已退出FPV模式")
+
+    def _fpv_mark_waypoint(self, target_point, drone_pos, yaw, pitch):
+        """FPV模式下打点记录航点"""
+        # target_point是相机中心与点云的交点
+        # drone_pos是无人机位置
+        # 这里可以将target_point作为航点添加到航线中
+        x, y, z = target_point
+        self.statusBar().showMessage(
+            f"FPV打点: 目标({x:.1f}, {y:.1f}, {z:.1f}) "
+            f"无人机({drone_pos[0]:.1f}, {drone_pos[1]:.1f}, {drone_pos[2]:.1f}) "
+            f"偏航{yaw:.0f}° 俯仰{pitch:.0f}°"
+        )
+        # TODO: 将航点添加到航线系统中
 
     def _show_bridge_dialog(self):
         """弹出桥梁参数对话框"""
@@ -1367,6 +1416,7 @@ class MainWindow(QMainWindow):
         self._act_bridge_params.setText(t["act_bridge_params"])
         self._act_camera_params.setText(t["act_camera_params"])
         self._act_range_calc.setText(t["act_range_calc"])
+        self._act_fpv.setText(t["act_fpv"])
 
         self.setWindowTitle(t["win_title"])
 

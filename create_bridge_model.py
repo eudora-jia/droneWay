@@ -335,29 +335,36 @@ def sample_point_cloud(triangles, labels, component_centers, density=50):
 
 
 def save_ply_with_labels(filename, points, normals, labels):
-    """保存为PLY格式（xyz + 法向量 + 部件标签 + 部件颜色）"""
+    """保存为二进制PLY格式（xyz + 法向量 + 部件颜色）"""
+    import struct
     n = len(points)
-    with open(filename, 'w') as f:
-        f.write("ply\n")
-        f.write("format ascii 1.0\n")
-        f.write(f"element vertex {n}\n")
-        f.write("property float x\n")
-        f.write("property float y\n")
-        f.write("property float z\n")
-        f.write("property float nx\n")
-        f.write("property float ny\n")
-        f.write("property float nz\n")
-        f.write("property uchar red\n")
-        f.write("property uchar green\n")
-        f.write("property uchar blue\n")
-        f.write("property int label\n")
-        f.write("end_header\n")
+    with open(filename, 'wb') as f:
+        # ASCII头部
+        header = (
+            "ply\n"
+            "format binary_little_endian 1.0\n"
+            f"element vertex {n}\n"
+            "property float x\n"
+            "property float y\n"
+            "property float z\n"
+            "property float nx\n"
+            "property float ny\n"
+            "property float nz\n"
+            "property uchar red\n"
+            "property uchar green\n"
+            "property uchar blue\n"
+            "end_header\n"
+        )
+        f.write(header.encode('ascii'))
+
+        # 打包所有点为二进制（float xyz + float nxyz + uchar rgb）
         for i in range(n):
             px, py, pz = points[i]
             nx, ny, nz = normals[i]
             lbl = int(labels[i])
             r, g, b = LABEL_COLORS.get(lbl, (180, 180, 180))
-            f.write(f"{px:.3f} {py:.3f} {pz:.3f} {nx:.4f} {ny:.4f} {nz:.4f} {r} {g} {b} {lbl}\n")
+            # 3 floats + 3 floats + 3 ubytes = 27 bytes per point
+            f.write(struct.pack('<3f3f3B', px, py, pz, nx, ny, nz, r, g, b))
 
 
 def save_stl_binary(filename, triangles):

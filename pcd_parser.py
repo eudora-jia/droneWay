@@ -174,7 +174,7 @@ def _parse_ply_binary_le(f, num_vertices, properties, xyz_indices, rgb_indices, 
         np_type = type_map.get(ptype)
         if np_type is None:
             np_type = ('f4', np.float32)
-        dtypes.append((pname, np_type[1]))
+        dtypes.append((pname, np.dtype(np_type[1])))
 
     row_size = sum(dt.itemsize for _, dt in dtypes)
     raw = f.read(row_size * num_vertices)
