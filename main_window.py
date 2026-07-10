@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
 
-from pcd_parser import parse_pcd
+from pcd_parser import parse_pcd, parse_ply
 from quaternion_utils import look_at_quaternion, quat_map_to_odom
 from vtk_viewer import VTKViewer
 
@@ -38,6 +38,7 @@ class MainWindow(QMainWindow):
             "act_export_maicro": "导出maicro航线文件",
             "act_copy_maicro": "复制maicro航线到剪贴板",
             "act_clip": "裁剪框", "menu_render": "渲染模式", "menu_size": "点云大小",
+            "menu_upsample": "渲染增密",
             "menu_lang": "语言", "lang_zh": "中文", "lang_en": "English",
             "menu_settings": "设置", "act_bridge_params": "桥梁参数",
             "act_camera_params": "相机参数",
@@ -94,6 +95,7 @@ class MainWindow(QMainWindow):
             "act_export_maicro": "Export Maicro Route",
             "act_copy_maicro": "Copy Maicro Route to Clipboard",
             "act_clip": "Clip Box", "menu_render": "Render Mode", "menu_size": "Point Size",
+            "menu_upsample": "Display Upsample",
             "menu_lang": "Language", "lang_zh": "中文", "lang_en": "English",
             "menu_settings": "Settings", "act_bridge_params": "Bridge Params",
             "act_camera_params": "Camera Params",
@@ -172,6 +174,8 @@ class MainWindow(QMainWindow):
         self._init_menu_bar()
 
         self.points = None
+        self._point_colors = None
+        self._point_normals = None
         self.waypoints = []
         self._kdtree = None
         self._kdtree_points_id = None
@@ -229,7 +233,7 @@ class MainWindow(QMainWindow):
         self._render_menu = self._view_menu.addMenu("渲染模式")
         self._render_mode_group = QActionGroup(self)
         self._render_mode_acts = {}
-        for name in ["自动", "球体", "立方体", "像素"]:
+        for name in ["自动", "球体", "立方体", "像素", "圆片"]:
             act = QAction(name, self)
             act.setCheckable(True)
             act.setActionGroup(self._render_mode_group)
@@ -245,6 +249,21 @@ class MainWindow(QMainWindow):
             act = QAction(f"{val * 0.01:.2f}", self)
             act.triggered.connect(lambda checked, v=val: self._on_menu_point_size(v))
             self._size_menu.addAction(act)
+
+        self._view_menu.addSeparator()
+        self._upsample_menu = self._view_menu.addMenu("渲染增密")
+        self._upsample_group = QActionGroup(self)
+        self._upsample_acts = {}
+        self._upsample_factor = 0  # 0=关闭, 1=2倍, 2=5倍, 3=10倍
+        for name, factor in [("关闭", 0), ("2倍", 1), ("5倍", 2), ("10倍", 3)]:
+            act = QAction(name, self)
+            act.setCheckable(True)
+            act.setActionGroup(self._upsample_group)
+            if factor == 0:
+                act.setChecked(True)
+            act.triggered.connect(lambda checked, f=factor: self._on_upsample_changed(f))
+            self._upsample_menu.addAction(act)
+            self._upsample_acts[factor] = act
 
         self._view_menu.addSeparator()
         self._lang_menu = self._view_menu.addMenu("语言")
@@ -757,7 +776,7 @@ class MainWindow(QMainWindow):
     # ─── 加载点云 ───
     def load_point_cloud(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "打开 PCD 点云文件", "", "PCD 文件 (*.pcd);;所有文件 (*)"
+            self, "打开点云文件", "", "点云文件 (*.pcd *.ply);;PCD 文件 (*.pcd);;PLY 文件 (*.ply);;所有文件 (*)"
         )
         if not path:
             return
@@ -768,16 +787,32 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()
 
         try:
-            self.points = parse_pcd(path)
+            self._point_colors = None
+            self._point_normals = None
+            ext = os.path.splitext(path)[1].lower()
+            if ext == '.ply':
+                self.points, self._point_colors = parse_ply(path)
+            else:
+                self.points = parse_pcd(path)
+
             self.progress_bar.setRange(0, 100)
             self.progress_bar.setValue(30)
             QApplication.processEvents()
 
-            self.viewer.add_point_cloud(self.points, self._get_render_mode(), self._get_point_size())
+            # 估算法线（用于圆片渲染和增密）
+            n = len(self.points)
+            if n > 0:
+                self.statusBar().showMessage(f"正在估算法线...")
+                QApplication.processEvents()
+                k = min(20, n - 1)
+                self._point_normals = self.viewer.estimate_normals(self.points, k=k)
+                self.progress_bar.setValue(50)
+                QApplication.processEvents()
+
+            self.viewer.add_point_cloud(self.points, self._get_render_mode(), self._get_point_size(), colors=self._point_colors, normals=self._point_normals)
             self.progress_bar.setValue(80)
             QApplication.processEvents()
 
-            n = len(self.points)
             self.statusBar().showMessage(f"已加载: {os.path.basename(path)} ({n:,} 点)")
 
             if n > 0:
@@ -861,22 +896,11 @@ class MainWindow(QMainWindow):
         finally:
             self.progress_bar.setVisible(False)
 
-        # 设置XYZ裁剪框默认范围
-        if self.points is not None and len(self.points) > 0:
-            mn = self.points.min(axis=0)
-            mx = self.points.max(axis=0)
-            self.edt_clip_xmin.setText(f"{mn[0]:.1f}")
-            self.edt_clip_xmax.setText(f"{mx[0]:.1f}")
-            self.edt_clip_ymin.setText(f"{mn[1]:.1f}")
-            self.edt_clip_ymax.setText(f"{mx[1]:.1f}")
-            self.edt_clip_zmin.setText(f"{mn[2]:.1f}")
-            self.edt_clip_zmax.setText(f"{mx[2]:.1f}")
-
     # ─── Z值过滤 ───
     def _get_render_mode(self):
-        """获取当前渲染模式: 'auto'/'sphere'/'cube'/'pixel'"""
+        """获取当前渲染模式: 'auto'/'sphere'/'cube'/'pixel'/'splat'"""
         text = self.cmb_render_mode.currentText()
-        return {"自动": "auto", "球体": "sphere", "立方体": "cube", "像素": "pixel"}.get(text, "auto")
+        return {"自动": "auto", "球体": "sphere", "立方体": "cube", "像素": "pixel", "圆片": "splat"}.get(text, "auto")
 
     def _get_point_size(self):
         return self.sld_point_size.value() * 0.01
@@ -888,11 +912,54 @@ class MainWindow(QMainWindow):
     def _on_render_mode_changed(self, text):
         self._refresh_point_cloud()
 
+    def _on_upsample_changed(self, factor):
+        self._upsample_factor = factor
+        self._refresh_point_cloud_with_upsample()
+
+    def _refresh_point_cloud_with_upsample(self):
+        """带增密的刷新"""
+        if self.points is None or len(self.points) == 0:
+            return
+
+        display_points = self.points
+        display_colors = self._point_colors
+        display_normals = self._point_normals
+
+        # 如果需要增密，且法线已估算
+        if self._upsample_factor > 0 and self._point_normals is not None:
+            factors = {1: 2, 2: 5, 3: 10}
+            n_new = factors.get(self._upsample_factor, 0)
+            if n_new > 0:
+                display_points, display_colors = self.viewer.upsample_for_display(
+                    self.points, self._point_normals, self._point_colors, factor=n_new
+                )
+                # 增密后的法线（重复原始法线）
+                if self._point_normals is not None:
+                    display_normals = np.vstack([self._point_normals] * (n_new + 1))
+
+        if any(self._clip_enabled.values()):
+            # 裁剪模式下也需要处理增密
+            p = display_points
+            mask = np.ones(len(p), dtype=bool)
+            axis_map = {'x': 0, 'y': 1, 'z': 2}
+            for axis in ['x', 'y', 'z']:
+                if self._clip_enabled[axis]:
+                    idx = axis_map[axis]
+                    pos = self._clip_positions[axis]
+                    mask &= (p[:, idx] <= pos)
+            filtered = p[mask]
+            filtered_colors = display_colors[mask] if display_colors is not None else None
+            filtered_normals = display_normals[mask] if display_normals is not None else None
+            if len(filtered) > 0:
+                self.viewer.add_point_cloud(filtered, self._get_render_mode(), self._get_point_size(), colors=filtered_colors, normals=filtered_normals)
+        else:
+            self.viewer.add_point_cloud(display_points, self._get_render_mode(), self._get_point_size(), colors=display_colors, normals=display_normals)
+
     def _refresh_point_cloud(self):
         if any(self._clip_enabled.values()):
             self._apply_clip()
         elif self.points is not None:
-            self.viewer.add_point_cloud(self.points, self._get_render_mode(), self._get_point_size())
+            self.viewer.add_point_cloud(self.points, self._get_render_mode(), self._get_point_size(), colors=self._point_colors, normals=self._point_normals)
 
     def _on_menu_render_mode(self, name):
         """菜单栏渲染模式切换"""
@@ -1279,13 +1346,22 @@ class MainWindow(QMainWindow):
         self._act_clip_toggle.setText(t["act_clip"])
         self._render_menu.setTitle(t["menu_render"])
         # 更新渲染模式子菜单文本
-        render_map = {"自动": "Auto", "球体": "Sphere", "立方体": "Cube", "像素": "Pixel"}
+        render_map = {"自动": "Auto", "球体": "Sphere", "立方体": "Cube", "像素": "Pixel", "圆片": "Splat"}
         if self._lang == "zh":
             render_map = {v: k for k, v in render_map.items()}
         for old_name, act in self._render_mode_acts.items():
             new_name = render_map.get(old_name, old_name)
             act.setText(new_name)
         self._size_menu.setTitle(t["menu_size"])
+        # 更新增密子菜单文本
+        upsample_map = {"关闭": "Off", "2倍": "2x", "5倍": "5x", "10倍": "10x"}
+        if self._lang == "zh":
+            upsample_map = {v: k for k, v in upsample_map.items()}
+        for factor, act in self._upsample_acts.items():
+            old_text = act.text()
+            new_text = upsample_map.get(old_text, old_text)
+            act.setText(new_text)
+        self._upsample_menu.setTitle(t["menu_upsample"])
         self._lang_menu.setTitle(t["menu_lang"])
         self._settings_menu.setTitle(t["menu_settings"])
         self._act_bridge_params.setText(t["act_bridge_params"])
@@ -1381,10 +1457,12 @@ class MainWindow(QMainWindow):
                 pos = self._clip_positions[axis]
                 mask &= (p[:, idx] <= pos)
         filtered = p[mask]
+        filtered_colors = self._point_colors[mask] if self._point_colors is not None else None
+        filtered_normals = self._point_normals[mask] if self._point_normals is not None else None
         if len(filtered) == 0:
             QMessageBox.information(self, "提示", "裁剪后无点云数据")
             return
-        self.viewer.add_point_cloud(filtered, self._get_render_mode(), self._get_point_size())
+        self.viewer.add_point_cloud(filtered, self._get_render_mode(), self._get_point_size(), colors=filtered_colors, normals=filtered_normals)
         n_total = len(self.points)
         n_show = len(filtered)
         self.statusBar().showMessage(f"已加载: {n_total:,} 点 (显示 {n_show:,})")

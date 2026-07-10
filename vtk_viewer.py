@@ -555,8 +555,11 @@ class VTKViewer(QWidget):
         self._actors.clear()
         self._cloud_actor = None
 
-    def add_point_cloud(self, points, render_mode='auto', point_size=0.05):
-        """显示点云（按高度着色，支持球体/立方体/像素渲染模式）"""
+    def add_point_cloud(self, points, render_mode='auto', point_size=0.05, colors=None, normals=None):
+        """显示点云（支持球体/立方体/像素/圆片渲染模式）
+        colors: (N, 3) uint8 外部传入的RGB颜色，为None时按高度着色
+        normals: (N, 3) 法线数组，render_mode='splat'时用于圆片朝向
+        """
         if not self._vtk_available or len(points) == 0:
             return
         self.clear_actors()
@@ -569,8 +572,27 @@ class VTKViewer(QWidget):
         if len(points) > MAX_RENDER_POINTS:
             voxel_size = self._estimate_voxel_size(points, MAX_RENDER_POINTS)
             render_points = self._voxel_downsample(points, voxel_size)
+            # 降采样颜色：取体素内第一个点的颜色
+            if colors is not None:
+                mn = points.min(axis=0)
+                voxel_idx_all = ((points - mn) / voxel_size).astype(np.int64)
+                max_idx = voxel_idx_all.max(axis=0) + 1
+                keys_all = voxel_idx_all[:, 0] + voxel_idx_all[:, 1] * max_idx[0] + voxel_idx_all[:, 2] * max_idx[0] * max_idx[1]
+                # 对render_points中的每个点，找到对应的颜色
+                render_voxel_idx = ((render_points - mn) / voxel_size).astype(np.int64)
+                render_keys = render_voxel_idx[:, 0] + render_voxel_idx[:, 1] * max_idx[0] + render_voxel_idx[:, 2] * max_idx[0] * max_idx[1]
+                # 用searchsorted匹配
+                sort_order = np.argsort(keys_all)
+                sorted_keys = keys_all[sort_order]
+                sorted_colors = colors[sort_order]
+                idx = np.searchsorted(sorted_keys, render_keys)
+                idx = np.clip(idx, 0, len(sorted_keys) - 1)
+                render_colors = sorted_colors[idx]
+            else:
+                render_colors = None
         else:
             render_points = points
+            render_colors = colors
 
         vtk_points = self._vtkPoints()
         vtk_array = self._numpy_to_vtk(render_points.astype(np.float64), deep=True)
@@ -580,41 +602,69 @@ class VTKViewer(QWidget):
         polydata = self._vtkPolyData()
         polydata.SetPoints(vtk_points)
 
-        z_vals = render_points[:, 2]
-        z_min, z_max = z_vals.min(), z_vals.max()
-        z_range = z_max - z_min if z_max > z_min else 1.0
+        if render_colors is not None:
+            # 使用外部传入的颜色
+            rgb = render_colors.astype(np.uint8)
+        else:
+            # 按高度着色（蓝→青→绿→黄→红）
+            z_vals = render_points[:, 2]
+            z_min, z_max = z_vals.min(), z_vals.max()
+            z_range = z_max - z_min if z_max > z_min else 1.0
 
-        t = (z_vals - z_min) / z_range
+            t = (z_vals - z_min) / z_range
 
-        r = np.zeros(len(t), dtype=np.uint8)
-        g = np.zeros(len(t), dtype=np.uint8)
-        b = np.zeros(len(t), dtype=np.uint8)
+            r = np.zeros(len(t), dtype=np.uint8)
+            g = np.zeros(len(t), dtype=np.uint8)
+            b = np.zeros(len(t), dtype=np.uint8)
 
-        mask = t < 0.25
-        g[mask] = (t[mask] * 4 * 255).astype(np.uint8)
-        b[mask] = 255
+            mask = t < 0.25
+            g[mask] = (t[mask] * 4 * 255).astype(np.uint8)
+            b[mask] = 255
 
-        mask = (t >= 0.25) & (t < 0.5)
-        g[mask] = 255
-        b[mask] = ((0.5 - t[mask]) * 4 * 255).astype(np.uint8)
+            mask = (t >= 0.25) & (t < 0.5)
+            g[mask] = 255
+            b[mask] = ((0.5 - t[mask]) * 4 * 255).astype(np.uint8)
 
-        mask = (t >= 0.5) & (t < 0.75)
-        r[mask] = ((t[mask] - 0.5) * 4 * 255).astype(np.uint8)
-        g[mask] = 255
+            mask = (t >= 0.5) & (t < 0.75)
+            r[mask] = ((t[mask] - 0.5) * 4 * 255).astype(np.uint8)
+            g[mask] = 255
 
-        mask = t >= 0.75
-        r[mask] = 255
-        g[mask] = ((1.0 - t[mask]) * 4 * 255).astype(np.uint8)
+            mask = t >= 0.75
+            r[mask] = 255
+            g[mask] = ((1.0 - t[mask]) * 4 * 255).astype(np.uint8)
 
-        rgb = np.column_stack([r, g, b]).astype(np.uint8)
+            rgb = np.column_stack([r, g, b]).astype(np.uint8)
+
         vtk_colors = self._numpy_to_vtk(rgb, deep=True, array_type=self._vtk.VTK_UNSIGNED_CHAR)
         vtk_colors.SetName('Colors')
         polydata.GetPointData().SetScalars(vtk_colors)
 
         SPHERE_THRESHOLD = 200_000
         use_glyph = (render_mode in ('sphere', 'cube')) or (render_mode == 'auto' and len(render_points) <= SPHERE_THRESHOLD)
+        use_splat = (render_mode == 'splat')
 
-        if use_glyph:
+        if use_splat and normals is not None:
+            # 圆片渲染模式：每个点显示为朝法线方向的圆片
+            vtk_normals = self._numpy_to_vtk(normals.astype(np.float64), deep=True, array_type=self._vtk.VTK_FLOAT)
+            vtk_normals.SetName('Normals')
+            polydata.GetPointData().SetNormals(vtk_normals)
+
+            src = self._vtk.vtkDiskSource()
+            src.SetRadius(point_size)
+            src.SetCircumferentialResolution(12)
+            src.SetRadialResolution(1)
+            src.Update()
+
+            glyph = self._vtkGlyph3D()
+            glyph.SetInputData(polydata)
+            glyph.SetSourceConnection(src.GetOutputPort())
+            glyph.SetVectorModeToUseNormal()
+            glyph.SetScaleModeToDataScalingOff()
+            glyph.Update()
+            mapper = self._vtkPolyDataMapper()
+            mapper.SetInputConnection(glyph.GetOutputPort())
+            mapper.ScalarVisibilityOn()
+        elif use_glyph:
             if render_mode == 'cube':
                 src = self._vtkCubeSource()
                 src.SetXLength(point_size * 2)
@@ -683,6 +733,95 @@ class VTKViewer(QWidget):
 
         result = np.column_stack([sums_x, sums_y, sums_z]) / counts[:, None]
         return result
+
+    @staticmethod
+    def estimate_normals(points, k=20):
+        """用PCA方法估算点云法线，返回 (N,3) 法线数组"""
+        from scipy.spatial import cKDTree
+        n = len(points)
+        normals = np.zeros((n, 3), dtype=np.float64)
+        tree = cKDTree(points)
+        dists, indices = tree.query(points, k=min(k, n))
+
+        for i in range(n):
+            neighbors = points[indices[i]]
+            center = neighbors.mean(axis=0)
+            cov = np.cov((neighbors - center).T)
+            eigvals, eigvecs = np.linalg.eigh(cov)
+            # 最小特征值对应的特征向量就是法线
+            normals[i] = eigvecs[:, 0]
+
+        # 统一法线朝向（都朝上，即Z分量为正）
+        neg_mask = normals[:, 2] < 0
+        normals[neg_mask] *= -1
+        # Z分量接近0的，用Y方向统一
+        zero_z = np.abs(normals[:, 2]) < 0.1
+        if zero_z.any():
+            neg_y = normals[zero_z, 1] < 0
+            normals[zero_z][neg_y] *= -1
+
+        return normals
+
+    @staticmethod
+    def upsample_for_display(points, normals, colors=None, factor=3, radius=None):
+        """渲染时增密：在每个点的切平面内插值生成新点
+        factor: 每个点生成的新点数（不含原始点）
+        radius: 插值半径，None时自动计算
+        返回: (new_points, new_colors)
+        """
+        n = len(points)
+        if n == 0:
+            return points, colors
+
+        if radius is None:
+            # 自动计算：基于平均最近邻距离
+            from scipy.spatial import cKDTree
+            tree = cKDTree(points)
+            dists, _ = tree.query(points, k=2)
+            radius = np.median(dists[:, 1]) * 0.5
+
+        # 构建切平面坐标系
+        # 选一个不平行于法线的参考向量
+        abs_n = np.abs(normals)
+        ref = np.zeros_like(normals)
+        # 对每行选Z最小的轴作为参考
+        min_axis = abs_n.argmin(axis=1)
+        ref[np.arange(n), min_axis] = 1.0
+
+        tangent1 = np.cross(normals, ref)
+        tangent1_norm = np.linalg.norm(tangent1, axis=1, keepdims=True)
+        tangent1_norm[tangent1_norm < 1e-10] = 1.0
+        tangent1 = tangent1 / tangent1_norm
+
+        tangent2 = np.cross(normals, tangent1)
+        tangent2_norm = np.linalg.norm(tangent2, axis=1, keepdims=True)
+        tangent2_norm[tangent2_norm < 1e-10] = 1.0
+        tangent2 = tangent2 / tangent2_norm
+
+        # 在切平面内生成随机偏移
+        np.random.seed(42)  # 固定种子保证一致性
+        angles = np.random.uniform(0, 2 * np.pi, (n, factor))
+        dists = np.random.uniform(0, radius, (n, factor))
+
+        offsets_x = dists * np.cos(angles)  # (n, factor)
+        offsets_y = dists * np.sin(angles)  # (n, factor)
+
+        # 生成新点：原始点 + 切平面偏移
+        new_points_list = [points]
+        for i in range(factor):
+            offset = (offsets_x[:, i:i+1] * tangent1 +
+                      offsets_y[:, i:i+1] * tangent2)
+            new_points_list.append(points + offset)
+
+        all_points = np.vstack(new_points_list)
+
+        # 处理颜色
+        all_colors = None
+        if colors is not None:
+            color_list = [colors] + [colors] * factor
+            all_colors = np.vstack(color_list)
+
+        return all_points, all_colors
 
     @staticmethod
     def _compute_forward_headings(waypoints):
