@@ -453,7 +453,7 @@ class VTKViewer(QWidget):
         self._fpv_on_mark = None  # 打点回调函数
         self._fpv_fov = 80.0  # FPV相机视场角
 
-        self._timer_id = self.startTimer(30)
+        self._timer_id = self.startTimer(16)  # ~60fps
 
     def timerEvent(self, event):
         if getattr(self, '_vtk_available', False) and getattr(self, 'interactor', None):
@@ -602,40 +602,86 @@ class VTKViewer(QWidget):
             self.vtk_widget.GetRenderWindow().Render()
 
     def _create_drone_model(self):
-        """创建简单的无人机模型（十字机架 + 指示箭头）"""
+        """加载STL无人机模型"""
         if self._fpv_drone_actor is not None:
             return
         vtk = self._vtk
+        import os
 
-        # 根据场景大小动态调整无人机尺寸
-        scene_size = 1.0
+        # 查找STL文件（优先M4T_v2_simple.stl）
+        stl_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'M4T_v2_simple.stl')
+        if not os.path.exists(stl_path):
+            # 尝试当前工作目录
+            stl_path = os.path.join(os.getcwd(), 'M4T_v2_simple.stl')
+        if not os.path.exists(stl_path):
+            # 回退到简单线框
+            self._create_drone_model_fallback()
+            return
+
+        reader = vtk.vtkSTLReader()
+        reader.SetFileName(stl_path)
+        reader.Update()
+
+        stl_polydata = reader.GetOutput()
+        if stl_polydata.GetNumberOfPoints() == 0:
+            self._create_drone_model_fallback()
+            return
+
+        # 根据场景大小缩放无人机模型
+        bounds = stl_polydata.GetBounds()  # (xmin,xmax,ymin,ymax,zmin,zmax)
+        stl_size = max(bounds[1]-bounds[0], bounds[3]-bounds[2], bounds[5]-bounds[4])
+
+        scene_size = 5.0
         if self.points_data is not None and len(self.points_data) > 0:
             mn = self.points_data.min(axis=0)
             mx = self.points_data.max(axis=0)
-            scene_size = np.linalg.norm(mx - mn) * 0.02  # 场景对角线的2%
+            scene_size = np.linalg.norm(mx - mn) * 0.015  # 场景对角线的1.5%
 
-        arm_len = max(0.5, scene_size)
+        scale = max(0.5, scene_size) / stl_size if stl_size > 0 else 1.0
 
-        # 用线框表示十字机架
+        transform = vtk.vtkTransform()
+        transform.Scale(scale, scale, scale)
+        # 居中：把模型中心移到原点
+        cx = (bounds[0] + bounds[1]) / 2
+        cy = (bounds[2] + bounds[3]) / 2
+        cz = (bounds[4] + bounds[5]) / 2
+        transform.Translate(-cx, -cy, -cz)
+
+        transform_filter = vtk.vtkTransformPolyDataFilter()
+        transform_filter.SetInputData(stl_polydata)
+        transform_filter.SetTransform(transform)
+        transform_filter.Update()
+
+        mapper = self._vtkPolyDataMapper()
+        mapper.SetInputConnection(transform_filter.GetOutputPort())
+
+        actor = self._vtkActor()
+        actor.SetMapper(mapper)
+        actor.GetProperty().SetColor(0.3, 0.3, 0.3)  # 灰色机身
+        actor.GetProperty().SetLighting(True)
+
+        self.renderer.AddActor(actor)
+        self._actors.append(actor)
+        self._fpv_drone_actor = actor
+
+    def _create_drone_model_fallback(self):
+        """STL加载失败时的简单线框模型"""
+        vtk = self._vtk
+        arm_len = 1.0
         pts = vtk.vtkPoints()
-        # 四个机臂端点
         pts.InsertNextPoint(-arm_len, 0, 0)
         pts.InsertNextPoint(arm_len, 0, 0)
         pts.InsertNextPoint(0, -arm_len, 0)
         pts.InsertNextPoint(0, arm_len, 0)
         pts.InsertNextPoint(0, 0, 0)
-        # 机头方向指示（更长更明显）
-        pts.InsertNextPoint(0, 0, 0)
         pts.InsertNextPoint(arm_len * 2, 0, 0)
-        # 机头箭头两翼
-        arrow_w = arm_len * 0.4
         pts.InsertNextPoint(arm_len * 2, 0, 0)
-        pts.InsertNextPoint(arm_len * 1.5, arrow_w, 0)
+        pts.InsertNextPoint(arm_len * 1.5, arm_len * 0.4, 0)
         pts.InsertNextPoint(arm_len * 2, 0, 0)
-        pts.InsertNextPoint(arm_len * 1.5, -arrow_w, 0)
+        pts.InsertNextPoint(arm_len * 1.5, -arm_len * 0.4, 0)
 
         lines = vtk.vtkCellArray()
-        for pair in [(0, 1), (2, 3), (4, 5), (6, 7), (8, 9)]:
+        for pair in [(0,1),(2,3),(4,5),(6,7),(8,9)]:
             line = vtk.vtkPolyLine()
             line.GetPointIds().SetNumberOfIds(2)
             line.GetPointIds().SetId(0, pair[0])
@@ -645,16 +691,13 @@ class VTKViewer(QWidget):
         polydata = vtk.vtkPolyData()
         polydata.SetPoints(pts)
         polydata.SetLines(lines)
-
         mapper = self._vtkPolyDataMapper()
         mapper.SetInputData(polydata)
-
         actor = self._vtkActor()
         actor.SetMapper(mapper)
-        actor.GetProperty().SetColor(0, 1, 0)  # 绿色
+        actor.GetProperty().SetColor(0, 1, 0)
         actor.GetProperty().SetLineWidth(3)
         actor.GetProperty().SetLighting(False)
-
         self.renderer.AddActor(actor)
         self._actors.append(actor)
         self._fpv_drone_actor = actor
@@ -802,17 +845,21 @@ class VTKViewer(QWidget):
         """进入FPV相机模式"""
         cam = self.renderer.GetActiveCamera()
         if self.points_data is not None and len(self.points_data) > 0:
-            # 把无人机放在点云前方
             mn = self.points_data.min(axis=0)
             mx = self.points_data.max(axis=0)
             center = (mn + mx) / 2
-            # 放在点云X最小方向前方5米
+            # 放在点云X最小方向前方
             self._fpv_pos = np.array([mn[0] - 5, center[1], center[2]])
-            # 朝向点云中心
-            self._fpv_yaw = 0.0
+            # 计算朝向点云中心的偏航角
+            dx = center[0] - self._fpv_pos[0]
+            dy = center[1] - self._fpv_pos[1]
+            self._fpv_yaw = np.degrees(np.arctan2(dy, dx))
             self._fpv_pitch = 0.0
 
-        # FPV视角下隐藏无人机模型（你从无人机里面看，看不到自己）
+        # 设置裁剪范围（近平面0.1，远平面1000）
+        cam.SetClippingRange(0.1, 1000.0)
+
+        # FPV视角下隐藏无人机模型
         if self._fpv_drone_actor is not None:
             self._fpv_drone_actor.SetVisibility(False)
 
@@ -824,7 +871,7 @@ class VTKViewer(QWidget):
         self._fpv_keys.clear()
         self._fpv_mouse_active = False
 
-    def _update_fpv_camera(self):
+    def _update_fpv_camera(self, render=True):
         """更新FPV相机到无人机位置和朝向"""
         cam = self.renderer.GetActiveCamera()
         pos = self._fpv_pos
@@ -835,14 +882,12 @@ class VTKViewer(QWidget):
         cam.SetFocalPoint(focal.tolist())
         cam.SetViewUp(0, 0, 1)
         cam.SetViewAngle(self._fpv_fov)
-        self.renderer.ResetCameraClippingRange()
 
         self._update_drone_model()
-        # 直接渲染，不调用_update_view（它会重置相机）
-        if self.vtk_widget.GetRenderWindow():
+        if render and self.vtk_widget.GetRenderWindow():
             self.vtk_widget.GetRenderWindow().Render()
 
-    def _update_third_person_camera(self):
+    def _update_third_person_camera(self, render=True):
         """第三人称视角：相机在无人机后上方，跟随无人机"""
         cam = self.renderer.GetActiveCamera()
         pos = self._fpv_pos
@@ -861,10 +906,9 @@ class VTKViewer(QWidget):
         cam.SetFocalPoint(pos.tolist())
         cam.SetViewUp(0, 0, 1)
         cam.SetViewAngle(self._fpv_fov)
-        self.renderer.ResetCameraClippingRange()
 
         self._update_drone_model()
-        if self.vtk_widget.GetRenderWindow():
+        if render and self.vtk_widget.GetRenderWindow():
             self.vtk_widget.GetRenderWindow().Render()
 
     def fpv_tick(self):
@@ -899,10 +943,13 @@ class VTKViewer(QWidget):
                 moved = True
 
         if moved:
+            # 只更新相机参数，最后统一渲染一次
             if self._fpv_first_person:
-                self._update_fpv_camera()
+                self._update_fpv_camera(render=False)
             else:
-                self._update_third_person_camera()
+                self._update_third_person_camera(render=False)
+            if self.vtk_widget.GetRenderWindow():
+                self.vtk_widget.GetRenderWindow().Render()
         return moved
 
     def clear_actors(self):
