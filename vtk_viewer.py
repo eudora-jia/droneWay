@@ -85,7 +85,7 @@ class FoxgloveInteractorStyle(object):
             start = v._poly_click_start
             v._poly_click_start = None
             if abs(pos[0] - start[0]) < 5 and abs(pos[1] - start[1]) < 5:
-                p = v._pick_3d(pos[0], pos[1], z_plane=0.0)
+                p = v._pick_3d(pos[0], pos[1])
                 if p is not None:
                     v._add_polygon_point(p)
             self._mode = None
@@ -97,7 +97,7 @@ class FoxgloveInteractorStyle(object):
             start = v._poly_click_start
             v._poly_click_start = None
             if abs(pos[0] - start[0]) < 5 and abs(pos[1] - start[1]) < 5:
-                p = v._pick_3d(pos[0], pos[1], z_plane=0.0)
+                p = v._pick_3d(pos[0], pos[1])
                 if p is not None:
                     v._update_place_preview(p)
             self._mode = None
@@ -641,6 +641,9 @@ class VTKViewer(QWidget):
 
         transform = vtk.vtkTransform()
         transform.Scale(scale, scale, scale)
+        # 修正模型姿态：机身放平 + 机头朝前
+        transform.RotateX(90)
+        transform.RotateY(90)
         # 居中：把模型中心移到原点
         cx = (bounds[0] + bounds[1]) / 2
         cy = (bounds[2] + bounds[3]) / 2
@@ -732,11 +735,13 @@ class VTKViewer(QWidget):
             rwi.RemoveObserver(self._fpv_key_release_obs)
         self._fpv_key_press_obs = rwi.AddObserver("KeyPressEvent", self._fpv_on_key_press)
         self._fpv_key_release_obs = rwi.AddObserver("KeyReleaseEvent", self._fpv_on_key_release)
-        # 鼠标事件用于视角控制
+        # 鼠标事件
         if hasattr(self, '_fpv_right_press_obs'):
             rwi.RemoveObserver(self._fpv_right_press_obs)
             rwi.RemoveObserver(self._fpv_right_release_obs)
             rwi.RemoveObserver(self._fpv_move_obs)
+            rwi.RemoveObserver(self._fpv_left_press_obs)
+        self._fpv_left_press_obs = rwi.AddObserver("LeftButtonPressEvent", self._fpv_on_left_down)
         self._fpv_right_press_obs = rwi.AddObserver("RightButtonPressEvent", self._fpv_on_right_down)
         self._fpv_right_release_obs = rwi.AddObserver("RightButtonReleaseEvent", self._fpv_on_right_up)
         self._fpv_move_obs = rwi.AddObserver("MouseMoveEvent", self._fpv_on_mouse_move)
@@ -775,6 +780,15 @@ class VTKViewer(QWidget):
         """FPV键盘释放"""
         key = obj.GetKeySym().lower()
         self._fpv_keys.discard(key)
+
+    def _fpv_on_left_down(self, obj, event):
+        """FPV左键按下 - 拾取点云点并记录航点"""
+        if not self.fpv_mode:
+            return
+        pos = obj.GetEventPosition()
+        picked = self._pick_3d(pos[0], pos[1])
+        if picked is not None and self._fpv_on_mark is not None:
+            self._fpv_on_mark(picked, self._fpv_pos.copy(), self._fpv_yaw, self._fpv_pitch)
 
     def _fpv_on_right_down(self, obj, event):
         """FPV右键按下 - 开始鼠标控制视角"""
@@ -1511,12 +1525,12 @@ class VTKViewer(QWidget):
     def _pick_3d(self, screen_x, screen_y, z_plane=None):
         """屏幕坐标拾取3D点
         z_plane=数值: 射线与指定Z平面求交
-        z_plane=None: 用 VTK Picker 拾取点云表面
+        z_plane=None: 拾取点云表面（PointPicker → KDTree射线 → Z=0回退）
         """
         if z_plane is not None:
             return self._ray_z_plane(screen_x, screen_y, z_plane)
 
-        # 用 VTK PointPicker 拾取渲染表面最近点
+        # 1) VTK PointPicker 拾取渲染表面最近点
         picker = self._vtk.vtkPointPicker()
         picker.PickFromListOn()
         if self._cloud_actor:
@@ -1527,7 +1541,40 @@ class VTKViewer(QWidget):
             pos = picker.GetPickPosition()
             return np.array(pos)
 
-        # 回退：Z=0 平面
+        # 2) KDTree射线查找：沿射线采样，找最近的点云点
+        if self.points_data is not None and len(self.points_data) > 0:
+            ren = self.renderer
+            ren.SetDisplayPoint(screen_x, screen_y, 0)
+            ren.DisplayToWorld()
+            near = np.array(ren.GetWorldPoint()[:3])
+            w = ren.GetWorldPoint()[3]
+            if abs(w) > 1e-10:
+                near /= w
+            ren.SetDisplayPoint(screen_x, screen_y, 1)
+            ren.DisplayToWorld()
+            far = np.array(ren.GetWorldPoint()[:3])
+            w = ren.GetWorldPoint()[3]
+            if abs(w) > 1e-10:
+                far /= w
+            ray_dir = far - near
+            ray_len = np.linalg.norm(ray_dir)
+            if ray_len > 1e-10:
+                ray_dir /= ray_len
+                if self._cloud_tree is None:
+                    from scipy.spatial import cKDTree
+                    self._cloud_tree = cKDTree(self.points_data)
+                best_point = None
+                best_dist = float('inf')
+                for t in np.arange(0.5, ray_len, 0.3):
+                    sample = near + ray_dir * t
+                    dist, idx = self._cloud_tree.query(sample)
+                    if dist < 1.0 and dist < best_dist:
+                        best_dist = dist
+                        best_point = self.points_data[idx]
+                if best_point is not None:
+                    return best_point
+
+        # 3) 回退：Z=0 平面
         return self._ray_z_plane(screen_x, screen_y, 0.0)
 
     def _ray_z_plane(self, screen_x, screen_y, z_plane):

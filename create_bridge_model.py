@@ -130,7 +130,7 @@ def create_cable_stayed_bridge():
     # 基本参数
     # ══════════════════════════════════════════════
     bridge_length = 100.0
-    bridge_width = 15.0
+    bridge_width = 40.0
     bridge_thickness = 1.0
     tower_positions = [-bridge_length/4, bridge_length/4]
     tower_height = 35.0

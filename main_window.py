@@ -1000,7 +1000,7 @@ class MainWindow(QMainWindow):
             # 设置打点回调
             self.viewer._fpv_on_mark = self._fpv_mark_waypoint
             self.viewer.toggle_fpv(True)
-            self.statusBar().showMessage("FPV模式：WASD移动，QE升降，右键控制视角，空格打点，V退出")
+            self.statusBar().showMessage("FPV模式：WASD移动，QE升降，右键控制视角，左键选点，空格打点，V退出")
         else:
             self.viewer.toggle_fpv(False)
             self.statusBar().showMessage("已退出FPV模式")
