@@ -44,28 +44,22 @@ class FoxgloveInteractorStyle(object):
             self._prev_pos = rwi.GetEventPosition()
             return
 
+        pos = rwi.GetEventPosition()
+
+        # 选点模式下（含FPV），仍需设置_click_start
+        if v.polygon_mode or v.place_mode or v.inspect_mode or v.line_mode:
+            v._poly_click_start = pos
+            return
+
         # FPV模式下左键不做普通操作
         if v.fpv_mode:
             return
 
         ctrl = rwi.GetControlKey()
-        pos = rwi.GetEventPosition()
-
-        if v.polygon_mode:
-            v._poly_click_start = pos
-            return
-
-        if v.place_mode:
-            v._poly_click_start = pos
-            return
-
-        if v.inspect_mode:
-            v._poly_click_start = pos
-            return
-
-        if v.line_mode:
-            v._poly_click_start = pos
-            return
+        if ctrl:
+            wp_idx = v._find_nearest_waypoint(pos[0], pos[1])
+            if wp_idx >= 0:
+                v._start_wp_edit(wp_idx, pos[0], pos[1])
 
         if ctrl:
             wp_idx = v._find_nearest_waypoint(pos[0], pos[1])
@@ -111,6 +105,13 @@ class FoxgloveInteractorStyle(object):
             if abs(pos[0] - start[0]) < 5 and abs(pos[1] - start[1]) < 5:
                 p = v._pick_3d(pos[0], pos[1])
                 if p is not None:
+                    # 吸附到最近的点云点
+                    if v.points_data is not None and len(v.points_data) > 0:
+                        if v._cloud_tree is None:
+                            from scipy.spatial import cKDTree
+                            v._cloud_tree = cKDTree(v.points_data)
+                        _, idx = v._cloud_tree.query(p)
+                        p = v.points_data[idx]
                     v._add_inspect_point(p)
             self._mode = None
             self._prev_pos = None
@@ -121,8 +122,24 @@ class FoxgloveInteractorStyle(object):
             start = v._poly_click_start
             v._poly_click_start = None
             if abs(pos[0] - start[0]) < 5 and abs(pos[1] - start[1]) < 5:
+                # FPV模式下先更新相机参数并渲染，确保DisplayToWorld计算正确
+                if v.fpv_mode:
+                    print(f"[Debug] FPV mode detected, updating camera...")
+                    if getattr(v, '_fpv_first_person', True):
+                        v._update_fpv_camera(render=True)
+                    else:
+                        v._update_third_person_camera(render=True)
+                print(f"[Debug] Calling _pick_3d({pos[0]}, {pos[1]}), fpv_mode={v.fpv_mode}")
                 p = v._pick_3d(pos[0], pos[1])
+                print(f"[Debug] _pick_3d returned: {p}")
                 if p is not None:
+                    # 吸附到最近的点云点，确保位置准确
+                    if v.points_data is not None and len(v.points_data) > 0:
+                        if v._cloud_tree is None:
+                            from scipy.spatial import cKDTree
+                            v._cloud_tree = cKDTree(v.points_data)
+                        _, idx = v._cloud_tree.query(p)
+                        p = v.points_data[idx]
                     v._add_line_point(p)
             self._mode = None
             self._prev_pos = None
@@ -140,9 +157,7 @@ class FoxgloveInteractorStyle(object):
     def _on_right_down(self, obj, event):
         v = self._vtk_viewer
         rwi = self._rwi
-        # FPV模式下右键由FPV系统处理
-        if v and v.fpv_mode:
-            return
+        # 选点模式下（含FPV），右键结束绘制
         if v and v.polygon_mode:
             if len(v._poly_points) >= 3:
                 pts = [p.tolist() for p in v._poly_points]
@@ -281,6 +296,7 @@ class VTKViewer(QWidget):
     place_picked = pyqtSignal(object)  # 点击放置模式
     inspect_points_confirmed = pyqtSignal(list)  # 巡检点确认
     line_points_confirmed = pyqtSignal(list)  # 直线起终点确认 [start, end]
+    line_point_picked = pyqtSignal(int, object)  # 直线选点实时通知 (index, point)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -297,7 +313,7 @@ class VTKViewer(QWidget):
             from vtkmodules.vtkFiltersSources import vtkSphereSource, vtkCubeSource, vtkLineSource, vtkArrowSource
             from vtkmodules.vtkFiltersGeneral import vtkTransformPolyDataFilter
             from vtkmodules.vtkCommonTransforms import vtkTransform
-            from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyLine
+            from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyLine, vtkPolygon
             from vtkmodules.vtkFiltersCore import vtkGlyph3D
             from vtkmodules.vtkInteractionStyle import vtkInteractorStyleUser
             vtk.vtkOutputWindow.SetGlobalWarningDisplay(0)
@@ -311,7 +327,7 @@ class VTKViewer(QWidget):
                     vtkActor, vtkPolyDataMapper, vtkRenderer,
                     vtkPoints, vtkPolyData, vtkVertexGlyphFilter,
                     vtkSphereSource, vtkCubeSource, vtkLineSource, vtkArrowSource, vtkCellArray,
-                    vtkPolyLine, vtkFollower, vtkVectorText,
+                    vtkPolyLine, vtkPolygon, vtkFollower, vtkVectorText,
                     vtkBillboardTextActor3D,
                     vtkTransformPolyDataFilter, vtkTransform,
                     vtkGlyph3D, vtkInteractorStyleUser,
@@ -340,6 +356,7 @@ class VTKViewer(QWidget):
         self._vtkArrowSource = vtkArrowSource
         self._vtkCellArray = vtkCellArray
         self._vtkPolyLine = vtkPolyLine
+        self._vtkPolygon = vtkPolygon
         self._vtkBillboardTextActor3D = vtkBillboardTextActor3D
         self._vtkTransformPolyDataFilter = vtkTransformPolyDataFilter
         self._vtkTransform = vtkTransform
@@ -391,6 +408,15 @@ class VTKViewer(QWidget):
 
         self.renderer.SetBackground(0.95, 0.95, 0.93)  # 奶白色背景
 
+        # 添加侧面辅助光，增强棱角立体感
+        vtk = self._vtk
+        light = vtk.vtkLight()
+        light.SetPosition(1, -1, 1)
+        light.SetFocalPoint(0, 0, 0)
+        light.SetIntensity(0.4)
+        light.SetColor(1.0, 1.0, 0.95)
+        self.renderer.AddLight(light)
+
         self._actors = []
         self.points_data = None
         self._cloud_tree = None
@@ -420,6 +446,7 @@ class VTKViewer(QWidget):
         self._poly_points = []
         self._poly_markers = []
         self._poly_line_actor = None
+        self._poly_surface_actor = None
         self._poly_click_start = None
 
         # ─── 巡检选点模式 ───
@@ -444,7 +471,7 @@ class VTKViewer(QWidget):
         self._fpv_pos = np.array([0.0, 0.0, 5.0])  # 无人机位置
         self._fpv_yaw = 0.0    # 偏航角（度），0=朝+X方向
         self._fpv_pitch = 0.0  # 俯仰角（度），0=水平，正=向下看
-        self._fpv_speed = 0.5  # 飞行速度（米/按键）
+        self._fpv_speed = 2.0  # 飞行速度（米/帧，60fps时约120m/s）
         self._fpv_look_speed = 0.3  # 鼠标灵敏度
         self._fpv_keys = set()  # 当前按下的键
         self._fpv_mouse_active = False  # 右键按下时鼠标控制视角
@@ -606,14 +633,27 @@ class VTKViewer(QWidget):
         if self._fpv_drone_actor is not None:
             return
         vtk = self._vtk
-        import os
+        import os, sys
 
-        # 查找STL文件（优先M4T_v2_simple.stl）
-        stl_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'M4T_v2_simple.stl')
-        if not os.path.exists(stl_path):
-            # 尝试当前工作目录
-            stl_path = os.path.join(os.getcwd(), 'M4T_v2_simple.stl')
-        if not os.path.exists(stl_path):
+        # 多路径查找STL文件
+        search_dirs = [
+            os.path.dirname(os.path.abspath(__file__)),  # vtk_viewer.py同级
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),  # 上级目录
+            os.getcwd(),  # 当前工作目录
+            os.path.dirname(os.path.abspath(sys.argv[0])),  # 可执行文件目录
+        ]
+        # PyInstaller打包后的临时目录
+        if hasattr(sys, '_MEIPASS'):
+            search_dirs.insert(0, sys._MEIPASS)
+
+        stl_path = None
+        for d in search_dirs:
+            candidate = os.path.join(d, 'M4T_v2_simple.stl')
+            if os.path.exists(candidate):
+                stl_path = candidate
+                break
+
+        if stl_path is None:
             # 回退到简单线框
             self._create_drone_model_fallback()
             return
@@ -627,17 +667,12 @@ class VTKViewer(QWidget):
             self._create_drone_model_fallback()
             return
 
-        # 根据场景大小缩放无人机模型
+        # 缩放无人机模型到真实尺寸（M4T对角轴距约0.35m，整体约0.5m）
         bounds = stl_polydata.GetBounds()  # (xmin,xmax,ymin,ymax,zmin,zmax)
         stl_size = max(bounds[1]-bounds[0], bounds[3]-bounds[2], bounds[5]-bounds[4])
 
-        scene_size = 5.0
-        if self.points_data is not None and len(self.points_data) > 0:
-            mn = self.points_data.min(axis=0)
-            mx = self.points_data.max(axis=0)
-            scene_size = np.linalg.norm(mx - mn) * 0.015  # 场景对角线的1.5%
-
-        scale = max(0.5, scene_size) / stl_size if stl_size > 0 else 1.0
+        real_size = 0.5  # 无人机真实尺寸（米）
+        scale = real_size / stl_size if stl_size > 0 else 1.0
 
         transform = vtk.vtkTransform()
         transform.Scale(scale, scale, scale)
@@ -785,6 +820,9 @@ class VTKViewer(QWidget):
         """FPV左键按下 - 拾取点云点并记录航点"""
         if not self.fpv_mode:
             return
+        # 选点模式下不触发FPV打点（由_on_left_up处理）
+        if self.polygon_mode or self.place_mode or self.inspect_mode or self.line_mode:
+            return
         pos = obj.GetEventPosition()
         picked = self._pick_3d(pos[0], pos[1])
         if picked is not None and self._fpv_on_mark is not None:
@@ -803,18 +841,19 @@ class VTKViewer(QWidget):
         self._fpv_prev_mouse = None
 
     def _fpv_on_mouse_move(self, obj, event):
-        """FPV鼠标移动 - 控制视角"""
+        """FPV鼠标移动 - 只控制yaw（机头左右转向）"""
         if not self.fpv_mode or not self._fpv_mouse_active:
             return
         pos = obj.GetEventPosition()
         if self._fpv_prev_mouse is not None:
             dx = pos[0] - self._fpv_prev_mouse[0]
-            dy = pos[1] - self._fpv_prev_mouse[1]
             self._fpv_yaw -= dx * self._fpv_look_speed
-            self._fpv_pitch += dy * self._fpv_look_speed
-            self._fpv_pitch = max(-89, min(89, self._fpv_pitch))
         self._fpv_prev_mouse = pos
-        self._update_fpv_camera()
+        # 根据当前视角模式调用不同的更新方法
+        if getattr(self, '_fpv_first_person', True):
+            self._update_fpv_camera()
+        else:
+            self._update_third_person_camera()
 
     def _fpv_mark_waypoint(self):
         """在当前位置记录航点"""
@@ -843,35 +882,41 @@ class VTKViewer(QWidget):
             from scipy.spatial import cKDTree
             self._cloud_tree = cKDTree(self.points_data)
 
-        # 沿射线采样若干点
-        best_point = None
-        best_dist = max_dist
-        for t in np.arange(0.5, max_dist, 0.3):
-            sample = self._fpv_pos + direction * t
-            dist, idx = self._cloud_tree.query(sample)
-            if dist < 0.5 and t < best_dist:
-                best_dist = t
-                best_point = self.points_data[idx]
-
-        return best_point
+        # 批量射线采样查询
+        ts = np.arange(0.5, max_dist, 0.3)
+        sample_pts = self._fpv_pos + direction * ts[:, np.newaxis]  # (M, 3)
+        dists, idxs = self._cloud_tree.query(sample_pts, workers=-1)
+        valid = (dists < 0.5)
+        if valid.any():
+            # 取距离射线最近且t最小的点
+            t_valid = ts[valid]
+            best = np.argmin(t_valid)
+            return self.points_data[idxs[valid][best]]
+        return None
 
     def _enter_fpv_camera(self):
         """进入FPV相机模式"""
         cam = self.renderer.GetActiveCamera()
+        # 使用用户设置的起始位置，或默认原点
+        if not hasattr(self, '_fpv_start_pos') or self._fpv_start_pos is None:
+            self._fpv_pos = np.array([0.0, 0.0, 0.0])
+        else:
+            self._fpv_pos = np.array(self._fpv_start_pos, dtype=float)
+        # 计算朝向点云中心的偏航角
         if self.points_data is not None and len(self.points_data) > 0:
-            mn = self.points_data.min(axis=0)
-            mx = self.points_data.max(axis=0)
-            center = (mn + mx) / 2
-            # 放在点云X最小方向前方
-            self._fpv_pos = np.array([mn[0] - 5, center[1], center[2]])
-            # 计算朝向点云中心的偏航角
+            center = (self.points_data.min(axis=0) + self.points_data.max(axis=0)) / 2
             dx = center[0] - self._fpv_pos[0]
             dy = center[1] - self._fpv_pos[1]
-            self._fpv_yaw = np.degrees(np.arctan2(dy, dx))
-            self._fpv_pitch = 0.0
+            if abs(dx) > 1e-6 or abs(dy) > 1e-6:
+                self._fpv_yaw = np.degrees(np.arctan2(dy, dx))
+            else:
+                self._fpv_yaw = 0.0
+        else:
+            self._fpv_yaw = 0.0
+        self._fpv_pitch = 0.0
 
-        # 设置裁剪范围（近平面0.1，远平面1000）
-        cam.SetClippingRange(0.1, 1000.0)
+        # 设置裁剪范围（近平面1.0，远平面1000）
+        cam.SetClippingRange(1.0, 1000.0)
 
         # FPV视角下隐藏无人机模型
         if self._fpv_drone_actor is not None:
@@ -976,10 +1021,11 @@ class VTKViewer(QWidget):
             self.renderer.AddActor(self._fpv_drone_actor)
             self._actors.append(self._fpv_drone_actor)
 
-    def add_point_cloud(self, points, render_mode='auto', point_size=0.05, colors=None, normals=None):
+    def add_point_cloud(self, points, render_mode='auto', point_size=0.05, colors=None, normals=None, reset_camera=True):
         """显示点云（支持球体/立方体/像素/圆片渲染模式）
         colors: (N, 3) uint8 外部传入的RGB颜色，为None时按高度着色
         normals: (N, 3) 法线数组，render_mode='splat'时用于圆片朝向
+        reset_camera: 是否重置相机视角
         """
         if not self._vtk_available or len(points) == 0:
             return
@@ -1119,11 +1165,20 @@ class VTKViewer(QWidget):
         if not use_glyph:
             actor.GetProperty().SetPointSize(max(1, int(point_size * 40)))
 
+        # 增强光照：提高棱角辨识度
+        prop = actor.GetProperty()
+        prop.SetAmbient(0.3)
+        prop.SetDiffuse(0.6)
+        prop.SetSpecular(0.2)
+        prop.SetSpecularPower(20)
+
         self.renderer.AddActor(actor)
         self._actors.append(actor)
         self._cloud_actor = actor
 
-        self.renderer.ResetCamera()
+        # FPV模式下不重置相机，或者明确指定不重置
+        if reset_camera and not getattr(self, 'fpv_mode', False):
+            self.renderer.ResetCamera()
         self._update_view()
 
     @staticmethod
@@ -1158,20 +1213,29 @@ class VTKViewer(QWidget):
 
     @staticmethod
     def estimate_normals(points, k=20):
-        """用PCA方法估算点云法线，返回 (N,3) 法线数组"""
+        """用PCA方法估算点云法线（批量向量化），返回 (N,3) 法线数组"""
         from scipy.spatial import cKDTree
         n = len(points)
-        normals = np.zeros((n, 3), dtype=np.float64)
-        tree = cKDTree(points)
-        dists, indices = tree.query(points, k=min(k, n))
+        if n < 3:
+            return np.zeros((n, 3), dtype=np.float64)
 
-        for i in range(n):
-            neighbors = points[indices[i]]
-            center = neighbors.mean(axis=0)
-            cov = np.cov((neighbors - center).T)
-            eigvals, eigvecs = np.linalg.eigh(cov)
-            # 最小特征值对应的特征向量就是法线
-            normals[i] = eigvecs[:, 0]
+        k = min(k, n)
+        tree = cKDTree(points)
+        # 多线程批量查询
+        _, indices = tree.query(points, k=k, workers=-1)
+
+        # 批量提取邻域: (N, k, 3)
+        neighbors = points[indices]
+        # 批量计算均值: (N, 1, 3)
+        centers = neighbors.mean(axis=1, keepdims=True)
+        # 批量去均值: (N, k, 3)
+        centered = neighbors - centers
+        # 批量协方差矩阵: (N, 3, 3) = (N, 3, k) @ (N, k, 3)
+        cov = np.einsum('nik,njk->nij', centered, centered) / (k - 1)
+        # 批量特征值分解
+        eigvals, eigvecs = np.linalg.eigh(cov)
+        # 最小特征值对应的特征向量 = 法线 (第一列)
+        normals = eigvecs[:, :, 0].copy()
 
         # 统一法线朝向（都朝上，即Z分量为正）
         neg_mask = normals[:, 2] < 0
@@ -1193,6 +1257,10 @@ class VTKViewer(QWidget):
         """
         n = len(points)
         if n == 0:
+            return points, colors
+
+        if normals is None or len(normals) != n:
+            # 法线无效时直接返回原始点
             return points, colors
 
         if radius is None:
@@ -1220,7 +1288,7 @@ class VTKViewer(QWidget):
         tangent2_norm[tangent2_norm < 1e-10] = 1.0
         tangent2 = tangent2 / tangent2_norm
 
-        # 在切平面内生成随机偏移
+        # 在切平面内生成随机偏移（向量化）
         np.random.seed(42)  # 固定种子保证一致性
         angles = np.random.uniform(0, 2 * np.pi, (n, factor))
         dists = np.random.uniform(0, radius, (n, factor))
@@ -1228,20 +1296,24 @@ class VTKViewer(QWidget):
         offsets_x = dists * np.cos(angles)  # (n, factor)
         offsets_y = dists * np.sin(angles)  # (n, factor)
 
-        # 生成新点：原始点 + 切平面偏移
-        new_points_list = [points]
-        for i in range(factor):
-            offset = (offsets_x[:, i:i+1] * tangent1 +
-                      offsets_y[:, i:i+1] * tangent2)
-            new_points_list.append(points + offset)
+        # 向量化生成所有新点: (n, factor, 3)
+        # tangent1, tangent2: (n, 3) → (n, 1, 3)
+        t1 = tangent1[:, np.newaxis, :]  # (n, 1, 3)
+        t2 = tangent2[:, np.newaxis, :]  # (n, 1, 3)
+        # offsets: (n, factor) → (n, factor, 1)
+        ox = offsets_x[:, :, np.newaxis]  # (n, factor, 1)
+        oy = offsets_y[:, :, np.newaxis]  # (n, factor, 1)
+        # 新点 = 原始点 + 偏移
+        base = points[:, np.newaxis, :]  # (n, 1, 3)
+        new_pts = base + ox * t1 + oy * t2  # (n, factor, 3)
 
-        all_points = np.vstack(new_points_list)
+        # 合并: 原始点 + 所有新点
+        all_points = np.vstack([points, new_pts.reshape(-1, 3)])
 
         # 处理颜色
         all_colors = None
         if colors is not None:
-            color_list = [colors] + [colors] * factor
-            all_colors = np.vstack(color_list)
+            all_colors = np.vstack([colors] + [colors] * factor)
 
         return all_points, all_colors
 
@@ -1283,14 +1355,14 @@ class VTKViewer(QWidget):
         cos_angle = np.dot(d1, d2) / (n1 * n2)
         return cos_angle < np.cos(np.radians(30))
 
-    def add_route(self, waypoints):
+    def add_route(self, waypoints, reset_camera=True):
         """显示航线和航点"""
         if not self._vtk_available or len(waypoints) == 0:
             return
 
         to_remove = []
         for i, actor in enumerate(self._actors):
-            if actor != self._cloud_actor:
+            if actor != self._cloud_actor and actor != self._fpv_drone_actor:
                 to_remove.append(i)
         for i in reversed(to_remove):
             self.renderer.RemoveActor(self._actors[i])
@@ -1444,18 +1516,30 @@ class VTKViewer(QWidget):
 
             # 标签只在少量航点时显示
             for i, wp in enumerate(waypoints):
-                label = self._vtkBillboardTextActor3D()
-                label.SetInput(str(i + 1))
-                label.SetPosition(wp['pos'][0], wp['pos'][1], wp['pos'][2] + label_offset * 2)
-                label.SetScale(label_offset * 0.6, label_offset * 0.6, label_offset * 0.6)
-                label.GetTextProperty().SetColor(0.0, 0.2, 0.8)
-                label.GetTextProperty().SetFontSize(24)
-                label.GetTextProperty().SetBackgroundColor(1.0, 1.0, 1.0)
-                label.GetTextProperty().SetBackgroundOpacity(0.8)
-                label.GetTextProperty().SetFrame(True)
-                label.GetTextProperty().SetFrameColor(0.8, 0.8, 0.8)
-                self.renderer.AddActor(label)
-                self._actors.append(label)
+                lbl_pos = [wp['pos'][0], wp['pos'][1], wp['pos'][2] + label_offset * 2]
+                lbl_scale = label_offset * 0.5
+
+                # 背景标签（黑色，稍偏移形成阴影）
+                bg = self._vtkBillboardTextActor3D()
+                bg.SetInput(str(i + 1))
+                bg.SetPosition(lbl_pos[0] + lbl_scale * 0.05, lbl_pos[1] + lbl_scale * 0.05, lbl_pos[2] - lbl_scale * 0.05)
+                bg.SetScale(lbl_scale, lbl_scale, lbl_scale)
+                bg.GetTextProperty().SetColor(0.0, 0.0, 0.0)
+                bg.GetTextProperty().SetFontSize(18)
+                bg.GetTextProperty().SetBold(True)
+                self.renderer.AddActor(bg)
+                self._actors.append(bg)
+
+                # 前景标签（亮黄色）
+                fg = self._vtkBillboardTextActor3D()
+                fg.SetInput(str(i + 1))
+                fg.SetPosition(lbl_pos[0], lbl_pos[1], lbl_pos[2])
+                fg.SetScale(lbl_scale, lbl_scale, lbl_scale)
+                fg.GetTextProperty().SetColor(1.0, 1.0, 0.0)
+                fg.GetTextProperty().SetFontSize(18)
+                fg.GetTextProperty().SetBold(True)
+                self.renderer.AddActor(fg)
+                self._actors.append(fg)
 
         # ── 投影线：航点 → 目标方向投射到点云上的点 ──
         has_target = any('target_pos' in wp for wp in waypoints)
@@ -1492,7 +1576,10 @@ class VTKViewer(QWidget):
                     self.renderer.AddActor(sa)
                     self._actors.append(sa)
 
-        self._update_view()
+        if reset_camera:
+            self._update_view()
+        else:
+            self.vtk_widget.GetRenderWindow().Render()
 
     def _project_to_cloud(self, pos, target_pos, max_dist=50.0, steps=200):
         """从航点沿目标方向投射射线，找到与点云的最近交点
@@ -1530,6 +1617,10 @@ class VTKViewer(QWidget):
         if z_plane is not None:
             return self._ray_z_plane(screen_x, screen_y, z_plane)
 
+        # FPV模式下使用相机参数直接计算射线
+        if self.fpv_mode:
+            return self._fpv_pick(screen_x, screen_y)
+
         # 1) VTK PointPicker 拾取渲染表面最近点
         picker = self._vtk.vtkPointPicker()
         picker.PickFromListOn()
@@ -1563,19 +1654,67 @@ class VTKViewer(QWidget):
                 if self._cloud_tree is None:
                     from scipy.spatial import cKDTree
                     self._cloud_tree = cKDTree(self.points_data)
-                best_point = None
-                best_dist = float('inf')
-                for t in np.arange(0.5, ray_len, 0.3):
-                    sample = near + ray_dir * t
-                    dist, idx = self._cloud_tree.query(sample)
-                    if dist < 1.0 and dist < best_dist:
-                        best_dist = dist
-                        best_point = self.points_data[idx]
-                if best_point is not None:
-                    return best_point
+                # 批量生成射线采样点并一次查询
+                ts = np.arange(0.5, ray_len, 0.3)
+                sample_pts = near + ray_dir * ts[:, np.newaxis]  # (M, 3)
+                dists, idxs = self._cloud_tree.query(sample_pts, workers=-1)
+                valid = dists < 1.0
+                if valid.any():
+                    best = np.argmin(np.where(valid, dists, np.inf))
+                    return self.points_data[idxs[best]]
 
         # 3) 回退：Z=0 平面
         return self._ray_z_plane(screen_x, screen_y, 0.0)
+
+    def _fpv_pick(self, screen_x, screen_y):
+        """FPV模式下拾取点云点 - 直接用DisplayToWorld计算射线"""
+        if self.points_data is None or len(self.points_data) == 0:
+            return None
+
+        # 用DisplayToWorld计算射线
+        ren = self.renderer
+        ren.SetDisplayPoint(screen_x, screen_y, 0)
+        ren.DisplayToWorld()
+        near = np.array(ren.GetWorldPoint()[:3])
+        w = ren.GetWorldPoint()[3]
+        if abs(w) > 1e-10:
+            near /= w
+
+        ren.SetDisplayPoint(screen_x, screen_y, 1)
+        ren.DisplayToWorld()
+        far = np.array(ren.GetWorldPoint()[:3])
+        w = ren.GetWorldPoint()[3]
+        if abs(w) > 1e-10:
+            far /= w
+
+        ray_dir = far - near
+        ray_len = np.linalg.norm(ray_dir)
+        if ray_len < 1e-10:
+            return None
+
+        ray_dir /= ray_len
+
+        # 调试信息
+        cam = self.renderer.GetActiveCamera()
+        print(f"[FPV Pick] screen=({screen_x}, {screen_y})")
+        print(f"  cam_pos={cam.GetPosition()}, cam_focal={cam.GetFocalPoint()}")
+        print(f"  near={near}, far={far}, ray_dir={ray_dir}")
+
+        if self._cloud_tree is None:
+            from scipy.spatial import cKDTree
+            self._cloud_tree = cKDTree(self.points_data)
+
+        ts = np.arange(0.5, ray_len, 0.3)
+        sample_pts = near + ray_dir * ts[:, np.newaxis]
+        dists, idxs = self._cloud_tree.query(sample_pts, workers=-1)
+        valid = dists < 1.0
+        if valid.any():
+            best = np.argmin(np.where(valid, dists, np.inf))
+            result = self.points_data[idxs[best]]
+            print(f"  picked={result}, dist={dists[best]:.3f}")
+            return result
+
+        return None
 
     def _ray_z_plane(self, screen_x, screen_y, z_plane):
         """射线与Z平面求交（用 DisplayToWorld，直接用屏幕像素坐标）"""
@@ -1725,7 +1864,6 @@ class VTKViewer(QWidget):
         self.polygon_mode = True
         self._poly_points = []
         self._clear_polygon()
-        self._set_view("top")
         print("[Polygon] 左键点击添加顶点，右键结束绘制，Esc取消")
 
     def exit_polygon_mode(self, clear_markers=True):
@@ -1746,7 +1884,6 @@ class VTKViewer(QWidget):
         self.place_mode = True
         self._place_preview_pos = None
         self._place_preview_actor = None
-        self._set_view("top")
 
     def exit_place_mode(self, clear_marker=True):
         self.place_mode = False
@@ -1801,6 +1938,9 @@ class VTKViewer(QWidget):
         if self._poly_line_actor:
             self.renderer.RemoveActor(self._poly_line_actor)
             self._poly_line_actor = None
+        if self._poly_surface_actor:
+            self.renderer.RemoveActor(self._poly_surface_actor)
+            self._poly_surface_actor = None
 
         n = len(self._poly_points)
         if n < 2:
@@ -1832,6 +1972,32 @@ class VTKViewer(QWidget):
         self.renderer.AddActor(actor)
         self._poly_line_actor = actor
 
+        # 3个点以上时绘制透明填充平面
+        if n >= 3:
+            polygon = self._vtkPolygon()
+            polygon.GetPointIds().SetNumberOfIds(n)
+            for i in range(n):
+                polygon.GetPointIds().SetId(i, i)
+
+            poly_cells = self._vtkCellArray()
+            poly_cells.InsertNextCell(polygon)
+
+            surf_data = self._vtkPolyData()
+            surf_data.SetPoints(vtk_pts)
+            surf_data.SetPolys(poly_cells)
+
+            surf_mapper = self._vtkPolyDataMapper()
+            surf_mapper.SetInputData(surf_data)
+            surf_actor = self._vtkActor()
+            surf_actor.SetMapper(surf_mapper)
+            surf_actor.GetProperty().SetColor(0.2, 0.6, 1.0)
+            surf_actor.GetProperty().SetOpacity(0.25)
+            surf_actor.GetProperty().SetEdgeVisibility(True)
+            surf_actor.GetProperty().SetEdgeColor(0.3, 0.7, 1.0)
+            surf_actor.GetProperty().SetLineWidth(1)
+            self.renderer.AddActor(surf_actor)
+            self._poly_surface_actor = surf_actor
+
     def _clear_polygon(self):
         for a in self._poly_markers:
             self.renderer.RemoveActor(a)
@@ -1839,6 +2005,9 @@ class VTKViewer(QWidget):
         if self._poly_line_actor:
             self.renderer.RemoveActor(self._poly_line_actor)
             self._poly_line_actor = None
+        if self._poly_surface_actor:
+            self.renderer.RemoveActor(self._poly_surface_actor)
+            self._poly_surface_actor = None
 
     # ─── 巡检选点模式 ─────────────────────────────────────────
     def enter_inspect_mode(self):
@@ -1847,7 +2016,6 @@ class VTKViewer(QWidget):
             return
         self.inspect_mode = True
         self._poly_click_start = None
-        self._set_view("top")
         print("[Inspect] 左键点击添加巡检点，右键确认，Esc取消")
 
     def exit_inspect_mode(self, clear_markers=True):
@@ -1885,7 +2053,6 @@ class VTKViewer(QWidget):
             return
         self.line_mode = True
         self._poly_click_start = None
-        self._set_view("top")
         print("[Line] 左键点击选起点，再点选终点，右键确认，Esc取消")
 
     def exit_line_mode(self, clear_markers=True):
@@ -1899,6 +2066,7 @@ class VTKViewer(QWidget):
         if len(self._line_points) >= 2:
             return
         self._line_points.append(pos)
+        idx = len(self._line_points) - 1  # 0=起点, 1=终点
         sphere = self._vtkSphereSource()
         sphere.SetCenter(pos.tolist())
         sphere.SetRadius(0.3)
@@ -1907,13 +2075,15 @@ class VTKViewer(QWidget):
         m.SetInputConnection(sphere.GetOutputPort())
         a = self._vtkActor()
         a.SetMapper(m)
-        if len(self._line_points) == 1:
+        if idx == 0:
             a.GetProperty().SetColor(0.2, 0.8, 0.2)  # 绿色=起点
         else:
             a.GetProperty().SetColor(0.9, 0.2, 0.2)  # 红色=终点
         self.renderer.AddActor(a)
         self._line_markers.append(a)
         self.vtk_widget.GetRenderWindow().Render()
+        # 实时通知主窗口更新坐标
+        self.line_point_picked.emit(idx, pos.tolist())
         if len(self._line_points) == 2:
             print("[Line] 已选起点和终点，右键确认生成航线")
 
@@ -1944,7 +2114,7 @@ class VTKViewer(QWidget):
         self.vtk_widget.GetRenderWindow().Render()
 
     def _set_view(self, name):
-        if not self._vtk_available:
+        if not self._vtk_available or getattr(self, 'fpv_mode', False):
             return
         cam = self.renderer.GetActiveCamera()
         # 获取场景中心
@@ -1981,12 +2151,14 @@ class VTKViewer(QWidget):
 
     def _on_global_key_press(self, obj, event):
         key = self.interactor.GetKeyCode()
-        key_view_map = {
-            '1': 'top', '2': 'front', '3': 'side', '4': 'persp', '5': 'bottom',
-        }
-        if key in key_view_map:
-            self._set_view(key_view_map[key])
-        elif key == '\x1b':
+        # FPV模式下禁用视角切换快捷键
+        if not getattr(self, 'fpv_mode', False):
+            key_view_map = {
+                '1': 'top', '2': 'front', '3': 'side', '4': 'persp', '5': 'bottom',
+            }
+            if key in key_view_map:
+                self._set_view(key_view_map[key])
+        if key == '\x1b':
             if self.polygon_mode:
                 self.exit_polygon_mode()
             elif self.place_mode:
@@ -2008,8 +2180,8 @@ class VTKViewer(QWidget):
         ]
         for color, rot in axes_config:
             arrow = self._vtkArrowSource()
-            arrow.SetShaftRadius(0.03)
-            arrow.SetTipRadius(0.08)
+            arrow.SetShaftRadius(0.015)
+            arrow.SetTipRadius(0.04)
             arrow.SetTipLength(0.25)
             arrow.Update()
 
@@ -2028,6 +2200,7 @@ class VTKViewer(QWidget):
             a = self._vtkActor()
             a.SetMapper(m)
             a.GetProperty().SetColor(color)
+            a.GetProperty().SetLighting(False)
             self.renderer.AddActor(a)
             self._actors.append(a)
 
@@ -2061,6 +2234,7 @@ class VTKViewer(QWidget):
         a.SetMapper(m)
         a.GetProperty().SetColor(0.5, 0.5, 0.5)
         a.GetProperty().SetOpacity(0.6)
+        a.GetProperty().SetLighting(False)
         self.renderer.AddActor(a)
         self._actors.append(a)
 
