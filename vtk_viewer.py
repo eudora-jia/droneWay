@@ -1360,6 +1360,11 @@ class VTKViewer(QWidget):
         if not self._vtk_available or len(waypoints) == 0:
             return
 
+        # 清除多边形平面残留
+        if self._poly_surface_actor:
+            self.renderer.RemoveActor(self._poly_surface_actor)
+            self._poly_surface_actor = None
+
         to_remove = []
         for i, actor in enumerate(self._actors):
             if actor != self._cloud_actor and actor != self._fpv_drone_actor:

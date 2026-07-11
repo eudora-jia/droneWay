@@ -811,11 +811,8 @@ class MainWindow(QMainWindow):
         poly = np.array(pts)
         mn = poly.min(axis=0)
         mx = poly.max(axis=0)
-        if self.points is not None and len(self.points) > 0:
-            z_val = max(self.points[:, 2].max() + 3, 2.0)
-        else:
-            z_val = 2.0
         self._polygon_vertices = pts
+        self.viewer._clear_polygon()
         self.generate_flat_route()
         print(f"[Polygon] {len(pts)} vertices, bbox=[{mn[0]:.1f},{mx[0]:.1f}]x[{mn[1]:.1f},{mx[1]:.1f}]")
 
