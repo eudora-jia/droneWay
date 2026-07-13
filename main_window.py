@@ -37,9 +37,9 @@ class MainWindow(QMainWindow):
             "act_load_route": "加载ROS航线", "act_copy_route": "复制ROS航线到剪贴板",
             "act_export_maicro": "导出maicro航线文件",
             "act_copy_maicro": "复制maicro航线到剪贴板",
-            "act_clip": "裁剪框", "menu_render": "渲染模式", "menu_size": "点云大小",
-            "menu_upsample": "渲染增密",
-            "menu_color": "颜色方案",
+            "act_clip": "裁剪框", "menu_render": "点云渲染模式", "menu_size": "点云大小",
+            "menu_upsample": "点云渲染增密",
+            "menu_color": "点云颜色方案",
             "color_original": "原色", "color_height": "高度着色",
             "color_thermal": "热力图", "color_grayscale": "灰度",
             "color_red": "纯红", "color_green": "纯绿", "color_blue": "纯蓝",
@@ -177,15 +177,20 @@ class MainWindow(QMainWindow):
         }
         self._camera_name = "M4T 中长焦"
         self._camera_fov = 35
-        self._forward_overlap = 60
-        self._side_overlap = 30
+        self._camera_zoom = 3.0  # 默认3倍变焦
+        self._camera_zoom_map = {
+            "M4T 广角": 1.0,
+            "M4T 中长焦": 3.0,
+            "M4T 长焦": 7.0,
+        }
+        self._forward_overlap = 50
+        self._side_overlap = 50
 
         # 云台参数
-        self._gimbal_pitch = -90.0   # 俯仰角（度），-90=垂直朝下
         self._gimbal_yaw = 0.0       # 偏航角（度），0=与机头同向
         self._gimbal_stabilized = True  # 是否稳定
-        self._gimbal_pitch_min = -90.0  # 云台俯仰最小值（3倍变焦）
-        self._gimbal_pitch_max = 55.0   # 云台俯仰最大值（3倍变焦）
+        self._gimbal_pitch_min = -90.0  # 云台俯仰最小值（M4T广角）
+        self._gimbal_pitch_max = 55.0   # 云台俯仰最大值（M4T广角）
 
         # ─── 菜单栏 ───
         self._init_menu_bar()
@@ -214,6 +219,10 @@ class MainWindow(QMainWindow):
         self._act_load_pc = QAction("加载点云", self)
         self._act_load_pc.triggered.connect(self.load_point_cloud)
         self._file_menu.addAction(self._act_load_pc)
+
+        self._act_load_stl = QAction("加载STL模型", self)
+        self._act_load_stl.triggered.connect(self.load_stl_mesh)
+        self._file_menu.addAction(self._act_load_stl)
 
         self._file_menu.addSeparator()
 
@@ -248,7 +257,7 @@ class MainWindow(QMainWindow):
 
         self._view_menu.addSeparator()
 
-        self._render_menu = self._view_menu.addMenu("渲染模式")
+        self._render_menu = self._view_menu.addMenu("点云渲染模式")
         self._render_mode_group = QActionGroup(self)
         self._render_mode_acts = {}
         for name in ["自动", "球体", "立方体", "像素", "圆片"]:
@@ -269,7 +278,7 @@ class MainWindow(QMainWindow):
             self._size_menu.addAction(act)
 
         self._view_menu.addSeparator()
-        self._upsample_menu = self._view_menu.addMenu("渲染增密")
+        self._upsample_menu = self._view_menu.addMenu("点云渲染增密")
         self._upsample_group = QActionGroup(self)
         self._upsample_acts = {}
         self._upsample_factor = 0  # 0=关闭, 1=2倍, 2=5倍, 3=10倍
@@ -284,7 +293,7 @@ class MainWindow(QMainWindow):
             self._upsample_acts[factor] = act
 
         # 颜色方案
-        self._color_menu = self._view_menu.addMenu("颜色方案")
+        self._color_menu = self._view_menu.addMenu("点云颜色方案")
         self._color_group = QActionGroup(self)
         self._color_acts = {}
         self._color_scheme = "original"  # 默认原色
@@ -301,6 +310,18 @@ class MainWindow(QMainWindow):
 
         self._view_menu.addSeparator()
 
+        # STL透明度
+        self._stl_opacity_menu = self._view_menu.addMenu("STL透明度")
+        self._stl_opacity_group = QActionGroup(self)
+        for name, val in [("不透明", 1.0), ("75%", 0.75), ("50%", 0.5), ("25%", 0.25), ("隐藏", 0.0)]:
+            act = QAction(name, self)
+            act.setCheckable(True)
+            act.setActionGroup(self._stl_opacity_group)
+            if val == 1.0:
+                act.setChecked(True)
+            act.triggered.connect(lambda checked, v=val: self.viewer.set_stl_opacity(v))
+            self._stl_opacity_menu.addAction(act)
+
         self._act_fpv = QAction("FPV无人机视角 (V)", self)
         self._act_fpv.setCheckable(True)
         self._act_fpv.triggered.connect(self._toggle_fpv_mode)
@@ -309,6 +330,27 @@ class MainWindow(QMainWindow):
         self._act_fpv_pos = QAction("无人机设置", self)
         self._act_fpv_pos.triggered.connect(self._set_fpv_start_pos)
         self._view_menu.addAction(self._act_fpv_pos)
+
+        # ─── 航线管理 ───
+        self._route_menu = menubar.addMenu("航线管理")
+
+        self._act_show_heading = QAction("显示机头方向", self)
+        self._act_show_heading.setCheckable(True)
+        self._act_show_heading.setChecked(True)
+        self._act_show_heading.triggered.connect(self._toggle_heading)
+        self._route_menu.addAction(self._act_show_heading)
+
+        self._act_show_gimbal = QAction("显示云台方向", self)
+        self._act_show_gimbal.setCheckable(True)
+        self._act_show_gimbal.setChecked(False)
+        self._act_show_gimbal.triggered.connect(self._toggle_gimbal_dir)
+        self._route_menu.addAction(self._act_show_gimbal)
+
+        self._route_menu.addSeparator()
+
+        self._act_anim_play = QAction("航线动画播放", self)
+        self._act_anim_play.triggered.connect(self._toggle_route_animation)
+        self._route_menu.addAction(self._act_anim_play)
 
         # ─── 设置 ───
         self._settings_menu = menubar.addMenu("设置")
@@ -711,6 +753,10 @@ class MainWindow(QMainWindow):
         il.addWidget(self.btn_gen_inspect, 4, 0, 1, 4)
 
         self._inspect_target_points = []  # 巡检目标点列表
+        self._inspect_target_normals = []  # 每个目标点对应的表面法线
+        self._line_start_normal = None     # 直线起点法线
+        self._line_end_normal = None       # 直线终点法线
+        self._polygon_normals = []         # 多边形顶点表面法线
         self.viewer.inspect_points_confirmed.connect(self._on_inspect_confirmed)
         self.viewer.line_points_confirmed.connect(self._on_line_confirmed)
         self.viewer.line_point_picked.connect(self._on_line_point_picked)
@@ -729,11 +775,9 @@ class MainWindow(QMainWindow):
         rl = QVBoxLayout(grp_route)
         self.lbl_info = QLabel("航点: 0")
         rl.addWidget(self.lbl_info)
-
-        self.chk_show_heading = QCheckBox("显示机头方向")
-        self.chk_show_heading.setChecked(True)
-        self.chk_show_heading.stateChanged.connect(self._toggle_heading)
-        rl.addWidget(self.chk_show_heading)
+        self.lbl_route_time = QLabel("")
+        self.lbl_route_time.setStyleSheet("color: #555; font-size: 11px;")
+        rl.addWidget(self.lbl_route_time)
 
         ctrl_layout.addWidget(grp_route)
         self._route_widgets.append(grp_route)
@@ -808,11 +852,17 @@ class MainWindow(QMainWindow):
         self.viewer.enter_polygon_mode()
 
     def _on_polygon_finished(self, pts):
-        poly = np.array(pts)
+        # pts 为 [(pos, normal), ...] 对
+        positions = [p for p, n in pts]
+        normals = [n for p, n in pts]
+        poly = np.array(positions)
         mn = poly.min(axis=0)
         mx = poly.max(axis=0)
-        self._polygon_vertices = pts
+        self._polygon_vertices = positions
+        # 存储多边形顶点的表面法线（拾取时的精确三角面法线）
+        self._polygon_normals = [np.array(n) for n in normals]
         self.viewer._clear_polygon()
+        self._calc_overlap_spacing()
         self.generate_flat_route()
         print(f"[Polygon] {len(pts)} vertices, bbox=[{mn[0]:.1f},{mx[0]:.1f}]x[{mn[1]:.1f},{mx[1]:.1f}]")
 
@@ -946,6 +996,23 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "错误", f"加载点云失败:\n{str(e)}")
         finally:
             self.progress_bar.setVisible(False)
+
+    def load_stl_mesh(self):
+        """加载STL网格模型"""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "打开STL文件", "", "STL 文件 (*.stl);;所有文件 (*)"
+        )
+        if not path:
+            return
+        ok = self.viewer.add_stl_mesh(path)
+        if ok:
+            self.statusBar().showMessage(f"已加载STL: {os.path.basename(path)}")
+            # STL 不需要点云相关菜单
+            self._render_menu.setEnabled(False)
+            self._upsample_menu.setEnabled(False)
+            self._color_menu.setEnabled(False)
+        else:
+            QMessageBox.warning(self, "错误", "加载STL失败")
 
     def _ensure_normals(self):
         """确保法线已估算（延迟执行，只在需要时调用）"""
@@ -1105,8 +1172,10 @@ class MainWindow(QMainWindow):
 
     def _toggle_fpv_mode(self):
         """切换FPV无人机视角模式"""
-        if self.points is None or len(self.points) == 0:
-            QMessageBox.information(self, "提示", "请先加载点云")
+        has_cloud = self.points is not None and len(self.points) > 0
+        has_stl = self.viewer._stl_actor is not None
+        if not has_cloud and not has_stl:
+            QMessageBox.information(self, "提示", "请先加载点云或STL模型")
             self._act_fpv.setChecked(False)
             return
 
@@ -1287,16 +1356,46 @@ class MainWindow(QMainWindow):
         edt_fov.setStyleSheet("QLineEdit { background: #eee; color: #666; }")
         layout.addWidget(edt_fov, 2, 1)
 
+        layout.addWidget(QLabel("变焦(倍):"), 2, 2)
+        edt_zoom = QLineEdit(f"{self._camera_zoom:.1f}")
+        layout.addWidget(edt_zoom, 2, 3)
+
+        def _calc_effective_fov(default_fov, default_zoom, new_zoom):
+            """default_fov: 默认变焦下的FOV, default_zoom: 默认变焦倍数, new_zoom: 目标变焦"""
+            import math
+            if new_zoom <= 0:
+                new_zoom = 1.0
+            # 先算出1倍时的基础FOV: base = 2*atan(tan(default/2) * default_zoom)
+            base_half = math.atan(math.tan(math.radians(default_fov / 2)) * default_zoom)
+            # 再算目标变焦下的FOV
+            return math.degrees(2 * math.atan(math.tan(base_half) / new_zoom))
+
+        def on_zoom_changed(text):
+            try:
+                zoom = float(text)
+                if zoom <= 0:
+                    return
+                name = cmb_camera.currentText()
+                default_fov = self._camera_fov_map.get(name, 80)
+                default_zoom = self._camera_zoom_map.get(name, 1.0)
+                eff_fov = _calc_effective_fov(default_fov, default_zoom, zoom)
+                edt_fov.setText(f"{eff_fov:.1f}")
+            except ValueError:
+                pass
+        edt_zoom.textChanged.connect(on_zoom_changed)
+
         # 各相机对应的云台限位 [min, max]
         gimbal_limits_map = {
             "M4T 广角": [-120.0, 30.0],
-            "M4T 中长焦": [-90.0, 55.0],    # 3倍变焦
-            "M4T 长焦": [-90.0, 70.0],       # 7倍变焦
+            "M4T 中长焦": [-90.0, 55.0],
+            "M4T 长焦": [-90.0, 70.0],
         }
 
         def on_camera_changed(name):
-            fov = self._camera_fov_map.get(name, 80)
-            edt_fov.setText(str(fov))
+            default_fov = self._camera_fov_map.get(name, 80)
+            default_zoom = self._camera_zoom_map.get(name, 1.0)
+            edt_zoom.setText(f"{default_zoom:.1f}")
+            edt_fov.setText(f"{default_fov:.1f}")
             limits = gimbal_limits_map.get(name)
             if limits:
                 edt_pitch_min.setText(f"{limits[0]:.1f}")
@@ -1313,38 +1412,31 @@ class MainWindow(QMainWindow):
         # ── 云台参数 ──
         layout.addWidget(QLabel("── 云台 ──"), 4, 0, 1, 4)
 
-        layout.addWidget(QLabel("俯仰角(°):"), 5, 0)
-        edt_pitch = QLineEdit(f"{self._gimbal_pitch:.1f}")
-        layout.addWidget(edt_pitch, 5, 1)
-        lbl_pitch_hint = QLabel("(-90=朝下, 0=水平)")
-        lbl_pitch_hint.setStyleSheet("color: #888; font-size: 10px;")
-        layout.addWidget(lbl_pitch_hint, 5, 2, 1, 2)
-
-        layout.addWidget(QLabel("偏航角(°):"), 6, 0)
+        layout.addWidget(QLabel("偏航角(°):"), 5, 0)
         edt_yaw = QLineEdit(f"{self._gimbal_yaw:.1f}")
-        layout.addWidget(edt_yaw, 6, 1)
+        layout.addWidget(edt_yaw, 5, 1)
         lbl_yaw_hint = QLabel("(0=与机头同向)")
         lbl_yaw_hint.setStyleSheet("color: #888; font-size: 10px;")
-        layout.addWidget(lbl_yaw_hint, 6, 2, 1, 2)
+        layout.addWidget(lbl_yaw_hint, 5, 2, 1, 2)
 
-        layout.addWidget(QLabel("俯仰限位(°):"), 7, 0)
+        layout.addWidget(QLabel("俯仰限位(°):"), 6, 0)
         edt_pitch_min = QLineEdit(f"{self._gimbal_pitch_min:.1f}")
-        layout.addWidget(edt_pitch_min, 7, 1)
-        layout.addWidget(QLabel("~"), 7, 2)
+        layout.addWidget(edt_pitch_min, 6, 1)
+        layout.addWidget(QLabel("~"), 6, 2)
         edt_pitch_max = QLineEdit(f"{self._gimbal_pitch_max:.1f}")
-        layout.addWidget(edt_pitch_max, 7, 3)
+        layout.addWidget(edt_pitch_max, 6, 3)
 
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         btns.accepted.connect(dlg.accept)
         btns.rejected.connect(dlg.reject)
-        layout.addWidget(btns, 8, 0, 1, 4)
+        layout.addWidget(btns, 7, 0, 1, 4)
 
         if dlg.exec_() == QDialog.Accepted:
             self._camera_name = cmb_camera.currentText()
-            self._camera_fov = int(edt_fov.text())
+            self._camera_fov = float(edt_fov.text())
+            self._camera_zoom = float(edt_zoom.text())
             self._forward_overlap = int(edt_fwd.text())
             self._side_overlap = int(edt_side.text())
-            self._gimbal_pitch = float(edt_pitch.text())
             self._gimbal_yaw = float(edt_yaw.text())
             self._gimbal_pitch_min = float(edt_pitch_min.text())
             self._gimbal_pitch_max = float(edt_pitch_max.text())
@@ -1676,6 +1768,10 @@ class MainWindow(QMainWindow):
                 "清除": "Clear",
                 "自动算间距": "Auto Calc",
                 "显示机头方向": "Show Heading",
+                "显示云台方向": "Show Gimbal",
+                "航线动画播放": "Route Animation",
+                "暂停动画": "Pause Animation",
+                "停止动画": "Stop Animation",
                 "航点: 0": "Waypoints: 0",
                 "未加载点云": "No point cloud loaded",
             }
@@ -1867,8 +1963,6 @@ class MainWindow(QMainWindow):
     def generate_flat_route(self):
         try:
             inspect_dist = float(self.edt_flat_inspect_dist.text())
-            spacing = float(self.edt_spacing.text())
-            wp_spacing = float(self.edt_wp_spacing.text())
             speed = float(self.edt_flat_speed.text())
         except ValueError:
             QMessageBox.warning(self, "输入错误", "请输入有效数字")
@@ -1878,8 +1972,18 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "输入错误", "巡检距离必须为正数")
             return
 
+        # 自动计算间距（如果还是默认的"自动"）
+        if self.edt_spacing.text() == "自动" or self.edt_wp_spacing.text() == "自动":
+            self._calc_overlap_spacing()
+        try:
+            spacing = float(self.edt_spacing.text())
+            wp_spacing = float(self.edt_wp_spacing.text())
+        except ValueError:
+            QMessageBox.warning(self, "输入错误", "间距计算失败，请手动设置")
+            return
+
         if spacing == 0 or wp_spacing == 0:
-            QMessageBox.warning(self, "提示", "请先点击'自动算间距'计算航点间距")
+            QMessageBox.warning(self, "提示", "间距不能为0")
             return
 
         if not hasattr(self, '_polygon_vertices') or not self._polygon_vertices:
@@ -1888,12 +1992,7 @@ class MainWindow(QMainWindow):
 
         poly = np.array(self._polygon_vertices)
 
-        # 在多边形区域内采样点云表面点作为目标
-        if self.points is None or len(self.points) == 0:
-            QMessageBox.warning(self, "提示", "请先加载点云")
-            return
-
-        # 找到多边形区域内的点云点
+        # 多边形内判断（2D XY）
         def point_in_polygon_2d(points_2d, polygon):
             n = len(polygon)
             inside = np.zeros(len(points_2d), dtype=bool)
@@ -1909,118 +2008,137 @@ class MainWindow(QMainWindow):
                 j = i
             return inside
 
-        # 筛选多边形区域内的点
-        mask = point_in_polygon_2d(self.points[:, :2], poly[:, :2])
-        region_points = self.points[mask]
+        # 计算多边形平面法线（叉积，朝向相机）
+        if len(poly) >= 3:
+            e1 = poly[1] - poly[0]
+            e2 = poly[2] - poly[0]
+            poly_normal = np.cross(e1, e2)
+            nrm = np.linalg.norm(poly_normal)
+            if nrm > 1e-10:
+                poly_normal /= nrm
+            else:
+                poly_normal = np.array([0, 0, 1.0])
+        else:
+            poly_normal = np.array([0, 0, 1.0])
+        cam = self.viewer.renderer.GetActiveCamera()
+        cam_pos = np.array(cam.GetPosition(), dtype=float)
+        poly_center = poly.mean(axis=0)
+        if np.dot(poly_normal, cam_pos - poly_center) < 0:
+            poly_normal = -poly_normal
+        print(f"[FlatRoute] poly_normal=({poly_normal[0]:.3f},{poly_normal[1]:.3f},{poly_normal[2]:.3f})")
 
-        if len(region_points) == 0:
-            QMessageBox.warning(self, "提示", "多边形区域内无点云点")
-            return
-
-        # 计算多边形主方向（扫描方向）
+        # 确定扫描主方向（多边形最长边方向投影到多边形平面）
         n_poly = len(poly)
         max_len = 0
-        main_dir = np.array([1.0, 0.0])
+        raw_dir = np.array([1.0, 0.0, 0.0])
         for i in range(n_poly):
-            edge = poly[(i + 1) % n_poly][:2] - poly[i][:2]
+            edge = poly[(i + 1) % n_poly] - poly[i]
             length = np.linalg.norm(edge)
             if length > max_len:
                 max_len = length
-                main_dir = edge / length
+                raw_dir = edge / length
+        # 移除法线分量，得到平面内的方向
+        main_dir_3d = raw_dir - np.dot(raw_dir, poly_normal) * poly_normal
+        nrm = np.linalg.norm(main_dir_3d)
+        if nrm > 1e-10:
+            main_dir_3d /= nrm
+        else:
+            main_dir_3d = np.array([1.0, 0.0, 0.0])
+        # 扫描副方向 = 法线 × 主方向
+        cross_dir_3d = np.cross(poly_normal, main_dir_3d)
+        nrm = np.linalg.norm(cross_dir_3d)
+        if nrm > 1e-10:
+            cross_dir_3d /= nrm
 
-        # 构建旋转矩阵
-        cos_a = main_dir[0]
-        sin_a = main_dir[1]
-        R_to_axis = np.array([[cos_a, sin_a], [-sin_a, cos_a]])
-        R_from_axis = np.array([[cos_a, -sin_a], [sin_a, cos_a]])
+        # 在多边形平面内生成均匀网格
+        # 投影多边形顶点到 (main_dir, cross_dir) 2D 坐标系
+        poly_2d = np.column_stack([
+            np.dot(poly - poly_center, main_dir_3d),
+            np.dot(poly - poly_center, cross_dir_3d)
+        ])
+        u_min, u_max = poly_2d[:, 0].min(), poly_2d[:, 0].max()
+        v_min, v_max = poly_2d[:, 1].min(), poly_2d[:, 1].max()
 
-        # 旋转区域点到轴对齐坐标系
-        region_rot = np.dot(region_points[:, :2], R_to_axis.T)
-        ymin, ymax = region_rot[:, 1].min(), region_rot[:, 1].max()
+        # 生成均匀网格点，过滤在多边形内的
+        grid_targets = []
+        v = v_min + spacing * 0.5
+        row_idx = 0
+        while v <= v_max:
+            row_u = np.arange(u_min + wp_spacing * 0.5, u_max, wp_spacing)
+            if row_idx % 2 == 1:
+                row_u = row_u[::-1]  # 蛇形扫描
+            for u in row_u:
+                pt_2d = np.array([u, v])
+                # 判断是否在多边形内
+                inside = False
+                j = len(poly_2d) - 1
+                for i in range(len(poly_2d)):
+                    yi, xi = poly_2d[i][1], poly_2d[i][0]
+                    yj, xj = poly_2d[j][1], poly_2d[j][0]
+                    if ((yi > pt_2d[1]) != (yj > pt_2d[1])) and \
+                       (pt_2d[0] < (xj - xi) * (pt_2d[1] - yi) / (yj - yi) + xi):
+                        inside = not inside
+                    j = i
+                if inside:
+                    # 2D → 3D：在多边形平面上
+                    target_3d = poly_center + u * main_dir_3d + v * cross_dir_3d
+                    grid_targets.append(target_3d)
+            v += spacing
+            row_idx += 1
 
-        # 沿Y方向分层采样
-        self.waypoints = []
-        direction = 1
-        y = ymin
-        y_step = spacing
+        print(f"[FlatRoute] grid: {len(grid_targets)} targets, spacing={spacing:.2f}, wp_spacing={wp_spacing:.2f}")
+        region_points = np.array(grid_targets) if grid_targets else np.empty((0, 3))
 
-        # 获取KDTree用于法线估计
+        if len(region_points) == 0:
+            QMessageBox.warning(self, "提示", "多边形区域内无数据点")
+            return
+
+        # 获取KDTree用于碰撞检测
         tree = self._get_kdtree()
 
-        while y <= ymax + y_step * 0.5:
-            # 找到当前层附近的点
-            layer_mask = np.abs(region_rot[:, 1] - y) < y_step * 0.5
-            layer_points = region_points[layer_mask]
+        self.waypoints = []
+        for target in region_points:
+            normal = poly_normal
+            drone_pos = target + normal * inspect_dist
 
-            if len(layer_points) == 0:
-                y += y_step
-                continue
+            # 碰撞检测
+            if tree is not None:
+                dist, _ = tree.query(drone_pos)
+                if dist < 1.0:
+                    safe_pos, _ = self._find_safe_position(target, normal, tree, 1.0, inspect_dist)
+                    if safe_pos is not None:
+                        drone_pos = safe_pos
 
-            # 按X排序
-            layer_rot = region_rot[layer_mask]
-            sort_idx = np.argsort(layer_rot[:, 0])
-            if direction == -1:
-                sort_idx = sort_idx[::-1]
+            # 云台俯仰角：由航点→目标点几何关系计算
+            gimbal_pitch = self._calc_gimbal_pitch(drone_pos, target)
+            gimbal_pitch = np.clip(gimbal_pitch, self._gimbal_pitch_min, self._gimbal_pitch_max)
 
-            # 沿X方向采样
-            sorted_points = layer_points[sort_idx]
-            sorted_rot = layer_rot[sort_idx]
-
-            # 按航点间距采样
-            selected = [sorted_points[0]]
-            last_x = sorted_rot[0, 0]
-            for i in range(1, len(sorted_points)):
-                if abs(sorted_rot[i, 0] - last_x) >= wp_spacing:
-                    selected.append(sorted_points[i])
-                    last_x = sorted_rot[i, 0]
-
-            for target in selected:
-                # 估计法线
-                normal = self._estimate_normal(target)
-
-                # 无人机位置 = 目标点 + 法线 × 巡检距离
-                drone_pos = target + normal * inspect_dist
-
-                # 碰撞检测
-                if tree is not None:
-                    dist, _ = tree.query(drone_pos)
-                    if dist < 1.0:
-                        safe_pos, _ = self._find_safe_position(target, normal, tree, 1.0, inspect_dist)
-                        if safe_pos is not None:
-                            drone_pos = safe_pos
-
-                # 云台俯仰角
-                look_dir = target - drone_pos
-                look_len = np.linalg.norm(look_dir)
-                if look_len > 1e-10:
-                    look_unit = look_dir / look_len
-                    gimbal_pitch = np.degrees(np.arcsin(np.clip(look_unit[2], -1, 1)))
-                else:
-                    gimbal_pitch = self._gimbal_pitch
-
-                gimbal_pitch = np.clip(gimbal_pitch, self._gimbal_pitch_min, self._gimbal_pitch_max)
-
-                quat = look_at_quaternion(target, drone_pos)
-                self.waypoints.append({
-                    'pos': drone_pos,
-                    'quat': quat,
-                    'speed': speed,
-                    'action': 'fly',
-                    'gimbal_pitch': gimbal_pitch,
-                    'target_pos': target.copy()
-                })
-
-            y += y_step
-            direction *= -1
+            quat = look_at_quaternion(target, drone_pos)
+            self.waypoints.append({
+                'pos': drone_pos,
+                'quat': quat,
+                'speed': speed,
+                'action': 'fly',
+                'gimbal_pitch': gimbal_pitch,
+                'target_pos': target.copy()
+            })
 
         if not self.waypoints:
             QMessageBox.warning(self, "提示", "多边形区域内无有效航点")
             return
+        print(f"[FlatRoute] main_dir=({main_dir_3d[0]:.3f},{main_dir_3d[1]:.3f},{main_dir_3d[2]:.3f}), spacing={spacing:.2f}, wp_spacing={wp_spacing:.2f}")
+        print(f"[FlatRoute] generated {len(self.waypoints)} waypoints")
+        for i, wp in enumerate(self.waypoints[:5]):
+            t = wp.get('target_pos', wp['pos'])
+            print(f"  wp{i}: pos=({wp['pos'][0]:.1f},{wp['pos'][1]:.1f},{wp['pos'][2]:.1f}) target=({t[0]:.1f},{t[1]:.1f},{t[2]:.1f})")
 
         self._display_route()
 
     # ─── 生成圆柱体航线 ───
     def generate_cylinder_route(self):
+        # 自动计算步距（如果还是默认的"自动"）
+        if self.edt_cyl_astep.text() == "自动" or self.edt_cyl_vstep.text() == "自动":
+            self._calc_cyl_spacing()
         try:
             cx = float(self.edt_cyl_cx.text())
             cy = float(self.edt_cyl_cy.text())
@@ -2056,6 +2174,9 @@ class MainWindow(QMainWindow):
 
         route_type = self.cbo_cyl_type.currentText()
         self.waypoints = []
+        tree = self._get_kdtree()
+        safe_dist = self.viewer._safe_distance
+        collision_dist = safe_dist * 0.5
 
         if route_type == "螺旋线":
             num_turns = max(1, int(h / vstep))
@@ -2071,8 +2192,23 @@ class MainWindow(QMainWindow):
                 ry = cy + radius * np.sin(angle)
                 pos = np.array([rx, ry, z])
 
+                # 碰撞检测：航点不能穿模
+                if tree is not None:
+                    dist, _ = tree.query(pos)
+                    if dist < collision_dist:
+                        # 沿径向向外推离
+                        outward = np.array([rx - cx, ry - cy, 0.0])
+                        out_norm = np.linalg.norm(outward)
+                        if out_norm > 1e-10:
+                            outward = outward / out_norm
+                        else:
+                            outward = np.array([1.0, 0.0, 0.0])
+                        safe_pos, _ = self._find_safe_position(pos, outward, tree, collision_dist, 0.0)
+                        if safe_pos is not None:
+                            pos = safe_pos
+
                 # 机头朝向圆柱中心（径向内法线）
-                inward = np.array([cx - rx, cy - ry, 0.0])
+                inward = np.array([cx - pos[0], cy - pos[1], 0.0])
                 inward_norm = np.linalg.norm(inward)
                 if inward_norm > 1e-10:
                     heading = inward / inward_norm
@@ -2080,8 +2216,9 @@ class MainWindow(QMainWindow):
                     heading = np.array([1.0, 0.0, 0.0])
                 target = pos + heading
                 quat = look_at_quaternion(target, pos)
-                cyl_center = np.array([cx, cy, z])
+                cyl_center = np.array([cx, cy, pos[2]])
                 gimbal_pitch = self._calc_gimbal_pitch(pos, cyl_center)
+                gimbal_pitch = np.clip(gimbal_pitch, self._gimbal_pitch_min, self._gimbal_pitch_max)
                 self.waypoints.append({
                     'pos': pos,
                     'quat': quat,
@@ -2095,7 +2232,7 @@ class MainWindow(QMainWindow):
             num_cols = max(1, int(360 / max(1, astep)))
             num_layers = max(1, int(h / vstep))
 
-            for col in range(num_cols):  # 不含num_cols，因为2π=0与col=0重复
+            for col in range(num_cols):
                 angle = start_angle + (col / num_cols) * 2 * np.pi
                 rx = cx + radius * np.cos(angle)
                 ry = cy + radius * np.sin(angle)
@@ -2117,10 +2254,26 @@ class MainWindow(QMainWindow):
                 for layer in layers_range:
                     z = cz + layer * vstep
                     pos = np.array([rx, ry, z])
+
+                    # 碰撞检测
+                    if tree is not None:
+                        dist, _ = tree.query(pos)
+                        if dist < collision_dist:
+                            outward = np.array([rx - cx, ry - cy, 0.0])
+                            out_norm = np.linalg.norm(outward)
+                            if out_norm > 1e-10:
+                                outward = outward / out_norm
+                            else:
+                                outward = np.array([1.0, 0.0, 0.0])
+                            safe_pos, _ = self._find_safe_position(pos, outward, tree, collision_dist, 0.0)
+                            if safe_pos is not None:
+                                pos = safe_pos
+
                     target = pos + heading
                     quat = look_at_quaternion(target, pos)
-                    cyl_center = np.array([cx, cy, z])
+                    cyl_center = np.array([cx, cy, pos[2]])
                     gimbal_pitch = self._calc_gimbal_pitch(pos, cyl_center)
+                    gimbal_pitch = np.clip(gimbal_pitch, self._gimbal_pitch_min, self._gimbal_pitch_max)
                     self.waypoints.append({
                         'pos': pos,
                         'quat': quat,
@@ -2169,22 +2322,18 @@ class MainWindow(QMainWindow):
         n_pts = max(2, int(length / spacing) + 1)
         tree = self._get_kdtree()
 
-        # === 确定偏移方向：视野这一侧 ===
+        # === 确定偏移方向：优先用拾取时存储的法线 ===
         mid_point = (p1 + p2) / 2.0
-        normal = self._estimate_normal(mid_point)
-
-        # 获取观察者位置（FPV模式用无人机位置，普通模式用相机位置）
-        if self.viewer.fpv_mode:
-            viewer_pos = np.array(self.viewer._fpv_pos, dtype=float)
+        if hasattr(self, '_line_start_normal') and hasattr(self, '_line_end_normal'):
+            # 插值法线：起点法线和终点法线之间插值
+            normal = (self._line_start_normal + self._line_end_normal)
+            nrm = np.linalg.norm(normal)
+            if nrm > 1e-10:
+                normal = normal / nrm
+            else:
+                normal = self._estimate_normal(mid_point)
         else:
-            cam = self.viewer.renderer.GetActiveCamera()
-            viewer_pos = np.array(cam.GetPosition(), dtype=float)
-
-        # 确保法线朝向观察者（视野这一侧）
-        to_viewer = viewer_pos - mid_point
-        if np.dot(normal, to_viewer) < 0:
-            normal = -normal
-
+            normal = self._estimate_normal(mid_point)
         offset_dir = normal / np.linalg.norm(normal)
 
         # === 确定偏移距离：约束条件驱动 ===
@@ -2231,17 +2380,8 @@ class MainWindow(QMainWindow):
                     if safe_pos is not None:
                         drone_pos = safe_pos
 
-            # 云台俯仰角：从无人机指向目标点
-            look_dir = target - drone_pos
-            look_len = np.linalg.norm(look_dir)
-            if look_len > 1e-10:
-                look_unit = look_dir / look_len
-                # 俯仰角 = arcsin(dz / dist)，正值向上，负值向下
-                gimbal_pitch = np.degrees(np.arcsin(np.clip(look_unit[2], -1, 1)))
-            else:
-                gimbal_pitch = self._gimbal_pitch
-
-            # 云台限位检查
+            # 云台俯仰角：由航点→目标点几何关系计算
+            gimbal_pitch = self._calc_gimbal_pitch(drone_pos, target)
             gimbal_pitch = np.clip(gimbal_pitch, self._gimbal_pitch_min, self._gimbal_pitch_max)
 
             quat = look_at_quaternion(target, drone_pos)
@@ -2262,8 +2402,10 @@ class MainWindow(QMainWindow):
         self.viewer.enter_inspect_mode()
 
     def _on_inspect_confirmed(self, pts):
-        """巡检点选点确认回调"""
-        self._inspect_target_points = [np.array(p) for p in pts]
+        """巡检点选点确认回调，pts 为 [(pos, normal), ...] 对"""
+        self._inspect_target_points = [np.array(p) for p, n in pts]
+        # 存储每个目标点对应的表面法线（拾取时精确计算的三角面法线）
+        self._inspect_target_normals = [np.array(n) for p, n in pts]
         self.lst_inspect.clear()
         for i, p in enumerate(self._inspect_target_points):
             self.lst_inspect.addItem(f"P{i+1}: ({p[0]:.1f}, {p[1]:.1f}, {p[2]:.1f})")
@@ -2271,6 +2413,7 @@ class MainWindow(QMainWindow):
 
     def _clear_inspect_points(self):
         self._inspect_target_points.clear()
+        self._inspect_target_normals.clear()
         self.lst_inspect.clear()
         self.viewer._clear_inspect_points()
         self.viewer.vtk_widget.GetRenderWindow().Render()
@@ -2299,9 +2442,13 @@ class MainWindow(QMainWindow):
                 pass
 
     def _on_line_confirmed(self, pts):
-        """直线起终点选点确认回调"""
+        """直线起终点选点确认回调，pts 为 [(pos, normal), ...]"""
         if len(pts) == 2:
-            s, e = pts[0], pts[1]
+            s, s_normal = np.array(pts[0][0]), np.array(pts[0][1])
+            e, e_normal = np.array(pts[1][0]), np.array(pts[1][1])
+            # 存储法线供 generate_line_route 使用
+            self._line_start_normal = s_normal
+            self._line_end_normal = e_normal
             self.edt_line_x1.setText(f"{s[0]:.1f}")
             self.edt_line_y1.setText(f"{s[1]:.1f}")
             self.edt_line_z1.setText(f"{s[2]:.1f}")
@@ -2322,20 +2469,38 @@ class MainWindow(QMainWindow):
             self.generate_line_route()
 
     def _estimate_normal(self, point):
-        """用 PCA 估计点云在该位置的法线方向"""
-        tree = self._get_kdtree()
-        if tree is None or len(self.points) < 3:
+        """获取表面法线：优先STL几何法线，回退PCA估算"""
+        # 优先：STL 网格最近顶点法线（几何法线，不做翻转）
+        if self.viewer._stl_polydata is not None:
+            normal = self.viewer.get_stl_normal(point)
+            if normal is not None:
+                return normal
+
+        # 获取观察者位置（仅PCA回退时用于朝向判断）
+        if self.viewer.fpv_mode:
+            viewer_pos = np.array(self.viewer._fpv_pos, dtype=float)
+        else:
+            cam = self.viewer.renderer.GetActiveCamera()
+            viewer_pos = np.array(cam.GetPosition(), dtype=float)
+
+        # 回退：PCA 估算（优先用STL顶点，回退点云）
+        stl_pts = getattr(self.viewer, '_stl_points_np', None)
+        if stl_pts is not None and len(stl_pts) >= 3:
+            pca_points = stl_pts
+        elif self.points is not None and len(self.points) >= 3:
+            pca_points = self.points
+        else:
             return np.array([0.0, 0.0, 1.0])
-        k = max(3, min(30, len(self.points)))
+        from scipy.spatial import cKDTree
+        tree = cKDTree(pca_points)
+        k = max(3, min(30, len(pca_points)))
         dists, idxs = tree.query(point, k=k)
-        neighbors = self.points[idxs]
+        neighbors = pca_points[idxs]
         centered = neighbors - neighbors.mean(axis=0)
         cov = centered.T @ centered / len(neighbors)
         eigvals, eigvecs = np.linalg.eigh(cov)
         normal = eigvecs[:, 0]  # 最小特征值 = 法线方向
-        # 确保法线朝外（远离点云质心）
-        centroid = self.points.mean(axis=0)
-        if np.dot(normal, point - centroid) < 0:
+        if np.dot(normal, viewer_pos - point) < 0:
             normal = -normal
         return normal
 
@@ -2378,10 +2543,17 @@ class MainWindow(QMainWindow):
         warnings = []
 
         for i, target in enumerate(self._inspect_target_points):
-            normal = self._estimate_normal(target)
+            # 优先使用拾取时存储的精确三角面法线
+            if i < len(self._inspect_target_normals):
+                normal = self._inspect_target_normals[i]
+            else:
+                normal = self._estimate_normal(target)
+            print(f"[Inspect] P{i+1} target=({target[0]:.2f},{target[1]:.2f},{target[2]:.2f}) normal=({normal[0]:.3f},{normal[1]:.3f},{normal[2]:.3f})")
             pos, warned = self._find_safe_position(
                 target, normal, tree, collision_dist, inspect_dist
             )
+            if pos is not None:
+                print(f"[Inspect] P{i+1} → pos=({pos[0]:.2f},{pos[1]:.2f},{pos[2]:.2f})")
             if pos is None:
                 # 法线方向找不到安全位置，尝试向上
                 pos = target + np.array([0, 0, inspect_dist])
@@ -2397,7 +2569,9 @@ class MainWindow(QMainWindow):
 
             # 朝向巡检目标点
             quat = look_at_quaternion(target, pos)
-            gimbal_pitch = self._calc_gimbal_pitch(pos, target)
+            gimbal_pitch_raw = self._calc_gimbal_pitch(pos, target)
+            gimbal_pitch = np.clip(gimbal_pitch_raw, self._gimbal_pitch_min, self._gimbal_pitch_max)
+            print(f"[Inspect] P{i+1} gimbal_pitch_raw={gimbal_pitch_raw:.1f}° → clipped={gimbal_pitch:.1f}° (limit [{self._gimbal_pitch_min}, {self._gimbal_pitch_max}])")
             self.waypoints.append({
                 'pos': pos,
                 'quat': quat,
@@ -2416,6 +2590,9 @@ class MainWindow(QMainWindow):
 
     # ─── 生成立方体航线 ───
     def generate_cube_route(self):
+        # 自动计算步距（如果还是默认的"自动"）
+        if self.edt_cstep.text() == "自动" or self.edt_vstep.text() == "自动":
+            self._calc_cube_spacing()
         try:
             cx = float(self.edt_cx.text())
             cy = float(self.edt_cy.text())
@@ -2503,6 +2680,9 @@ class MainWindow(QMainWindow):
             edge_points.append(pts)
 
         self.waypoints = []
+        tree = self._get_kdtree()
+        safe_dist = self.viewer._safe_distance
+        collision_dist = safe_dist * 0.5
 
         for layer in range(num_layers + 1):
             z = cz + layer * vstep
@@ -2519,10 +2699,34 @@ class MainWindow(QMainWindow):
                         continue
                     pos_2d, heading = pts[pi]
                     pos = np.array([pos_2d[0], pos_2d[1], z])
+
+                    # 碰撞检测：航点不能穿模
+                    if tree is not None:
+                        dist, _ = tree.query(pos)
+                        if dist < collision_dist:
+                            # 沿指向中心的反方向（向外）推离
+                            outward = np.array([pos_2d[0] - cx, pos_2d[1] - cy, 0.0])
+                            out_norm = np.linalg.norm(outward)
+                            if out_norm > 1e-10:
+                                outward = outward / out_norm
+                            else:
+                                outward = np.array([1.0, 0.0, 0.0])
+                            safe_pos, _ = self._find_safe_position(pos, outward, tree, collision_dist, 0.0)
+                            if safe_pos is not None:
+                                pos = safe_pos
+
+                    # 重新计算heading（pos可能已调整）
+                    to_cx = cx - pos[0]
+                    to_cy = cy - pos[1]
+                    to_c_len = np.sqrt(to_cx * to_cx + to_cy * to_cy)
+                    if to_c_len > 1e-10:
+                        heading = np.array([to_cx / to_c_len, to_cy / to_c_len, 0.0])
+
                     target = pos + heading
                     quat = look_at_quaternion(target, pos)
-                    cube_center = np.array([cx, cy, z])
+                    cube_center = np.array([cx, cy, pos[2]])
                     gimbal_pitch = self._calc_gimbal_pitch(pos, cube_center)
+                    gimbal_pitch = np.clip(gimbal_pitch, self._gimbal_pitch_min, self._gimbal_pitch_max)
                     self.waypoints.append({
                         'pos': pos,
                         'quat': quat,
@@ -2579,7 +2783,6 @@ class MainWindow(QMainWindow):
         if not bridge_name:
             bridge_name = ["跨河桥", "跨线桥", "高架桥"][self._bridge_type_val]
         self._bridge_name = bridge_name
-        print(f"[Bridge] Applied: {bridge_name}, L={bridge_len}m, W={bridge_wid}m, Clearance={clearance}m, Span={span}m")
         self.lbl_info.setText(f"桥梁: {bridge_name}, {bridge_len}m x {bridge_wid}m")
 
     def _apply_safety_settings(self):
@@ -2741,8 +2944,51 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.warning(self, "提示", "请先点击放置并右键确认生成航线")
 
-    def _toggle_heading(self, state):
-        self.viewer.show_heading = (state == Qt.Checked)
+    def _toggle_heading(self, checked):
+        self.viewer.show_heading = checked
+        self._refresh_route_display()
+
+    def _toggle_gimbal_dir(self, checked):
+        self.viewer.show_gimbal_dir = checked
+        self._refresh_route_display()
+
+    def _toggle_route_animation(self):
+        """开始/停止航线动画播放"""
+        if self.viewer._anim_playing:
+            self.viewer.stop_route_animation()
+            self._on_anim_stopped()
+            return
+        if not self.waypoints:
+            QMessageBox.warning(self, "提示", "请先生成航线")
+            return
+        self._on_anim_started()
+        self.viewer.start_route_animation(self.waypoints, speed=1.0, camera_fov=self._camera_fov)
+
+    def _on_anim_started(self):
+        """动画开始：禁用其他操作"""
+        self._act_anim_play.setText("停止动画")
+        self._file_menu.setEnabled(False)
+        self._view_menu.setEnabled(False)
+        self._settings_menu.setEnabled(False)
+        # 禁用侧边栏
+        for w in self.findChildren(QPushButton):
+            if w.text() not in ("停止动画",):
+                w.setEnabled(False)
+        for w in self.findChildren(QComboBox):
+            w.setEnabled(False)
+
+    def _on_anim_stopped(self):
+        """动画结束：恢复操作"""
+        self._act_anim_play.setText("航线动画播放")
+        self._file_menu.setEnabled(True)
+        self._view_menu.setEnabled(True)
+        self._settings_menu.setEnabled(True)
+        for w in self.findChildren(QPushButton):
+            w.setEnabled(True)
+        for w in self.findChildren(QComboBox):
+            w.setEnabled(True)
+
+    def _refresh_route_display(self):
         if self.waypoints:
             takeoff_z, takeoff_yaw = self._get_takeoff_params()
             self.viewer._takeoff_z = takeoff_z
@@ -2943,6 +3189,7 @@ class MainWindow(QMainWindow):
             self.viewer._safe_point = (0.0, 0.0, 5.0)
         self.viewer.add_route(self.waypoints, reset_camera=False)
         self.lbl_info.setText(f"航点: {len(self.waypoints)}")
+        self._update_route_time_label()
         self._check_safety_distance()
 
     @staticmethod
@@ -2981,6 +3228,9 @@ class MainWindow(QMainWindow):
             self._check_safety_distance()
 
     def _get_kdtree(self):
+        # 优先使用STL网格的KDTree
+        if self.viewer._stl_tree is not None:
+            return self.viewer._stl_tree
         if self.points is None or len(self.points) == 0:
             return None
         pts_id = id(self.points)
@@ -3028,7 +3278,32 @@ class MainWindow(QMainWindow):
         if low_z:
             msgs.append(f"{len(low_z)} 个低于Z={min_z}m")
         self.lbl_info.setText(" | ".join(msgs))
+        self._update_route_time_label()
         self.viewer.vtk_widget.GetRenderWindow().Render()
+
+    def _update_route_time_label(self):
+        """计算并显示航线总飞行时间"""
+        if not self.waypoints:
+            self.lbl_route_time.setText("")
+            return
+        total_time = 0.0
+        for i in range(1, len(self.waypoints)):
+            p0 = np.array(self.waypoints[i - 1]['pos'])
+            p1 = np.array(self.waypoints[i]['pos'])
+            dist = np.linalg.norm(p1 - p0)
+            speed = self.waypoints[i].get('speed', 1.0)
+            if speed < 0.1:
+                speed = 0.1
+            total_time += dist / speed
+        # 加上起飞和降落时间估算
+        total_time += 5.0  # 起飞悬停
+        total_time += 5.0  # 降落悬停
+        if total_time < 60:
+            self.lbl_route_time.setText(f"预计飞行时间: {total_time:.0f} 秒")
+        else:
+            m = int(total_time // 60)
+            s = int(total_time % 60)
+            self.lbl_route_time.setText(f"预计飞行时间: {m}分{s}秒")
 
     def _collect_collision_warnings(self):
         """收集碰撞检测数据，返回 (violations, collisions, low_z)
@@ -3040,14 +3315,17 @@ class MainWindow(QMainWindow):
         collision_dist = safe_dist * 0.5
         sample_step = safe_dist * 0.5
 
-        # ── 航点间距检测（向量化）──
+        # ── 航点间距检测（只检查非相邻航点，相邻航点按重叠率设计本就近）──
         violations = []
-        if len(self.waypoints) >= 2:
+        if len(self.waypoints) >= 3:
+            from scipy.spatial import cKDTree
             positions = np.array([wp['pos'] for wp in self.waypoints])
-            diffs = np.diff(positions, axis=0)
-            dists = np.linalg.norm(diffs, axis=1)
-            too_close = np.where(dists < safe_dist)[0]
-            violations = [(int(i), int(i + 1), float(dists[i])) for i in too_close]
+            tree_wp = cKDTree(positions)
+            pairs = tree_wp.query_pairs(safe_dist)
+            for i, j in pairs:
+                if abs(i - j) > 1:  # 跳过相邻航点
+                    d = np.linalg.norm(positions[i] - positions[j])
+                    violations.append((int(min(i, j)), int(max(i, j)), float(d)))
 
         # 构建完整路径点列表：安全点 + 所有航点
         try:
@@ -3105,6 +3383,10 @@ class MainWindow(QMainWindow):
         self.viewer._clear_line_points()
         self.viewer._clear_inspect_points()
         self._inspect_target_points.clear()
+        self._inspect_target_normals.clear()
+        self._line_start_normal = None
+        self._line_end_normal = None
+        self._polygon_normals.clear()
 
         # 清除直线航线起终点坐标
         for edt in [self.edt_line_x1, self.edt_line_y1, self.edt_line_z1,
@@ -3115,12 +3397,13 @@ class MainWindow(QMainWindow):
         ren = self.viewer.renderer
         cloud = self.viewer._cloud_actor
         drone = self.viewer._fpv_drone_actor
+        stl = self.viewer._stl_actor
 
-        # 批量收集非点云、非无人机 actor，一次性移除
-        to_remove = [a for a in self.viewer._actors if a != cloud and a != drone]
+        # 批量收集非点云、非无人机、非STL actor，一次性移除
+        to_remove = [a for a in self.viewer._actors if a != cloud and a != drone and a != stl]
         for a in to_remove:
             ren.RemoveActor(a)
-        self.viewer._actors = [a for a in self.viewer._actors if a == cloud or a == drone]
+        self.viewer._actors = [a for a in self.viewer._actors if a == cloud or a == drone or a == stl]
         self.viewer._waypoint_actors = []
         self.viewer._waypoints_ref = None
 
@@ -3128,6 +3411,7 @@ class MainWindow(QMainWindow):
         self.viewer._add_scene_axes()
         self.viewer.vtk_widget.GetRenderWindow().Render()
         self.lbl_info.setText("航点: 0")
+        self._update_route_time_label()
 
     # ─── 保存航线（nav_msgs/Path 格式）───
     def save_route(self):
