@@ -297,6 +297,7 @@ class VTKViewer(QWidget):
     inspect_points_confirmed = pyqtSignal(list)  # 巡检点确认
     line_points_confirmed = pyqtSignal(list)  # 直线起终点确认 [start, end]
     line_point_picked = pyqtSignal(int, object)  # 直线选点实时通知 (index, point)
+    anim_finished = pyqtSignal()  # 航线动画播放结束
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -408,6 +409,7 @@ class VTKViewer(QWidget):
         self.interactor = self.vtk_widget.GetRenderWindow().GetInteractor()
 
         self.renderer.SetBackground(0.95, 0.95, 0.93)  # 奶白色背景
+        self.renderer.TwoSidedLightingOn()
         self.renderer.TwoSidedLightingOn()  # 双面光照，防止背面全黑
 
         # 添加侧面辅助光，增强棱角立体感
@@ -489,7 +491,8 @@ class VTKViewer(QWidget):
         self._fpv_pos = np.array([0.0, 0.0, 5.0])  # 无人机位置
         self._fpv_yaw = 0.0    # 偏航角（度），0=朝+X方向
         self._fpv_pitch = 0.0  # 俯仰角（度），0=水平，正=向下看
-        self._fpv_speed = 2.0  # 飞行速度（米/帧，60fps时约120m/s）
+        self._fpv_speed = 0.5  # 默认飞行速度（米/帧，60fps时约30m/s）
+        self._fpv_boost_speed = 2.0  # Shift加速时的速度
         self._fpv_look_speed = 0.3  # 鼠标灵敏度
         self._fpv_keys = set()  # 当前按下的键
         self._fpv_mouse_active = False  # 右键按下时鼠标控制视角
@@ -504,6 +507,7 @@ class VTKViewer(QWidget):
         self._anim_waypoints = []
         self._anim_drone_actor = None
         self._anim_coverage_actor = None
+        self._anim_cone_actor = None
         self._anim_timer = None
         self._anim_speed = 1.0
 
@@ -830,6 +834,7 @@ class VTKViewer(QWidget):
         self.renderer.ResetCamera()
         if self.vtk_widget.GetRenderWindow():
             self.vtk_widget.GetRenderWindow().Render()
+        self.anim_finished.emit()
 
     def _create_anim_drone(self):
         """创建动画用无人机模型（加载STL无人机模型）"""
@@ -956,7 +961,7 @@ class VTKViewer(QWidget):
         cam.SetPosition(cam_pos.tolist())
         cam.SetFocalPoint(pos.tolist())
         cam.SetViewUp(0, 0, 1)
-        cam.SetViewAngle(self._fpv_fov)
+        cam.SetViewAngle(getattr(self, '_anim_camera_fov', self._fpv_fov))
         cam.SetClippingRange(0.1, 5000.0)
 
     def _update_gimbal_coverage(self, wp):
@@ -965,6 +970,9 @@ class VTKViewer(QWidget):
         if self._anim_coverage_actor is not None:
             self.renderer.RemoveActor(self._anim_coverage_actor)
             self._anim_coverage_actor = None
+        if self._anim_cone_actor is not None:
+            self.renderer.RemoveActor(self._anim_cone_actor)
+            self._anim_cone_actor = None
 
         if self._stl_polydata is None:
             return
@@ -1042,14 +1050,82 @@ class VTKViewer(QWidget):
         mapper.SetInputData(highlight_poly)
         actor = vtk.vtkActor()
         actor.SetMapper(mapper)
-        actor.GetProperty().SetColor(1.0, 0.4, 0.0)  # 橙色
-        actor.GetProperty().SetOpacity(0.5)
-        actor.GetProperty().SetAmbient(0.3)
-        actor.GetProperty().SetDiffuse(0.7)
+        actor.GetProperty().SetColor(1.0, 0.2, 0.0)  # 亮橙红色
+        actor.GetProperty().SetOpacity(0.7)
+        actor.GetProperty().SetAmbient(0.4)
+        actor.GetProperty().SetDiffuse(0.6)
         actor.GetProperty().SetLighting(True)
         actor.GetProperty().BackfaceCullingOff()
         self.renderer.AddActor(actor)
         self._anim_coverage_actor = actor
+
+        # 添加FOV锥体线框，增强视觉效果
+        self._add_fov_cone(pos, gimbal_dir, fov, gim_len)
+
+    def _add_fov_cone(self, pos, direction, fov_deg, max_dist):
+        """在场景中绘制FOV锥体线框"""
+        vtk = self._vtk
+        half_fov = np.radians(fov_deg / 2.0)
+        cone_len = min(max_dist * 0.8, 50.0)  # 锥体长度，限制最大50米
+        cone_radius = cone_len * np.tan(half_fov)
+
+        # 构建锥体侧面的线框（8条母线 + 底面圆）
+        lines = vtk.vtkCellArray()
+        points = vtk.vtkPoints()
+        pid = 0
+
+        # 锥体顶点（无人机位置）
+        points.InsertNextPoint(pos.tolist())
+        pid += 1
+
+        # 构建坐标系：direction为Z轴，找两个正交向量
+        z_axis = direction / np.linalg.norm(direction)
+        # 找一个不平行的向量
+        up = np.array([0.0, 0.0, 1.0])
+        if abs(np.dot(z_axis, up)) > 0.99:
+            up = np.array([0.0, 1.0, 0.0])
+        x_axis = np.cross(z_axis, up)
+        x_axis = x_axis / np.linalg.norm(x_axis)
+        y_axis = np.cross(z_axis, x_axis)
+
+        # 底面圆心
+        circle_center = pos + direction * cone_len
+
+        # 底面圆上的点（16个）
+        n_circle = 16
+        for i in range(n_circle):
+            angle = 2.0 * np.pi * i / n_circle
+            pt = circle_center + (x_axis * np.cos(angle) + y_axis * np.sin(angle)) * cone_radius
+            points.InsertNextPoint(pt.tolist())
+            pid += 1
+
+        # 8条母线（从顶点到底面圆）
+        for i in range(8):
+            line = vtk.vtkLine()
+            line.GetPointIds().SetId(0, 0)  # 顶点
+            line.GetPointIds().SetId(1, 1 + i * 2)  # 底面圆上的点
+            lines.InsertNextCell(line)
+
+        # 底面圆连线
+        for i in range(n_circle):
+            line = vtk.vtkLine()
+            line.GetPointIds().SetId(0, 1 + i)
+            line.GetPointIds().SetId(1, 1 + (i + 1) % n_circle)
+            lines.InsertNextCell(line)
+
+        cone_poly = vtk.vtkPolyData()
+        cone_poly.SetPoints(points)
+        cone_poly.SetLines(lines)
+
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputData(cone_poly)
+        actor = vtk.vtkActor()
+        actor.SetMapper(mapper)
+        actor.GetProperty().SetColor(1.0, 0.8, 0.0)  # 金黄色线框
+        actor.GetProperty().SetOpacity(0.6)
+        actor.GetProperty().SetLineWidth(1.5)
+        self.renderer.AddActor(actor)
+        self._anim_cone_actor = actor
 
     def _anim_tick(self):
         """动画每帧更新"""
@@ -1077,6 +1153,9 @@ class VTKViewer(QWidget):
         if self._anim_coverage_actor is not None:
             self.renderer.RemoveActor(self._anim_coverage_actor)
             self._anim_coverage_actor = None
+        if self._anim_cone_actor is not None:
+            self.renderer.RemoveActor(self._anim_cone_actor)
+            self._anim_cone_actor = None
         if self.vtk_widget.GetRenderWindow():
             self.vtk_widget.GetRenderWindow().Render()
 
@@ -1111,14 +1190,14 @@ class VTKViewer(QWidget):
         polydata.GetPointData().SetNormals(None)
         polydata.GetCellData().SetNormals(None)
 
-        # 计算法线（不用AutoOrient/Consistency，对闭合网格不可靠）
+        # 计算法线，统一朝外
         normals_filter = vtk.vtkPolyDataNormals()
         normals_filter.SetInputData(polydata)
         normals_filter.ComputePointNormalsOn()
         normals_filter.ComputeCellNormalsOff()
-        normals_filter.ConsistencyOff()
+        normals_filter.ConsistencyOn()
         normals_filter.SplittingOff()
-        normals_filter.AutoOrientNormalsOff()
+        normals_filter.AutoOrientNormalsOn()
         normals_filter.Update()
         polydata_with_normals = normals_filter.GetOutput()
 
@@ -1648,20 +1727,25 @@ class VTKViewer(QWidget):
         right = np.array([np.sin(yaw_rad), -np.cos(yaw_rad), 0])
 
         min_dist = 5.0  # 最小碰撞距离（防止靠近STL时深度缓冲精度问题）
+        # Shift加速
+        boost = 'shift_l' in self._fpv_keys or 'shift_r' in self._fpv_keys
+        speed = self._fpv_boost_speed if boost else self._fpv_speed
         for key in self._fpv_keys:
+            if key in ('shift_l', 'shift_r'):
+                continue
             old_pos = self._fpv_pos.copy()
             if key == 'w':
-                self._fpv_pos += forward * self._fpv_speed
+                self._fpv_pos += forward * speed
             elif key == 's':
-                self._fpv_pos -= forward * self._fpv_speed
+                self._fpv_pos -= forward * speed
             elif key == 'a':
-                self._fpv_pos -= right * self._fpv_speed
+                self._fpv_pos -= right * speed
             elif key == 'd':
-                self._fpv_pos += right * self._fpv_speed
+                self._fpv_pos += right * speed
             elif key == 'q':
-                self._fpv_pos[2] += self._fpv_speed
+                self._fpv_pos[2] += speed
             elif key == 'e':
-                self._fpv_pos[2] -= self._fpv_speed
+                self._fpv_pos[2] -= speed
             else:
                 continue
             # 碰撞检测：离STL表面太近则回退
@@ -1680,8 +1764,12 @@ class VTKViewer(QWidget):
                 self._update_fpv_camera(render=False)
             else:
                 self._update_third_person_camera(render=False)
+            cam = self.renderer.GetActiveCamera()
+            cam.SetClippingRange(0.1, 5000.0)
             if self.vtk_widget.GetRenderWindow():
                 self.vtk_widget.GetRenderWindow().Render()
+                # 渲染后再次强制裁剪范围，防止VTK内部重置
+                cam.SetClippingRange(0.1, 5000.0)
         return moved
 
     def clear_actors(self):
@@ -1705,6 +1793,16 @@ class VTKViewer(QWidget):
         reset_camera: 是否重置相机视角
         """
         if not self._vtk_available or len(points) == 0:
+            return
+        # 过滤NaN/Inf点和极端哨兵值
+        valid = np.isfinite(points).all(axis=1) & (np.abs(points) < 1e10).all(axis=1)
+        if not valid.all():
+            points = points[valid]
+            if colors is not None:
+                colors = colors[valid]
+            if normals is not None:
+                normals = normals[valid]
+        if len(points) == 0:
             return
         self.clear_actors()
         self._add_scene_axes()
@@ -1863,6 +1961,8 @@ class VTKViewer(QWidget):
         mn = points.min(axis=0)
         mx = points.max(axis=0)
         volume = np.prod(mx - mn + 1e-10)
+        if not np.isfinite(volume) or volume <= 0:
+            return 0.01
         voxel_vol = volume / target_count
         voxel_size = voxel_vol ** (1.0 / 3.0)
         return max(voxel_size, 0.01)

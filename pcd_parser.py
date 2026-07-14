@@ -66,8 +66,9 @@ def parse_pcd(filepath):
 
         structured = np.frombuffer(raw, dtype=np.dtype(dtypes), count=num_points)
         xyz = np.zeros((num_points, 3), dtype=np.float64)
-        for j, idx in enumerate(xyz_indices):
-            xyz[:, j] = structured['f{}'.format(idx)].astype(np.float64)
+        with np.errstate(invalid='ignore'):
+            for j, idx in enumerate(xyz_indices):
+                xyz[:, j] = structured['f{}'.format(idx)].astype(np.float64)
         return xyz
 
     return np.empty((0, 3), dtype=np.float64)

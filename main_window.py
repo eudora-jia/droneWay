@@ -393,6 +393,7 @@ class MainWindow(QMainWindow):
         self.viewer.waypoint_edited.connect(self._on_waypoint_edited)
         self.viewer.polygon_finished.connect(self._on_polygon_finished)
         self.viewer.place_picked.connect(self._on_place_picked)
+        self.viewer.anim_finished.connect(self._on_anim_stopped)
         self._place_target = None  # "cube" or "cylinder"
         self._polygon_vertices = None
 
@@ -909,6 +910,15 @@ class MainWindow(QMainWindow):
             self.progress_bar.setRange(0, 100)
             self.progress_bar.setValue(60)
             QApplication.processEvents()
+
+            # 过滤NaN/Inf点和极端哨兵值（如±float32_max）
+            valid = np.isfinite(self.points).all(axis=1) & (np.abs(self.points) < 1e10).all(axis=1)
+            if not valid.all():
+                self.points = self.points[valid]
+                if self._point_colors is not None:
+                    self._point_colors = self._point_colors[valid]
+                if self._point_normals is not None:
+                    self._point_normals = self._point_normals[valid]
 
             n = len(self.points)
             colors = self._apply_color_scheme(self.points, self._point_colors)
@@ -2956,7 +2966,6 @@ class MainWindow(QMainWindow):
         """开始/停止航线动画播放"""
         if self.viewer._anim_playing:
             self.viewer.stop_route_animation()
-            self._on_anim_stopped()
             return
         if not self.waypoints:
             QMessageBox.warning(self, "提示", "请先生成航线")
