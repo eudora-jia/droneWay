@@ -309,7 +309,8 @@ class VTKViewer(QWidget):
             from vtkmodules.vtkRenderingCore import (
                 vtkActor, vtkPolyDataMapper, vtkRenderer,
                 vtkPoints, vtkPolyData, vtkVertexGlyphFilter,
-                vtkFollower, vtkVectorText, vtkBillboardTextActor3D
+                vtkFollower, vtkVectorText, vtkBillboardTextActor3D,
+                vtkTextActor
             )
             from vtkmodules.vtkFiltersSources import vtkSphereSource, vtkCubeSource, vtkLineSource, vtkArrowSource
             from vtkmodules.vtkFiltersGeneral import vtkTransformPolyDataFilter
@@ -329,7 +330,7 @@ class VTKViewer(QWidget):
                     vtkPoints, vtkPolyData, vtkVertexGlyphFilter,
                     vtkSphereSource, vtkCubeSource, vtkLineSource, vtkArrowSource, vtkCellArray,
                     vtkPolyLine, vtkPolygon, vtkFollower, vtkVectorText,
-                    vtkBillboardTextActor3D,
+                    vtkBillboardTextActor3D, vtkTextActor,
                     vtkTransformPolyDataFilter, vtkTransform,
                     vtkGlyph3D, vtkInteractorStyleUser,
                 )
@@ -363,6 +364,7 @@ class VTKViewer(QWidget):
         self._vtkTransform = vtkTransform
         self._vtkGlyph3D = vtkGlyph3D
         self._vtkInteractorStyleUser = vtkInteractorStyleUser
+        self._vtkTextActor = vtkTextActor
 
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         layout = QVBoxLayout(self)
@@ -371,42 +373,42 @@ class VTKViewer(QWidget):
         self.vtk_widget = QVTKRenderWindowInteractor(self)
         layout.addWidget(self.vtk_widget)
 
-        # ─── 视角切换按钮（右上角覆盖层）───
-        from PyQt5.QtWidgets import QFrame, QButtonGroup
-        view_frame = QFrame(self.vtk_widget)
-        view_frame.setStyleSheet("QFrame { background: rgba(240,240,238,200); border: 1px solid #ccc; border-radius: 6px; }")
-        view_frame.setFixedSize(260, 44)
-        view_layout = QHBoxLayout(view_frame)
-        view_layout.setContentsMargins(4, 2, 4, 2)
-        view_layout.setSpacing(4)
-
-        self._view_btns = QButtonGroup(self)
-        # (图标, 标签, 名称, 颜色)
-        views = [
-            ("⬇", "俯", "top", "#5b9bd5"),
-            ("⬆", "仰", "bottom", "#70ad47"),
-            ("⬛", "前", "front", "#ed7d31"),
-            ("▐", "侧", "side", "#9b59b6"),
-            ("◆", "透", "persp", "#607d8b"),
-        ]
-        tooltips = ["从上往下看 (Top)", "从下往上看 (Bottom)", "从正面看 (Front)", "从侧面看 (Side)", "自由透视 (Perspective)"]
-        for i, (icon, label, name, color) in enumerate(views):
-            btn = QPushButton(f"{icon}\n{label}")
-            btn.setFixedSize(42, 32)
-            btn.setToolTip(tooltips[i])
-            btn.setStyleSheet(f"QPushButton {{ background: #e8e8e6; border: 1px solid #bbb; border-radius: 4px; color: #333; font-size: 11px; padding: 1px; }} QPushButton:checked {{ background: {color}; color: #fff; border-color: {color}; }}")
-            btn.setCheckable(True)
-            btn.clicked.connect(lambda checked, n=name: self._set_view(n))
-            view_layout.addWidget(btn)
-            self._view_btns.addButton(btn, i)
-
-        self._view_btns.button(4).setChecked(True)  # 默认透视视角
-        QTimer.singleShot(200, lambda: self._set_view("persp"))
-        QTimer.singleShot(100, lambda: view_frame.move(self.vtk_widget.width() - 270, 8))
-
         self.renderer = vtkRenderer()
         self.vtk_widget.GetRenderWindow().AddRenderer(self.renderer)
         self.interactor = self.vtk_widget.GetRenderWindow().GetInteractor()
+
+        # ─── 视角切换按钮（浮动在 VTK 上方）───
+        from PyQt5.QtWidgets import QFrame, QHBoxLayout, QLabel, QButtonGroup
+        from PyQt5.QtCore import Qt as QtCore
+        self._view_frame = QFrame(self)
+        self._view_frame.setStyleSheet("QFrame { background: rgba(0,0,0,140); border-radius: 6px; }")
+        self._view_frame.setFixedSize(240, 36)
+        view_layout = QHBoxLayout(self._view_frame)
+        view_layout.setContentsMargins(6, 2, 6, 2)
+        view_layout.setSpacing(2)
+
+        self._view_btns = QButtonGroup(self)
+        views = [
+            ("⬇俯", "top", "#5b9bd5"),
+            ("⬆仰", "bottom", "#70ad47"),
+            ("⬛前", "front", "#ed7d31"),
+            ("▐侧", "side", "#9b59b6"),
+            ("◆透", "persp", "#607d8b"),
+        ]
+        self._view_btns_list = []
+        for i, (label, name, color) in enumerate(views):
+            btn = QLabel(label)
+            btn.setAlignment(QtCore.AlignCenter)
+            btn.setFixedSize(40, 30)
+            btn.setStyleSheet(f"QLabel {{ color: #ccc; font-size: 11px; }}")
+            btn.mousePressEvent = lambda e, n=name, idx=i: self._on_view_label_click(n, idx)
+            view_layout.addWidget(btn)
+            self._view_btns_list.append((btn, name, color))
+        # 默认高亮透视
+        self._view_btn_active = 4
+        self._view_btns_list[4][0].setStyleSheet(f"QLabel {{ color: {self._view_btns_list[4][2]}; font-size: 11px; font-weight: bold; }}")
+        self._view_frame.raise_()
+        QTimer.singleShot(100, lambda: self._view_frame.move(self.width() - 250, 8))
 
         self.renderer.SetBackground(0.95, 0.95, 0.93)  # 奶白色背景
         self.renderer.TwoSidedLightingOn()
@@ -1298,14 +1300,13 @@ class VTKViewer(QWidget):
         return True
 
     def get_stl_normal(self, point):
-        """获取STL表面法线：找最近三角面，返回其几何法线（cross product）"""
+        """获取STL表面法线：找最近三角面，返回朝向观察者的几何法线"""
         if self._stl_polydata is None or self._stl_tree is None:
             return None
         # 找最近顶点
         _, idx = self._stl_tree.query(point)
-        # 找包含该顶点的所有三角面，选法线Z值最大的（朝上）
-        best_normal = None
-        best_z = -float('inf')
+        # 收集所有包含该顶点的三角面法线
+        normals = []
         n_cells = self._stl_polydata.GetNumberOfCells()
         for ci in range(n_cells):
             cell = self._stl_polydata.GetCell(ci)
@@ -1319,7 +1320,6 @@ class VTKViewer(QWidget):
                     break
             if not found:
                 continue
-            # 计算该三角面的几何法线
             v0 = np.array(self._stl_polydata.GetPoint(cell.GetPointId(0)))
             v1 = np.array(self._stl_polydata.GetPoint(cell.GetPointId(1)))
             v2 = np.array(self._stl_polydata.GetPoint(cell.GetPointId(2)))
@@ -1327,12 +1327,62 @@ class VTKViewer(QWidget):
             nrm = np.linalg.norm(n)
             if nrm < 1e-10:
                 continue
-            n /= nrm
-            # 选Z值最大的法线（最朝上的面）
-            if n[2] > best_z:
-                best_z = n[2]
+            normals.append(n / nrm)
+        if not normals:
+            return None
+        # 获取观察者位置，选朝向观察者的法线
+        if self.fpv_mode:
+            viewer_pos = np.array(self._fpv_pos, dtype=float)
+        else:
+            cam = self.renderer.GetActiveCamera()
+            viewer_pos = np.array(cam.GetPosition(), dtype=float)
+        to_viewer = viewer_pos - point
+        best_normal = None
+        best_dot = -float('inf')
+        for n in normals:
+            d = np.dot(n, to_viewer)
+            if d > best_dot:
+                best_dot = d
                 best_normal = n
         return best_normal
+
+    def get_stl_geometric_normal(self, point):
+        """获取STL表面真实几何法线（不做viewer方向翻转）
+        用于航线生成：需要区分顶面/底面
+        """
+        if self._stl_polydata is None or self._stl_tree is None:
+            return None
+        _, idx = self._stl_tree.query(point)
+        normals = []
+        n_cells = self._stl_polydata.GetNumberOfCells()
+        for ci in range(n_cells):
+            cell = self._stl_polydata.GetCell(ci)
+            if cell is None:
+                continue
+            n_pts = cell.GetNumberOfPoints()
+            found = False
+            for j in range(n_pts):
+                if cell.GetPointId(j) == idx:
+                    found = True
+                    break
+            if not found:
+                continue
+            v0 = np.array(self._stl_polydata.GetPoint(cell.GetPointId(0)))
+            v1 = np.array(self._stl_polydata.GetPoint(cell.GetPointId(1)))
+            v2 = np.array(self._stl_polydata.GetPoint(cell.GetPointId(2)))
+            n = np.cross(v1 - v0, v2 - v0)
+            nrm = np.linalg.norm(n)
+            if nrm < 1e-10:
+                continue
+            normals.append(n / nrm)
+        if not normals:
+            return None
+        # 返回平均法线（不翻转）
+        avg = np.mean(normals, axis=0)
+        nrm = np.linalg.norm(avg)
+        if nrm < 1e-10:
+            return normals[0]
+        return avg / nrm
 
     def _pick_stl_top_surface(self, screen_x, screen_y):
         """沿相机射线与STL求交，返回最近的交点（用户看到的第一个面）"""
@@ -1773,6 +1823,7 @@ class VTKViewer(QWidget):
         return moved
 
     def clear_actors(self):
+        self._remove_legend()
         for actor in self._actors:
             self.renderer.RemoveActor(actor)
         self._actors.clear()
@@ -1786,11 +1837,12 @@ class VTKViewer(QWidget):
             self.renderer.AddActor(self._stl_actor)
             self._actors.append(self._stl_actor)
 
-    def add_point_cloud(self, points, render_mode='auto', point_size=0.05, colors=None, normals=None, reset_camera=True):
+    def add_point_cloud(self, points, render_mode='auto', point_size=0.05, colors=None, normals=None, reset_camera=True, use_lighting=True):
         """显示点云（支持球体/立方体/像素/圆片渲染模式）
         colors: (N, 3) uint8 外部传入的RGB颜色，为None时按高度着色
         normals: (N, 3) 法线数组，render_mode='splat'时用于圆片朝向
         reset_camera: 是否重置相机视角
+        use_lighting: 是否启用光照（高度着色等方案应关闭，避免不同视角颜色不一致）
         """
         if not self._vtk_available or len(points) == 0:
             return
@@ -1880,9 +1932,11 @@ class VTKViewer(QWidget):
         vtk_colors = self._numpy_to_vtk(rgb, deep=True, array_type=self._vtk.VTK_UNSIGNED_CHAR)
         vtk_colors.SetName('Colors')
         polydata.GetPointData().SetScalars(vtk_colors)
+        polydata.GetPointData().SetActiveScalars('Colors')
 
         SPHERE_THRESHOLD = 200_000
-        use_glyph = (render_mode in ('sphere', 'cube')) or (render_mode == 'auto' and len(render_points) <= SPHERE_THRESHOLD)
+        # 高程着色时不用 glyph（避免球面插值冲淡颜色），用 GL_POINTS 区分大小
+        use_glyph = use_lighting and ((render_mode in ('sphere', 'cube')) or (render_mode == 'auto' and len(render_points) <= SPHERE_THRESHOLD))
         use_splat = (render_mode == 'splat')
 
         if use_splat and normals is not None:
@@ -1907,6 +1961,8 @@ class VTKViewer(QWidget):
             mapper = self._vtkPolyDataMapper()
             mapper.SetInputConnection(glyph.GetOutputPort())
             mapper.ScalarVisibilityOn()
+            mapper.SetScalarModeToUsePointData()
+            mapper.SetColorModeToDirectScalars()
         elif use_glyph:
             if render_mode == 'cube':
                 src = self._vtkCubeSource()
@@ -1926,6 +1982,8 @@ class VTKViewer(QWidget):
             mapper = self._vtkPolyDataMapper()
             mapper.SetInputConnection(glyph.GetOutputPort())
             mapper.ScalarVisibilityOn()
+            mapper.SetScalarModeToUsePointData()
+            mapper.SetColorModeToDirectScalars()
         else:
             glyph = self._vtkVertexGlyphFilter()
             glyph.SetInputData(polydata)
@@ -1933,19 +1991,31 @@ class VTKViewer(QWidget):
             mapper = self._vtkPolyDataMapper()
             mapper.SetInputConnection(glyph.GetOutputPort())
             mapper.ScalarVisibilityOn()
-            mapper.SetScalarModeToDefault()
+            mapper.SetScalarModeToUsePointData()
+            mapper.SetColorModeToDirectScalars()
 
         actor = self._vtkActor()
         actor.SetMapper(mapper)
         if not use_glyph:
-            actor.GetProperty().SetPointSize(max(1, int(point_size * 40)))
+            # 按渲染模式区分点大小：球体>立方体>自动>像素
+            size_multiplier = {'sphere': 80, 'cube': 60, 'auto': 40, 'pixel': 40, 'splat': 40}.get(render_mode, 40)
+            actor.GetProperty().SetPointSize(max(1, int(point_size * size_multiplier)))
 
         # 增强光照：提高棱角辨识度
         prop = actor.GetProperty()
-        prop.SetAmbient(0.3)
-        prop.SetDiffuse(0.6)
-        prop.SetSpecular(0.2)
-        prop.SetSpecularPower(20)
+        if use_lighting:
+            prop.SetAmbient(0.3)
+            prop.SetDiffuse(0.6)
+            prop.SetSpecular(0.2)
+            prop.SetSpecularPower(20)
+        else:
+            prop.LightingOff()
+            # 圆片模式保留少量环境光，让法线朝向差异可见
+            if use_splat:
+                prop.LightingOn()
+                prop.SetAmbient(0.8)
+                prop.SetDiffuse(0.2)
+                prop.SetSpecular(0.0)
 
         self.renderer.AddActor(actor)
         self._actors.append(actor)
@@ -1954,7 +2024,80 @@ class VTKViewer(QWidget):
         # FPV模式下不重置相机，或者明确指定不重置
         if reset_camera and not getattr(self, 'fpv_mode', False):
             self.renderer.ResetCamera()
-        self._update_view()
+        self._update_view(reset_camera=reset_camera)
+
+    def _remove_legend(self):
+        """移除已有的图例"""
+        if hasattr(self, '_legend_actors'):
+            for a in self._legend_actors:
+                self.renderer.RemoveActor(a)
+            self._legend_actors.clear()
+
+    def show_height_legend(self, z_min, z_max):
+        """显示高程颜色图例（彩色标注 + 最小/最大高度）"""
+        if not self._vtk_available:
+            return
+        self._remove_legend()
+        self._legend_actors = []
+
+        font_size = 13
+        # 颜色条标注：高→低，红→黄→绿→青→蓝
+        # 对应 height 着色方案的 5 个区间
+        color_labels = [
+            ("%.1fm" % z_max, (1.0, 0.0, 0.0), 0.92),   # 红 (最高)
+            ("", (1.0, 1.0, 0.0), 0.82),                  # 黄
+            ("", (0.0, 1.0, 0.0), 0.72),                  # 绿
+            ("", (0.0, 1.0, 1.0), 0.62),                  # 青
+            ("%.1fm" % z_min, (0.0, 0.0, 1.0), 0.52),    # 蓝 (最低)
+        ]
+
+        # 标题
+        title = self._vtkTextActor()
+        title.SetInput("高程")
+        tp = title.GetTextProperty()
+        tp.SetFontSize(font_size + 2)
+        tp.SetColor(1.0, 1.0, 1.0)
+        tp.SetBold(True)
+        tp.SetShadow(True)
+        coord = title.GetPositionCoordinate()
+        coord.SetCoordinateSystemToNormalizedViewport()
+        coord.SetValue(0.88, 0.95)
+        self.renderer.AddActor(title)
+        self._legend_actors.append(title)
+
+        # 颜色块 + 标注
+        for label, color, y_pos in color_labels:
+            # 彩色方块用 ■ 字符表示
+            block = self._vtkTextActor()
+            block.SetInput("■")
+            tp = block.GetTextProperty()
+            tp.SetFontSize(font_size + 4)
+            tp.SetColor(*color)
+            tp.SetBold(True)
+            tp.SetShadow(False)
+            coord = block.GetPositionCoordinate()
+            coord.SetCoordinateSystemToNormalizedViewport()
+            coord.SetValue(0.88, y_pos)
+            self.renderer.AddActor(block)
+            self._legend_actors.append(block)
+
+            # 高度标签
+            if label:
+                ta = self._vtkTextActor()
+                ta.SetInput(label)
+                tp = ta.GetTextProperty()
+                tp.SetFontSize(font_size)
+                tp.SetColor(1.0, 1.0, 1.0)
+                tp.SetBold(True)
+                tp.SetShadow(True)
+                coord = ta.GetPositionCoordinate()
+                coord.SetCoordinateSystemToNormalizedViewport()
+                coord.SetValue(0.92, y_pos)
+                self.renderer.AddActor(ta)
+                self._legend_actors.append(ta)
+        self._legend_actors.append(title)
+
+        self._update_view(reset_camera=False)
 
     @staticmethod
     def _estimate_voxel_size(points, target_count):
@@ -2038,6 +2181,11 @@ class VTKViewer(QWidget):
 
         if normals is None or len(normals) != n:
             # 法线无效时直接返回原始点
+            return points, colors
+
+        normals = np.asarray(normals, dtype=np.float64)
+        if normals.ndim != 2 or normals.shape[1] != 3:
+            # 法线 shape 异常，丢弃
             return points, colors
 
         if radius is None:
@@ -2325,6 +2473,33 @@ class VTKViewer(QWidget):
                 fg.GetTextProperty().SetBold(True)
                 self.renderer.AddActor(fg)
                 self._actors.append(fg)
+
+        # ── 首尾航点坐标标签 ──
+        coord_scale = label_offset * 0.6
+        for idx, tag in [(0, "首"), (n - 1, "末")] if n >= 2 else [(0, "首")]:
+            wp = waypoints[idx]
+            p = wp['pos']
+            coord_text = f"{tag}点({p[0]:.1f},{p[1]:.1f},{p[2]:.1f})"
+            # 背景（黑色阴影）
+            bg = self._vtkBillboardTextActor3D()
+            bg.SetInput(coord_text)
+            bg.SetPosition(p[0] + coord_scale * 0.04, p[1] + coord_scale * 0.04, p[2] + label_offset * 3 + coord_scale * 0.04)
+            bg.SetScale(coord_scale, coord_scale, coord_scale)
+            bg.GetTextProperty().SetColor(0.0, 0.0, 0.0)
+            bg.GetTextProperty().SetFontSize(16)
+            bg.GetTextProperty().SetBold(True)
+            self.renderer.AddActor(bg)
+            self._actors.append(bg)
+            # 前景（青色）
+            fg = self._vtkBillboardTextActor3D()
+            fg.SetInput(coord_text)
+            fg.SetPosition(p[0], p[1], p[2] + label_offset * 3)
+            fg.SetScale(coord_scale, coord_scale, coord_scale)
+            fg.GetTextProperty().SetColor(0.0, 1.0, 1.0)
+            fg.GetTextProperty().SetFontSize(16)
+            fg.GetTextProperty().SetBold(True)
+            self.renderer.AddActor(fg)
+            self._actors.append(fg)
 
         # ── 投影线：航点 → 目标方向投射到点云上的点 ──
         has_target = any('target_pos' in wp for wp in waypoints)
@@ -2967,16 +3142,14 @@ class VTKViewer(QWidget):
         idx = len(self._line_points) - 1  # 0=起点, 1=终点
         sphere = self._vtkSphereSource()
         sphere.SetCenter(pos.tolist())
-        sphere.SetRadius(0.3)
+        sphere.SetRadius(0.2)
         sphere.Update()
         m = self._vtkPolyDataMapper()
         m.SetInputConnection(sphere.GetOutputPort())
         a = self._vtkActor()
         a.SetMapper(m)
-        if idx == 0:
-            a.GetProperty().SetColor(0.2, 0.8, 0.2)  # 绿色=起点
-        else:
-            a.GetProperty().SetColor(0.9, 0.2, 0.2)  # 红色=终点
+        a.GetProperty().SetColor(1.0, 0.8, 0.0)  # 与点状航线一致
+        a.GetProperty().SetLighting(False)
         self.renderer.AddActor(a)
         self._line_markers.append(a)
         self.vtk_widget.GetRenderWindow().Render()
@@ -2991,25 +3164,41 @@ class VTKViewer(QWidget):
         self._line_markers.clear()
         self._line_points.clear()
 
-    def _update_view(self):
+    def _update_view(self, reset_camera=True):
         if not self._vtk_available:
             return
         # FPV模式下由FPV系统控制相机，跳过默认视角设置
         if getattr(self, 'fpv_mode', False):
             self.vtk_widget.GetRenderWindow().Render()
             return
-        cam = self.renderer.GetActiveCamera()
-        # 用场景中心而非原点
-        bounds = self.renderer.ComputeVisiblePropBounds()
-        cx = (bounds[0] + bounds[1]) / 2
-        cy = (bounds[2] + bounds[3]) / 2
-        cz = (bounds[4] + bounds[5]) / 2
-        cam.SetFocalPoint(cx, cy, cz)
-        cam.SetViewUp(0, 0, 1)
-        self.renderer.ResetCamera()
-        cam.Elevation(30)
-        cam.Azimuth(-45)
+        if reset_camera:
+            cam = self.renderer.GetActiveCamera()
+            # 用场景中心而非原点
+            bounds = self.renderer.ComputeVisiblePropBounds()
+            cx = (bounds[0] + bounds[1]) / 2
+            cy = (bounds[2] + bounds[3]) / 2
+            cz = (bounds[4] + bounds[5]) / 2
+            cam.SetFocalPoint(cx, cy, cz)
+            cam.SetViewUp(0, 0, 1)
+            self.renderer.ResetCamera()
+            cam.Elevation(30)
+            cam.Azimuth(-45)
         self.vtk_widget.GetRenderWindow().Render()
+
+    def _on_view_label_click(self, name, idx):
+        """视角标签点击"""
+        for j, (lbl, n, color) in enumerate(self._view_btns_list):
+            if j == idx:
+                lbl.setStyleSheet(f"QLabel {{ color: {color}; font-size: 11px; font-weight: bold; }}")
+            else:
+                lbl.setStyleSheet("QLabel {{ color: #ccc; font-size: 11px; }}")
+        self._view_btn_active = idx
+        self._set_view(name)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, '_view_frame'):
+            self._view_frame.move(self.width() - 250, 8)
 
     def _set_view(self, name):
         if not self._vtk_available or getattr(self, 'fpv_mode', False):

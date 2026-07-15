@@ -65,7 +65,7 @@ class MainWindow(QMainWindow):
             "route_inspect": "点状航线",
             "lbl_height_z": "高度Z:", "lbl_line_spacing": "线间距:",
             "lbl_wp_spacing": "航点距离:", "lbl_speed": "速度(m/s):",
-            "lbl_camera": "相机型号:", "lbl_fov": "FOV(°):",
+            "lbl_camera": "相机型号:", "lbl_fov": "水平FOV(°):",
             "lbl_fwd_overlap": "航向重叠(%):", "lbl_side_overlap": "旁向重叠(%):",
             "btn_calc_overlap": "自动算间距", "lbl_curvature": "曲度:",
             "btn_pick_area": "选择顶点（右键确认）",
@@ -127,7 +127,7 @@ class MainWindow(QMainWindow):
             "route_inspect": "Inspect",
             "lbl_height_z": "Height Z:", "lbl_line_spacing": "Line Spacing:",
             "lbl_wp_spacing": "WP Spacing:", "lbl_speed": "Speed(m/s):",
-            "lbl_camera": "Camera:", "lbl_fov": "FOV(°):",
+            "lbl_camera": "Camera:", "lbl_fov": "H-FOV(°):",
             "lbl_fwd_overlap": "Fwd Overlap(%):", "lbl_side_overlap": "Side Overlap(%):",
             "btn_calc_overlap": "Auto Calc", "lbl_curvature": "Curvature:",
             "btn_pick_area": "Place (Right-click to confirm)",
@@ -163,11 +163,13 @@ class MainWindow(QMainWindow):
         self.resize(1400, 900)
 
         # 相机型号 → FOV 映射（所有航线共用）
+        # FOV均为水平FOV（实测校准）
+        # M4T中长焦：标称对角线35°，4:3画幅实测水平覆盖1.1m@3m → 水平FOV≈20.8°
         self._camera_fov_map = {
             "DJI Mavic 3E": 84,
             "DJI Mavic 3T": 82,
             "M4T 广角": 82,
-            "M4T 中长焦": 35,
+            "M4T 中长焦": 20.8,
             "M4T 长焦": 15,
             "DJI M350+P1(24mm)": 84,
             "DJI M350+P1(35mm)": 54,
@@ -176,13 +178,15 @@ class MainWindow(QMainWindow):
             "自定义": 80,
         }
         self._camera_name = "M4T 中长焦"
-        self._camera_fov = 35
+        self._camera_fov = 20.8  # 水平FOV
+        self._camera_aspect = 4 / 3  # 画幅比例 宽:高
         self._camera_zoom = 3.0  # 默认3倍变焦
         self._camera_zoom_map = {
             "M4T 广角": 1.0,
             "M4T 中长焦": 3.0,
             "M4T 长焦": 7.0,
         }
+        self._camera_min_interval = 0.7  # 最小拍摄间隔（秒），M4T为0.7s
         self._forward_overlap = 50
         self._side_overlap = 50
 
@@ -272,10 +276,18 @@ class MainWindow(QMainWindow):
 
         self._view_menu.addSeparator()
         self._size_menu = self._view_menu.addMenu("点云大小")
+        self._size_group = QActionGroup(self)
+        self._size_acts = {}
         for val in [1, 3, 5, 8, 10, 15, 20]:
-            act = QAction(f"{val * 0.01:.2f}", self)
+            label = f"{val * 0.01:.2f}"
+            act = QAction(label, self)
+            act.setCheckable(True)
+            act.setActionGroup(self._size_group)
+            if val == 5:
+                act.setChecked(True)
             act.triggered.connect(lambda checked, v=val: self._on_menu_point_size(v))
             self._size_menu.addAction(act)
+            self._size_acts[val] = act
 
         self._view_menu.addSeparator()
         self._upsample_menu = self._view_menu.addMenu("点云渲染增密")
@@ -296,13 +308,13 @@ class MainWindow(QMainWindow):
         self._color_menu = self._view_menu.addMenu("点云颜色方案")
         self._color_group = QActionGroup(self)
         self._color_acts = {}
-        self._color_scheme = "original"  # 默认原色
-        for name, scheme in [("原色", "original"), ("高度着色", "height"), ("热力图", "thermal"),
+        self._color_scheme = "height"  # 默认高度着色
+        for name, scheme in [("高度着色", "height"), ("原色", "original"), ("热力图", "thermal"),
                              ("灰度", "grayscale"), ("纯红", "red"), ("纯绿", "green"), ("纯蓝", "blue")]:
             act = QAction(name, self)
             act.setCheckable(True)
             act.setActionGroup(self._color_group)
-            if scheme == "original":
+            if scheme == "height":
                 act.setChecked(True)
             act.triggered.connect(lambda checked, s=scheme: self._on_color_scheme_changed(s))
             self._color_menu.addAction(act)
@@ -454,6 +466,7 @@ class MainWindow(QMainWindow):
         self.edt_safe_dist = QLineEdit("1.0")
         self.edt_safe_dist.setMaximumWidth(60)
         self.edt_safe_dist.textChanged.connect(self._on_safe_dist_changed)
+        self.viewer._safe_distance = 1.0  # 确保同步
         sd_row.addWidget(self.edt_safe_dist)
         sd_row.addStretch()
         pk.addLayout(sd_row)
@@ -514,7 +527,7 @@ class MainWindow(QMainWindow):
         ctrl_layout.addLayout(route_type_row)
 
         self._route_stack = QStackedWidget()
-        self.cmb_route_type.currentIndexChanged.connect(self._route_stack.setCurrentIndex)
+        self.cmb_route_type.currentIndexChanged.connect(self._on_route_type_changed)
 
         # -- Tab 1: 面状航线 --
         tab_flat = QWidget()
@@ -758,6 +771,7 @@ class MainWindow(QMainWindow):
         self._line_start_normal = None     # 直线起点法线
         self._line_end_normal = None       # 直线终点法线
         self._polygon_normals = []         # 多边形顶点表面法线
+        self._stl_triangles = None         # STL 三角面顶点数组，用于射线相交检测
         self.viewer.inspect_points_confirmed.connect(self._on_inspect_confirmed)
         self.viewer.line_points_confirmed.connect(self._on_line_confirmed)
         self.viewer.line_point_picked.connect(self._on_line_point_picked)
@@ -848,6 +862,19 @@ class MainWindow(QMainWindow):
             QComboBox QAbstractItemView { background: #fff; color: #000; selection-background-color: #4a9eff; }
         """)
 
+    def _on_route_type_changed(self, index):
+        """航线类型切换时清理上一种类型的选择状态"""
+        self._route_stack.setCurrentIndex(index)
+        # 清理多边形选择状态
+        if hasattr(self, '_polygon_vertices') and self._polygon_vertices:
+            self._polygon_vertices = None
+            self._polygon_normals = []
+        self.viewer.exit_polygon_mode()
+        # 清理直线选择状态
+        self.viewer.exit_line_mode()
+        # 清理巡检点选择状态
+        self.viewer.exit_inspect_mode()
+
     # ─── 多边形选择 ──────────────────────────────────────────
     def _start_polygon_select(self):
         self.viewer.enter_polygon_mode()
@@ -922,7 +949,8 @@ class MainWindow(QMainWindow):
 
             n = len(self.points)
             colors = self._apply_color_scheme(self.points, self._point_colors)
-            self.viewer.add_point_cloud(self.points, self._get_render_mode(), self._get_point_size(), colors=colors)
+            self.viewer.add_point_cloud(self.points, self._get_render_mode(), self._get_point_size(), colors=colors, use_lighting=(self._color_scheme == "original"))
+            self._update_height_legend()
             self.progress_bar.setValue(80)
             QApplication.processEvents()
 
@@ -1017,6 +1045,8 @@ class MainWindow(QMainWindow):
         ok = self.viewer.add_stl_mesh(path)
         if ok:
             self.statusBar().showMessage(f"已加载STL: {os.path.basename(path)}")
+            # 预计算三角面顶点数组（用于射线穿模检测）
+            self._precompute_stl_triangles()
             # STL 不需要点云相关菜单
             self._render_menu.setEnabled(False)
             self._upsample_menu.setEnabled(False)
@@ -1046,7 +1076,23 @@ class MainWindow(QMainWindow):
 
     def _on_point_size_changed(self, val):
         self.lbl_point_size.setText(f"{val * 0.01:.2f}")
+        # 同步菜单选中状态
+        act = self._size_acts.get(val)
+        if act:
+            act.setChecked(True)
+        else:
+            # 滑块值不在菜单预设中时，取消所有菜单选中
+            for a in self._size_acts.values():
+                a.setChecked(False)
         self._refresh_point_cloud()
+
+    def _update_height_legend(self):
+        """如果当前是高度着色模式，显示高程图例"""
+        if self._color_scheme == "height" and self.points is not None and len(self.points) > 0:
+            z_vals = self.points[:, 2]
+            self.viewer.show_height_legend(float(z_vals.min()), float(z_vals.max()))
+        else:
+            self.viewer._remove_legend()
 
     def _on_color_scheme_changed(self, scheme):
         self._color_scheme = scheme
@@ -1158,9 +1204,11 @@ class MainWindow(QMainWindow):
             filtered_colors = display_colors[mask] if display_colors is not None else None
             filtered_normals = display_normals[mask] if display_normals is not None else None
             if len(filtered) > 0:
-                self.viewer.add_point_cloud(filtered, self._get_render_mode(), self._get_point_size(), colors=filtered_colors, normals=filtered_normals)
+                self.viewer.add_point_cloud(filtered, self._get_render_mode(), self._get_point_size(), colors=filtered_colors, normals=filtered_normals, reset_camera=False, use_lighting=(self._color_scheme == "original"))
+                self._update_height_legend()
         else:
-            self.viewer.add_point_cloud(display_points, self._get_render_mode(), self._get_point_size(), colors=display_colors, normals=display_normals)
+            self.viewer.add_point_cloud(display_points, self._get_render_mode(), self._get_point_size(), colors=display_colors, normals=display_normals, reset_camera=False, use_lighting=(self._color_scheme == "original"))
+            self._update_height_legend()
 
     def _refresh_point_cloud(self):
         if any(self._clip_enabled.values()):
@@ -1170,7 +1218,8 @@ class MainWindow(QMainWindow):
             if self._get_render_mode() == 'splat':
                 self._ensure_normals()
             colors = self._apply_color_scheme(self.points, self._point_colors)
-            self.viewer.add_point_cloud(self.points, self._get_render_mode(), self._get_point_size(), colors=colors, normals=self._point_normals, reset_camera=False)
+            self.viewer.add_point_cloud(self.points, self._get_render_mode(), self._get_point_size(), colors=colors, normals=self._point_normals, reset_camera=False, use_lighting=(self._color_scheme == "original"))
+            self._update_height_legend()
 
     def _on_menu_render_mode(self, name):
         """菜单栏渲染模式切换"""
@@ -1360,7 +1409,7 @@ class MainWindow(QMainWindow):
         cmb_camera.setCurrentText(self._camera_name)
         layout.addWidget(cmb_camera, 1, 1, 1, 3)
 
-        layout.addWidget(QLabel("FOV(°):"), 2, 0)
+        layout.addWidget(QLabel("水平FOV(°):"), 2, 0)
         edt_fov = QLineEdit(str(self._camera_fov))
         edt_fov.setReadOnly(True)
         edt_fov.setStyleSheet("QLineEdit { background: #eee; color: #666; }")
@@ -1419,32 +1468,40 @@ class MainWindow(QMainWindow):
         edt_side = QLineEdit(str(self._side_overlap))
         layout.addWidget(edt_side, 3, 3)
 
-        # ── 云台参数 ──
-        layout.addWidget(QLabel("── 云台 ──"), 4, 0, 1, 4)
+        layout.addWidget(QLabel("最小拍摄间隔(s):"), 4, 0)
+        edt_min_interval = QLineEdit(f"{self._camera_min_interval:.1f}")
+        layout.addWidget(edt_min_interval, 4, 1)
+        lbl_interval_hint = QLabel("(M4T=0.7s)")
+        lbl_interval_hint.setStyleSheet("color: #888; font-size: 10px;")
+        layout.addWidget(lbl_interval_hint, 4, 2, 1, 2)
 
-        layout.addWidget(QLabel("偏航角(°):"), 5, 0)
+        # ── 云台参数 ──
+        layout.addWidget(QLabel("── 云台 ──"), 5, 0, 1, 4)
+
+        layout.addWidget(QLabel("偏航角(°):"), 6, 0)
         edt_yaw = QLineEdit(f"{self._gimbal_yaw:.1f}")
-        layout.addWidget(edt_yaw, 5, 1)
+        layout.addWidget(edt_yaw, 6, 1)
         lbl_yaw_hint = QLabel("(0=与机头同向)")
         lbl_yaw_hint.setStyleSheet("color: #888; font-size: 10px;")
-        layout.addWidget(lbl_yaw_hint, 5, 2, 1, 2)
+        layout.addWidget(lbl_yaw_hint, 6, 2, 1, 2)
 
-        layout.addWidget(QLabel("俯仰限位(°):"), 6, 0)
+        layout.addWidget(QLabel("俯仰限位(°):"), 7, 0)
         edt_pitch_min = QLineEdit(f"{self._gimbal_pitch_min:.1f}")
-        layout.addWidget(edt_pitch_min, 6, 1)
-        layout.addWidget(QLabel("~"), 6, 2)
+        layout.addWidget(edt_pitch_min, 7, 1)
+        layout.addWidget(QLabel("~"), 7, 2)
         edt_pitch_max = QLineEdit(f"{self._gimbal_pitch_max:.1f}")
-        layout.addWidget(edt_pitch_max, 6, 3)
+        layout.addWidget(edt_pitch_max, 7, 3)
 
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         btns.accepted.connect(dlg.accept)
         btns.rejected.connect(dlg.reject)
-        layout.addWidget(btns, 7, 0, 1, 4)
+        layout.addWidget(btns, 8, 0, 1, 4)
 
         if dlg.exec_() == QDialog.Accepted:
             self._camera_name = cmb_camera.currentText()
             self._camera_fov = float(edt_fov.text())
             self._camera_zoom = float(edt_zoom.text())
+            self._camera_min_interval = float(edt_min_interval.text())
             self._forward_overlap = int(edt_fwd.text())
             self._side_overlap = int(edt_side.text())
             self._gimbal_yaw = float(edt_yaw.text())
@@ -1514,7 +1571,7 @@ class MainWindow(QMainWindow):
         lbl_current_focal.setStyleSheet("QLabel { font-weight: bold; }")
         layout.addWidget(lbl_current_focal, 6, 1)
 
-        layout.addWidget(QLabel("FOV:"), 6, 2)
+        layout.addWidget(QLabel("水平FOV:"), 6, 2)
         lbl_fov_result = QLabel("- °")
         lbl_fov_result.setStyleSheet("QLabel { font-weight: bold; }")
         layout.addWidget(lbl_fov_result, 6, 3)
@@ -1657,7 +1714,7 @@ class MainWindow(QMainWindow):
         "航点距离:": "WP Spacing:",
         "速度(m/s):": "Speed(m/s):",
         "相机型号:": "Camera:",
-        "FOV(°):": "FOV(°):",
+        "水平FOV(°):": "H-FOV(°):",
         "航向重叠(%):": "Fwd Overlap(%):",
         "旁向重叠(%):": "Side Overlap(%):",
         "曲度:": "Curvature:",
@@ -1836,7 +1893,8 @@ class MainWindow(QMainWindow):
         if len(filtered) == 0:
             QMessageBox.information(self, "提示", "裁剪后无点云数据")
             return
-        self.viewer.add_point_cloud(filtered, self._get_render_mode(), self._get_point_size(), colors=filtered_colors, normals=filtered_normals)
+        self.viewer.add_point_cloud(filtered, self._get_render_mode(), self._get_point_size(), colors=filtered_colors, normals=filtered_normals, reset_camera=False, use_lighting=(self._color_scheme == "original"))
+        self._update_height_legend()
         n_total = len(self.points)
         n_show = len(filtered)
         self.statusBar().showMessage(f"已加载: {n_total:,} 点 (显示 {n_show:,})")
@@ -1982,6 +2040,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "输入错误", "巡检距离必须为正数")
             return
 
+        safe_dist = self.viewer._safe_distance
+        collision_dist = safe_dist * 1.5
+
         # 自动计算间距（如果还是默认的"自动"）
         if self.edt_spacing.text() == "自动" or self.edt_wp_spacing.text() == "自动":
             self._calc_overlap_spacing()
@@ -2071,12 +2132,16 @@ class MainWindow(QMainWindow):
 
         # 生成均匀网格点，过滤在多边形内的
         grid_targets = []
+        grid_scan_dirs = []  # 每个目标点对应的扫描方向
         v = v_min + spacing * 0.5
         row_idx = 0
         while v <= v_max:
             row_u = np.arange(u_min + wp_spacing * 0.5, u_max, wp_spacing)
             if row_idx % 2 == 1:
                 row_u = row_u[::-1]  # 蛇形扫描
+                scan_dir = -main_dir_3d
+            else:
+                scan_dir = main_dir_3d
             for u in row_u:
                 pt_2d = np.array([u, v])
                 # 判断是否在多边形内
@@ -2093,6 +2158,7 @@ class MainWindow(QMainWindow):
                     # 2D → 3D：在多边形平面上
                     target_3d = poly_center + u * main_dir_3d + v * cross_dir_3d
                     grid_targets.append(target_3d)
+                    grid_scan_dirs.append(scan_dir)
             v += spacing
             row_idx += 1
 
@@ -2107,23 +2173,114 @@ class MainWindow(QMainWindow):
         tree = self._get_kdtree()
 
         self.waypoints = []
-        for target in region_points:
+        warnings = []
+        self._check_speed_overlap(speed, wp_spacing, main_dir_3d, warnings)
+
+        # 预计算搜索方向列表（与点状/直线航线一致）
+        # 面状航线的机头方向在循环内计算，这里用法线方向构建搜索方向
+        _up = np.array([0.0, 0.0, 1.0])
+        _search_dirs = []
+        for n_ratio in [0.3, 0.5, 0.7, 1.0]:
+            for h_ratio in [0.3, 0.5, 0.7, 1.0]:
+                move_dir = poly_normal * n_ratio + np.array([-poly_normal[0], -poly_normal[1], 0.0]) * h_ratio
+                move_len = np.linalg.norm(move_dir)
+                if move_len > 1e-6:
+                    _search_dirs.append(move_dir / move_len)
+
+        for i, target in enumerate(region_points):
             normal = poly_normal
-            drone_pos = target + normal * inspect_dist
+            scan_dir = grid_scan_dirs[i] if i < len(grid_scan_dirs) else main_dir_3d
 
-            # 碰撞检测
+            # 检查法线方向是否正确：candidate_pos 应在模型外侧
             if tree is not None:
-                dist, _ = tree.query(drone_pos)
-                if dist < 1.0:
-                    safe_pos, _ = self._find_safe_position(target, normal, tree, 1.0, inspect_dist)
-                    if safe_pos is not None:
-                        drone_pos = safe_pos
+                candidate_pos = target + normal * inspect_dist
+                dist_to_surface, _ = tree.query(candidate_pos)
+                if dist_to_surface < collision_dist:
+                    normal = -normal
 
-            # 云台俯仰角：由航点→目标点几何关系计算
-            gimbal_pitch = self._calc_gimbal_pitch(drone_pos, target)
+            # 螃蟹飞：heading = cross(航线方向水平分量, [0,0,1])
+            route_dir_h = np.array([scan_dir[0], scan_dir[1], 0.0])
+            rdh_len = np.linalg.norm(route_dir_h)
+            if rdh_len > 1e-6:
+                route_dir_h = route_dir_h / rdh_len
+            else:
+                route_dir_h = np.array([1.0, 0.0, 0.0])
+            heading_h = np.cross(route_dir_h, np.array([0.0, 0.0, 1.0]))
+            hn = np.linalg.norm(heading_h)
+            if hn > 1e-6:
+                heading_h = heading_h / hn
+            else:
+                heading_h = np.array([1.0, 0.0, 0.0])
+
+            # 构建搜索方向：26个空间方向 + -heading 优先
+            search_directions = []
+            for sx in [-1, 0, 1]:
+                for sy in [-1, 0, 1]:
+                    for sz in [-1, 0, 1]:
+                        d = np.array([sx, sy, sz], dtype=np.float64)
+                        d_len = np.linalg.norm(d)
+                        if d_len > 1e-6:
+                            search_directions.append(d / d_len)
+            search_directions.insert(0, -heading_h)  # 优先尝试
+
+            # Left 向量用于 C5 检查
+            left = np.cross(heading_h, np.array([0.0, 0.0, 1.0]))
+            left_len = np.linalg.norm(left)
+            if left_len > 1e-6:
+                left = left / left_len
+
+            def _check_candidate(pos_c, _target=target, _heading=heading_h, _left=left):
+                if tree is not None:
+                    dist, _ = tree.query(pos_c)
+                    if dist < collision_dist:
+                        return False
+                pitch = self._calc_gimbal_pitch(pos_c, _target, _heading)
+                if not (self._gimbal_pitch_min <= pitch <= self._gimbal_pitch_max):
+                    return False
+                los = _target - pos_c
+                if abs(np.dot(los, _left)) > 0.1:
+                    return False
+                if tree is not None:
+                    seg_len = np.linalg.norm(los)
+                    if seg_len > 1.0:
+                        for tt in np.linspace(0.05, 0.95, max(5, int(seg_len / 0.5))):
+                            sample = pos_c + los * tt
+                            d, _ = tree.query(sample)
+                            if d < 0.3:
+                                return False
+                return True
+
+            # 搜索满足约束的位置
+            drone_pos = None
+            for offset in np.arange(inspect_dist, inspect_dist + 10.0, 0.5):
+                for move_dir in search_directions:
+                    pos_c = target + move_dir * offset
+                    if _check_candidate(pos_c):
+                        drone_pos = pos_c
+                        break
+                if drone_pos is not None:
+                    break
+
+            warned = False
+            if drone_pos is None:
+                drone_pos = target + normal * inspect_dist
+                warned = True
+                warnings.append(f"目标{i+1} 无法满足所有约束")
+
+            # 云台俯仰角
+            gimbal_pitch = self._calc_gimbal_pitch(drone_pos, target, heading_h)
             gimbal_pitch = np.clip(gimbal_pitch, self._gimbal_pitch_min, self._gimbal_pitch_max)
 
-            quat = look_at_quaternion(target, drone_pos)
+            # 机头方向：水平朝向目标
+            to_target = target - drone_pos
+            heading = np.array([to_target[0], to_target[1], 0.0])
+            hn = np.linalg.norm(heading)
+            if hn > 1e-6:
+                heading = heading / hn
+            else:
+                heading = heading_h
+
+            quat = look_at_quaternion(drone_pos + heading, drone_pos)
             self.waypoints.append({
                 'pos': drone_pos,
                 'quat': quat,
@@ -2143,6 +2300,10 @@ class MainWindow(QMainWindow):
             print(f"  wp{i}: pos=({wp['pos'][0]:.1f},{wp['pos'][1]:.1f},{wp['pos'][2]:.1f}) target=({t[0]:.1f},{t[1]:.1f},{t[2]:.1f})")
 
         self._display_route()
+
+        if warnings:
+            QMessageBox.warning(self, "约束警告",
+                f"生成 {len(self.waypoints)} 个航点\n\n" + "\n".join(warnings))
 
     # ─── 生成圆柱体航线 ───
     def generate_cylinder_route(self):
@@ -2186,7 +2347,14 @@ class MainWindow(QMainWindow):
         self.waypoints = []
         tree = self._get_kdtree()
         safe_dist = self.viewer._safe_distance
-        collision_dist = safe_dist * 0.5
+        collision_dist = safe_dist * 1.5
+
+        warnings = []
+        # 检查速度vs拍摄间隔：水平方向（弧长步距）
+        hfov = self._camera_fov
+        h_cover = 2.0 * dist * math.tan(math.radians(hfov / 2.0))
+        arc_step = h_cover * (1.0 - self._side_overlap / 100.0)
+        self._check_speed_overlap(speed, arc_step, np.array([1.0, 0.0, 0.0]), warnings)
 
         if route_type == "螺旋线":
             num_turns = max(1, int(h / vstep))
@@ -2201,21 +2369,40 @@ class MainWindow(QMainWindow):
                 rx = cx + radius * np.cos(angle)
                 ry = cy + radius * np.sin(angle)
                 pos = np.array([rx, ry, z])
+                cyl_center = np.array([cx, cy, z])
+                outward = np.array([rx - cx, ry - cy, 0.0])
+                out_norm = np.linalg.norm(outward)
+                if out_norm > 1e-10:
+                    outward = outward / out_norm
+                else:
+                    outward = np.array([1.0, 0.0, 0.0])
 
-                # 碰撞检测：航点不能穿模
+                # 综合约束检查：碰撞 + 云台角度 + 视线不穿模
+                need_search = False
                 if tree is not None:
                     dist, _ = tree.query(pos)
                     if dist < collision_dist:
-                        # 沿径向向外推离
-                        outward = np.array([rx - cx, ry - cy, 0.0])
-                        out_norm = np.linalg.norm(outward)
-                        if out_norm > 1e-10:
-                            outward = outward / out_norm
-                        else:
-                            outward = np.array([1.0, 0.0, 0.0])
-                        safe_pos, _ = self._find_safe_position(pos, outward, tree, collision_dist, 0.0)
-                        if safe_pos is not None:
-                            pos = safe_pos
+                        need_search = True
+                pitch = self._calc_gimbal_pitch(pos, cyl_center)
+                if not (self._gimbal_pitch_min <= pitch <= self._gimbal_pitch_max):
+                    need_search = True
+                if not need_search and tree is not None:
+                    seg = cyl_center - pos
+                    seg_len = np.linalg.norm(seg)
+                    if seg_len > 1.0:
+                        for tt in np.linspace(0.05, 0.95, max(5, int(seg_len / 0.5))):
+                            sample = pos + seg * tt
+                            d, _ = tree.query(sample)
+                            if d < 0.3:
+                                need_search = True
+                                break
+
+                if need_search:
+                    safe_pos, warned = self._find_safe_position(cyl_center, outward, tree, collision_dist, 0.0)
+                    if safe_pos is not None:
+                        pos = safe_pos
+                    if warned:
+                        warnings.append(f"螺旋点{i+1} 无法满足所有约束")
 
                 # 机头朝向圆柱中心（径向内法线）
                 inward = np.array([cx - pos[0], cy - pos[1], 0.0])
@@ -2226,7 +2413,6 @@ class MainWindow(QMainWindow):
                     heading = np.array([1.0, 0.0, 0.0])
                 target = pos + heading
                 quat = look_at_quaternion(target, pos)
-                cyl_center = np.array([cx, cy, pos[2]])
                 gimbal_pitch = self._calc_gimbal_pitch(pos, cyl_center)
                 gimbal_pitch = np.clip(gimbal_pitch, self._gimbal_pitch_min, self._gimbal_pitch_max)
                 self.waypoints.append({
@@ -2247,13 +2433,16 @@ class MainWindow(QMainWindow):
                 rx = cx + radius * np.cos(angle)
                 ry = cy + radius * np.sin(angle)
 
-                # 机头朝向圆柱中心
-                inward = np.array([cx - rx, cy - ry, 0.0])
-                inward_norm = np.linalg.norm(inward)
-                if inward_norm > 1e-10:
-                    heading = inward / inward_norm
+                outward = np.array([rx - cx, ry - cy, 0.0])
+                out_norm = np.linalg.norm(outward)
+                if out_norm > 1e-10:
+                    outward = outward / out_norm
                 else:
-                    heading = np.array([1.0, 0.0, 0.0])
+                    outward = np.array([1.0, 0.0, 0.0])
+
+                # 机头朝向圆柱中心
+                inward = -outward
+                heading = inward.copy()
 
                 # 偶数列：从下往上；奇数列：从上往下
                 if col % 2 == 0:
@@ -2264,24 +2453,37 @@ class MainWindow(QMainWindow):
                 for layer in layers_range:
                     z = cz + layer * vstep
                     pos = np.array([rx, ry, z])
+                    cyl_center = np.array([cx, cy, z])
 
-                    # 碰撞检测
+                    # 综合约束检查：碰撞 + 云台角度 + 视线不穿模
+                    need_search = False
                     if tree is not None:
                         dist, _ = tree.query(pos)
                         if dist < collision_dist:
-                            outward = np.array([rx - cx, ry - cy, 0.0])
-                            out_norm = np.linalg.norm(outward)
-                            if out_norm > 1e-10:
-                                outward = outward / out_norm
-                            else:
-                                outward = np.array([1.0, 0.0, 0.0])
-                            safe_pos, _ = self._find_safe_position(pos, outward, tree, collision_dist, 0.0)
-                            if safe_pos is not None:
-                                pos = safe_pos
+                            need_search = True
+                    pitch = self._calc_gimbal_pitch(pos, cyl_center)
+                    if not (self._gimbal_pitch_min <= pitch <= self._gimbal_pitch_max):
+                        need_search = True
+                    if not need_search and tree is not None:
+                        seg = cyl_center - pos
+                        seg_len = np.linalg.norm(seg)
+                        if seg_len > 1.0:
+                            for tt in np.linspace(0.05, 0.95, max(5, int(seg_len / 0.5))):
+                                sample = pos + seg * tt
+                                d, _ = tree.query(sample)
+                                if d < 0.3:
+                                    need_search = True
+                                    break
+
+                    if need_search:
+                        safe_pos, warned = self._find_safe_position(cyl_center, outward, tree, collision_dist, 0.0)
+                        if safe_pos is not None:
+                            pos = safe_pos
+                        if warned:
+                            warnings.append(f"Z字形点(col{col+1},layer{layer}) 无法满足所有约束")
 
                     target = pos + heading
                     quat = look_at_quaternion(target, pos)
-                    cyl_center = np.array([cx, cy, pos[2]])
                     gimbal_pitch = self._calc_gimbal_pitch(pos, cyl_center)
                     gimbal_pitch = np.clip(gimbal_pitch, self._gimbal_pitch_min, self._gimbal_pitch_max)
                     self.waypoints.append({
@@ -2295,6 +2497,10 @@ class MainWindow(QMainWindow):
 
         self._display_route()
         print(f"[Cylinder] Generated {len(self.waypoints)} waypoints ({route_type})")
+
+        if warnings:
+            QMessageBox.warning(self, "约束警告",
+                f"生成 {len(self.waypoints)} 个航点\n\n" + "\n".join(warnings[:10]))
 
     # ─── 生成直线航线 ───
     def generate_line_route(self):
@@ -2324,17 +2530,28 @@ class MainWindow(QMainWindow):
             return
 
         # 航点间距 = 覆盖宽度 × (1 - 旁向重叠)
-        cover = 2.0 * inspect_dist * math.tan(math.radians(self._camera_fov / 2.0))
+        route_dir = p2 - p1
+        eff_fov = self._fov_for_direction(route_dir)
+        cover = 2.0 * inspect_dist * math.tan(math.radians(eff_fov / 2.0))
         spacing = cover * (1.0 - self._side_overlap / 100.0)
         spacing = max(0.1, spacing)
         self.edt_line_spacing.setText(f"{spacing:.2f}")
 
         n_pts = max(2, int(length / spacing) + 1)
         tree = self._get_kdtree()
+        safe_dist = self.viewer._safe_distance
+        collision_dist = safe_dist * 1.5
+
+        # 检查速度vs拍摄间隔
+        warnings_line = []
+        self._check_speed_overlap(speed, spacing, route_dir, warnings_line)
+        if warnings_line:
+            QMessageBox.warning(self, "拍摄间隔警告", "\n".join(warnings_line))
 
         # === 确定偏移方向：优先用拾取时存储的法线 ===
         mid_point = (p1 + p2) / 2.0
-        if hasattr(self, '_line_start_normal') and hasattr(self, '_line_end_normal'):
+        if (hasattr(self, '_line_start_normal') and self._line_start_normal is not None
+                and hasattr(self, '_line_end_normal') and self._line_end_normal is not None):
             # 插值法线：起点法线和终点法线之间插值
             normal = (self._line_start_normal + self._line_end_normal)
             nrm = np.linalg.norm(normal)
@@ -2344,57 +2561,99 @@ class MainWindow(QMainWindow):
                 normal = self._estimate_normal(mid_point)
         else:
             normal = self._estimate_normal(mid_point)
-        offset_dir = normal / np.linalg.norm(normal)
 
-        # === 确定偏移距离：约束条件驱动 ===
-        # 约束1: 碰撞检测 - 沿偏移方向找最近的点云点
-        min_collision_dist = inspect_dist  # 默认用巡检距离
+        # 检查法线方向是否正确：candidate_pos 应在模型外侧
         if tree is not None:
-            # 在偏移方向上采样检测
-            for d in np.arange(0.5, inspect_dist + 10.0, 0.5):
-                test_pos = mid_point + offset_dir * d
-                dist, _ = tree.query(test_pos)
-                if dist < 1.0:  # 碰撞阈值
-                    min_collision_dist = max(inspect_dist, d + 1.0)
-                    break
+            candidate_pos = mid_point + normal * inspect_dist
+            dist_to_surface, _ = tree.query(candidate_pos)
+            if dist_to_surface < collision_dist:
+                normal = -normal
 
-        # 约束2: 云台限位 - 计算满足云台角度的最小距离
-        # 云台俯仰角 = arctan(dz / horizontal_dist)
-        # 需要: gimbal_pitch_min <= pitch <= gimbal_pitch_max
-        dz = abs(mid_point[2] - (mid_point + offset_dir * inspect_dist)[2])
-        horizontal_dist = math.sqrt(inspect_dist**2 - dz**2) if inspect_dist > dz else inspect_dist
-
-        # 计算满足云台限位的最小距离
-        min_gimbal_dist = inspect_dist
-        if self._gimbal_pitch_min < -80:  # 云台可以朝下看
-            # 目标在下方时，需要更近的距离
-            min_gimbal_dist = max(1.0, abs(dz / math.tan(math.radians(abs(self._gimbal_pitch_min)))))
-
-        # 最终偏移距离 = 满足所有约束的最小值
-        offset_dist = max(min_collision_dist, min_gimbal_dist, inspect_dist)
+        # 螃蟹飞：机头垂直于航线方向
+        route_h = np.array([route_dir[0], route_dir[1], 0.0])
+        rhn = np.linalg.norm(route_h)
+        if rhn > 1e-6:
+            route_h = route_h / rhn
+        else:
+            route_h = np.array([1.0, 0.0, 0.0])
+        crab_heading = np.cross(route_h, np.array([0.0, 0.0, 1.0]))
+        chn = np.linalg.norm(crab_heading)
+        if chn > 1e-6:
+            crab_heading = crab_heading / chn
+        else:
+            crab_heading = np.array([1.0, 0.0, 0.0])
 
         self.waypoints = []
+        warnings = []
+
+        # 构建搜索方向：26个空间方向 + -crab_heading 优先
+        search_directions = []
+        for sx in [-1, 0, 1]:
+            for sy in [-1, 0, 1]:
+                for sz in [-1, 0, 1]:
+                    d = np.array([sx, sy, sz], dtype=np.float64)
+                    d_len = np.linalg.norm(d)
+                    if d_len > 1e-6:
+                        search_directions.append(d / d_len)
+        h_norm = np.linalg.norm(crab_heading)
+        if h_norm > 1e-6:
+            search_directions.insert(0, -crab_heading / h_norm)  # 优先尝试
+
+        # Left 向量用于 C5 检查
+        left = np.cross(crab_heading, np.array([0.0, 0.0, 1.0]))
+        left_len = np.linalg.norm(left)
+        if left_len > 1e-6:
+            left = left / left_len
+
+        def _check_candidate(pos_c):
+            """检查候选位置是否满足所有约束"""
+            if tree is not None:
+                dist, _ = tree.query(pos_c)
+                if dist < collision_dist:
+                    return False
+            pitch = self._calc_gimbal_pitch(pos_c, target, crab_heading)
+            if not (self._gimbal_pitch_min <= pitch <= self._gimbal_pitch_max):
+                return False
+            los = target - pos_c
+            if abs(np.dot(los, left)) > 0.1:
+                return False
+            if tree is not None:
+                seg_len = np.linalg.norm(los)
+                if seg_len > 1.0:
+                    for tt in np.linspace(0.05, 0.95, max(5, int(seg_len / 0.5))):
+                        sample = pos_c + los * tt
+                        d, _ = tree.query(sample)
+                        if d < 0.3:
+                            return False
+            return True
+
         for i in range(n_pts):
             t = i / (n_pts - 1)
             target = p1 + t * (p2 - p1)  # 点云表面目标点
 
-            # 无人机位置 = 目标点 + 统一方向 × 偏移距离
-            drone_pos = target + offset_dir * offset_dist
+            # 搜索满足约束的位置
+            drone_pos = None
+            for offset in np.arange(inspect_dist, inspect_dist + 10.0, 0.5):
+                for move_dir in search_directions:
+                    pos_c = target + move_dir * offset
+                    if _check_candidate(pos_c):
+                        drone_pos = pos_c
+                        break
+                if drone_pos is not None:
+                    break
 
-            # 碰撞检测：确保无人机位置安全
-            if tree is not None:
-                dist, _ = tree.query(drone_pos)
-                if dist < 1.0:
-                    # 位置不安全，沿方向继续外推
-                    safe_pos, warned = self._find_safe_position(target, offset_dir, tree, 1.0, offset_dist)
-                    if safe_pos is not None:
-                        drone_pos = safe_pos
+            warned = False
+            if drone_pos is None:
+                drone_pos = target + normal * inspect_dist
+                warned = True
+                warnings.append(f"航点{i+1} 无法满足所有约束")
 
             # 云台俯仰角：由航点→目标点几何关系计算
-            gimbal_pitch = self._calc_gimbal_pitch(drone_pos, target)
+            gimbal_pitch = self._calc_gimbal_pitch(drone_pos, target, crab_heading)
             gimbal_pitch = np.clip(gimbal_pitch, self._gimbal_pitch_min, self._gimbal_pitch_max)
 
-            quat = look_at_quaternion(target, drone_pos)
+            # 机头方向：螃蟹飞（垂直于航线），确保与云台方向成90度
+            quat = look_at_quaternion(drone_pos + crab_heading, drone_pos)
             self.waypoints.append({
                 'pos': drone_pos,
                 'quat': quat,
@@ -2406,6 +2665,9 @@ class MainWindow(QMainWindow):
 
         self._display_route()
         print(f"[Line] Generated {len(self.waypoints)} waypoints, spacing={spacing:.2f}m, inspect_dist={inspect_dist}m")
+        if warnings:
+            QMessageBox.warning(self, "约束警告",
+                f"生成 {len(self.waypoints)} 个航点\n\n" + "\n".join(warnings[:10]))
 
     # ─── 巡检点功能 ─────────────────────────────────────────
     def _start_inspect_mode(self):
@@ -2445,7 +2707,10 @@ class MainWindow(QMainWindow):
             try:
                 import math
                 inspect_dist = float(self.edt_line_inspect_dist.text())
-                cover = 2.0 * inspect_dist * math.tan(math.radians(self._camera_fov / 2.0))
+                p1 = np.array([float(self.edt_line_x1.text()), float(self.edt_line_y1.text()), float(self.edt_line_z1.text())])
+                p2 = np.array([float(self.edt_line_x2.text()), float(self.edt_line_y2.text()), float(self.edt_line_z2.text())])
+                eff_fov = self._fov_for_direction(p2 - p1)
+                cover = 2.0 * inspect_dist * math.tan(math.radians(eff_fov / 2.0))
                 spacing = cover * (1.0 - self._side_overlap / 100.0)
                 self.edt_line_spacing.setText(f"{spacing:.2f}")
             except ValueError:
@@ -2469,7 +2734,8 @@ class MainWindow(QMainWindow):
             try:
                 import math
                 inspect_dist = float(self.edt_line_inspect_dist.text())
-                cover = 2.0 * inspect_dist * math.tan(math.radians(self._camera_fov / 2.0))
+                eff_fov = self._fov_for_direction(e - s)
+                cover = 2.0 * inspect_dist * math.tan(math.radians(eff_fov / 2.0))
                 spacing = cover * (1.0 - self._side_overlap / 100.0)
                 self.edt_line_spacing.setText(f"{spacing:.2f}")
             except ValueError:
@@ -2478,11 +2744,130 @@ class MainWindow(QMainWindow):
             # 选完两个点后自动生成航线
             self.generate_line_route()
 
+    def _vertical_fov(self):
+        """根据水平FOV和画幅比例计算垂直FOV"""
+        import math
+        return math.degrees(2 * math.atan(math.tan(math.radians(self._camera_fov / 2.0)) / self._camera_aspect))
+
+    def _fov_for_direction(self, route_dir):
+        """根据航线方向选择合适的FOV：平行Z轴用垂直FOV，垂直Z轴用水平FOV"""
+        import math
+        d = np.array(route_dir, dtype=float)
+        nrm = np.linalg.norm(d)
+        if nrm < 1e-10:
+            return self._camera_fov
+        d = d / nrm
+        # Z方向分量占比
+        z_ratio = abs(d[2])
+        hfov = self._camera_fov
+        vfov = self._vertical_fov()
+        # z_ratio=1 纯垂直 → 用vfov；z_ratio=0 纯水平 → 用hfov
+        return hfov * (1.0 - z_ratio) + vfov * z_ratio
+
+    def _check_speed_overlap(self, speed, wp_spacing, route_dir, warnings):
+        """检查飞行速度是否满足最小拍摄间隔下的重叠率要求
+        speed: 飞行速度 (m/s)
+        wp_spacing: 航点间距 (m)
+        route_dir: 航线方向向量（用于选择FOV）
+        warnings: 警告列表（直接追加）
+        返回: 实际可达重叠率 (%)
+        """
+        import math
+        interval = self._camera_min_interval
+        min_spacing = speed * interval  # 最小拍摄间距
+        eff_fov = self._fov_for_direction(route_dir)
+        inspect_dist = 3.0  # 参考距离，用于计算覆盖宽度
+        cover = 2.0 * inspect_dist * math.tan(math.radians(eff_fov / 2.0))
+        if cover < 0.01:
+            return self._side_overlap
+        # 实际重叠率 = 1 - 实际间距/覆盖宽度
+        actual_spacing = max(min_spacing, wp_spacing)
+        actual_overlap = max(0.0, (1.0 - actual_spacing / cover)) * 100.0
+        if min_spacing > wp_spacing:
+            warnings.append(
+                f"速度{speed:.1f}m/s + 最小拍摄间隔{interval}s → "
+                f"最小间距{min_spacing:.2f}m > 设计间距{wp_spacing:.2f}m，"
+                f"实际旁向重叠率≈{actual_overlap:.0f}%（目标{self._side_overlap}%）"
+            )
+        return actual_overlap
+
+    def _precompute_stl_triangles(self):
+        """从 STL polydata 提取三角面顶点数组，用于射线相交检测"""
+        poly = self.viewer._stl_polydata
+        if poly is None:
+            self._stl_triangles = None
+            return
+        pts = poly.GetPoints()
+        n_cells = poly.GetNumberOfCells()
+        verts = []
+        for ci in range(n_cells):
+            cell = poly.GetCell(ci)
+            if cell.GetNumberOfPoints() != 3:
+                continue
+            p0 = pts.GetPoint(cell.GetPointId(0))
+            p1 = pts.GetPoint(cell.GetPointId(1))
+            p2 = pts.GetPoint(cell.GetPointId(2))
+            verts.append([p0, p1, p2])
+        if verts:
+            self._stl_triangles = np.array(verts, dtype=np.float64)  # (M, 3, 3)
+            print(f"[C3] 预计算 {len(verts)} 个三角面用于穿模检测")
+        else:
+            self._stl_triangles = None
+
+    def _ray_stl_intersect(self, ray_origin, ray_target):
+        """检测射线 origin→target 是否在到达目标前穿过 STL 模型
+        返回 True = 穿模（LOS 被遮挡）
+        使用 Möller–Trumbore 算法，向量化批量检测所有三角面
+        """
+        if self._stl_triangles is None:
+            return False
+        origin = np.asarray(ray_origin, dtype=np.float64)
+        target = np.asarray(ray_target, dtype=np.float64)
+        direction = target - origin
+        ray_len = np.linalg.norm(direction)
+        if ray_len < 1e-10:
+            return False
+        direction = direction / ray_len
+
+        # 三角面顶点: (M, 3, 3)
+        v0 = self._stl_triangles[:, 0, :]
+        v1 = self._stl_triangles[:, 1, :]
+        v2 = self._stl_triangles[:, 2, :]
+
+        # Möller–Trumbore（向量化）
+        edge1 = v1 - v0
+        edge2 = v2 - v0
+        h = np.cross(direction, edge2)
+        a = np.einsum('ij,ij->i', edge1, h)
+
+        valid = np.abs(a) > 1e-10
+        if not valid.any():
+            return False
+
+        f = 1.0 / a[valid]
+        s = origin - v0[valid]
+        u = f * np.einsum('ij,ij->i', s, h[valid])
+
+        # 逐元素检查重心坐标
+        in_tri = (u >= 0.0) & (u <= 1.0)
+        q = np.cross(s, edge1[valid])
+        v = f * np.einsum('j,ij->i', direction, q)
+        in_tri = in_tri & (v >= 0.0) & (u + v <= 1.0)
+
+        if not in_tri.any():
+            return False
+
+        t = f[in_tri] * np.einsum('ij,ij->i', edge2[valid][in_tri], q[in_tri])
+        t_ratio = t / ray_len
+        hits_before_target = (t > 1e-6) & (t_ratio < 0.95)
+
+        return hits_before_target.any()
+
     def _estimate_normal(self, point):
         """获取表面法线：优先STL几何法线，回退PCA估算"""
-        # 优先：STL 网格最近顶点法线（几何法线，不做翻转）
+        # 优先：STL 网格真实几何法线（不翻转，用于区分顶面/底面）
         if self.viewer._stl_polydata is not None:
-            normal = self.viewer.get_stl_normal(point)
+            normal = self.viewer.get_stl_geometric_normal(point)
             if normal is not None:
                 return normal
 
@@ -2514,19 +2899,92 @@ class MainWindow(QMainWindow):
             normal = -normal
         return normal
 
-    def _find_safe_position(self, target, normal, tree, collision_dist, safe_dist, max_offset=10.0):
-        """沿法线方向找安全飞行位置，返回 (pos, warned)"""
-        for i in range(20):
-            offset = safe_dist + i * 0.5
-            if offset > max_offset:
-                return None, True
-            pos = target + normal * offset
+    def _find_safe_position(self, target, normal, tree, collision_dist, safe_dist, max_offset=10.0, heading=None):
+        """根据约束条件直接计算航点位置。
+        约束：巡检距离、安全距离、云台角度范围、视线无遮挡、yaw=0/roll=0。
+        heading: 可选，传入时检查 C5（视线在 Forward-Up 平面内）
+        """
+        pitch_min = self._gimbal_pitch_min  # -90
+        pitch_max = self._gimbal_pitch_max  # 55
+        inspect_dist = safe_dist  # 巡检距离
+
+        # 计算 Left 向量用于 C5 检查
+        left_vec = None
+        if heading is not None:
+            left_vec = np.cross(heading, np.array([0.0, 0.0, 1.0]))
+            left_len = np.linalg.norm(left_vec)
+            if left_len > 1e-6:
+                left_vec = left_vec / left_len
+
+        def _check(pos):
+            """综合检查：碰撞+云台+视线+C5，返回 (通过, 原因)"""
+            # C2: 云台角度
+            pitch = self._calc_gimbal_pitch(pos, target, heading)
+            if not (pitch_min <= pitch <= pitch_max):
+                return False, 'gimbal'
+            # C1: 碰撞
             if tree is not None:
                 dist, _ = tree.query(pos)
-                if dist >= collision_dist:
-                    return pos, False
-            else:
+                if dist < collision_dist:
+                    return False, 'collision'
+            # C5: 视线必须在 Forward-Up 平面内（yaw=0, roll=0）
+            if left_vec is not None:
+                los = target - pos
+                if abs(np.dot(los, left_vec)) > 0.1:
+                    return False, 'gimbal_yaw'
+            # C3: 视线不穿模（只检查中间段，阈值0.3m）
+            if tree is not None:
+                seg = target - pos
+                seg_len = np.linalg.norm(seg)
+                if seg_len > 1.0:
+                    n_samples = max(5, int(seg_len / 0.5))
+                    for t in np.linspace(0.05, 0.95, n_samples):
+                        sample = pos + seg * t
+                        d, _ = tree.query(sample)
+                        if d < 0.3:
+                            return False, 'los'
+            return True, 'ok'
+
+        # 构建候选方向：先法线偏转（斜向），最后才是纯法线
+        directions = []
+        up = np.array([0.0, 0.0, 1.0])
+        if abs(np.dot(normal, up)) > 0.9:
+            up = np.array([1.0, 0.0, 0.0])
+        perp1 = np.cross(normal, up)
+        perp1 = perp1 / np.linalg.norm(perp1)
+        perp2 = np.cross(normal, perp1)
+        perp2 = perp2 / np.linalg.norm(perp2)
+        for angle_deg in [30, 45, 60, 15, 75]:
+            angle_rad = np.radians(angle_deg)
+            for sign in [1, -1]:
+                d1 = normal * np.cos(angle_rad) + perp1 * np.sin(angle_rad) * sign
+                directions.append(d1 / np.linalg.norm(d1))
+                d2 = normal * np.cos(angle_rad) + perp2 * np.sin(angle_rad) * sign
+                directions.append(d2 / np.linalg.norm(d2))
+        directions.append(normal)
+
+        # 在每个方向上，用巡检距离直接尝试
+        for direction in directions:
+            pos = target + direction * inspect_dist
+            ok, reason = _check(pos)
+            if ok:
+                pitch = self._calc_gimbal_pitch(pos, target, heading)
+                print(f"[FindSafe] target=({target[0]:.1f},{target[1]:.1f},{target[2]:.1f}) "
+                      f"dir=({direction[0]:.2f},{direction[1]:.2f},{direction[2]:.2f}) "
+                      f"dist={inspect_dist:.1f} pitch={pitch:.1f}° → OK")
                 return pos, False
+
+        # 巡检距离不行，沿法线逐步加大距离
+        for offset in np.arange(inspect_dist + 1.0, max_offset + 1.0, 1.0):
+            pos = target + normal * offset
+            ok, reason = _check(pos)
+            if ok:
+                pitch = self._calc_gimbal_pitch(pos, target, heading)
+                print(f"[FindSafe] target=({target[0]:.1f},{target[1]:.1f},{target[2]:.1f}) "
+                      f"offset={offset:.1f} pitch={pitch:.1f}° → OK (extended)")
+                return pos, False
+
+        print(f"[FindSafe] target=({target[0]:.1f},{target[1]:.1f},{target[2]:.1f}) → FAILED")
         return None, True
 
     def generate_inspect_route(self):
@@ -2546,42 +3004,172 @@ class MainWindow(QMainWindow):
             return
 
         safe_dist = self.viewer._safe_distance
-        collision_dist = safe_dist * 0.5
+        collision_dist = safe_dist * 1.5
         tree = self._get_kdtree()
 
         self.waypoints = []
         warnings = []
 
+        # 检查速度vs拍摄间隔
+        if len(self._inspect_target_points) >= 2:
+            min_seg = min(np.linalg.norm(self._inspect_target_points[i+1] - self._inspect_target_points[i])
+                         for i in range(len(self._inspect_target_points) - 1))
+            route_dir_inspect = self._inspect_target_points[-1] - self._inspect_target_points[0]
+            self._check_speed_overlap(1.0, min_seg, route_dir_inspect, warnings)
+
+        up = np.array([0.0, 0.0, 1.0])
+
         for i, target in enumerate(self._inspect_target_points):
-            # 优先使用拾取时存储的精确三角面法线
+            target = np.asarray(target, dtype=np.float64)
+
+            # ── 航线方向：用前后相邻点计算（非首尾连线）──
+            if len(self._inspect_target_points) >= 2:
+                if i == 0:
+                    rd = self._inspect_target_points[1] - target
+                elif i == len(self._inspect_target_points) - 1:
+                    rd = target - self._inspect_target_points[-2]
+                else:
+                    rd = self._inspect_target_points[i+1] - self._inspect_target_points[i-1]
+                rd_h = np.array([rd[0], rd[1], 0.0])
+                rd_h_len = np.linalg.norm(rd_h)
+                if rd_h_len > 1e-6:
+                    route_dir_h = rd_h / rd_h_len
+                else:
+                    route_dir_h = np.array([1.0, 0.0, 0.0])
+            else:
+                route_dir_h = np.array([1.0, 0.0, 0.0])
+
+            # ── 螃蟹飞 heading：⊥ 航线方向（水平面）──
+            heading = np.cross(route_dir_h, up)
+            hn = np.linalg.norm(heading)
+            if hn > 1e-6:
+                heading = heading / hn
+            else:
+                heading = np.array([1.0, 0.0, 0.0])
+            # 确保 heading 朝向目标一侧
+            to_target = target - np.zeros(3)  # 参考点暂用原点
+            if np.dot(heading, np.array([to_target[0], to_target[1], 0.0])) < 0:
+                heading = -heading
+
+            # ── 法线 ──
             if i < len(self._inspect_target_normals):
                 normal = self._inspect_target_normals[i]
             else:
                 normal = self._estimate_normal(target)
-            print(f"[Inspect] P{i+1} target=({target[0]:.2f},{target[1]:.2f},{target[2]:.2f}) normal=({normal[0]:.3f},{normal[1]:.3f},{normal[2]:.3f})")
-            pos, warned = self._find_safe_position(
-                target, normal, tree, collision_dist, inspect_dist
-            )
-            if pos is not None:
-                print(f"[Inspect] P{i+1} → pos=({pos[0]:.2f},{pos[1]:.2f},{pos[2]:.2f})")
-            if pos is None:
-                # 法线方向找不到安全位置，尝试向上
-                pos = target + np.array([0, 0, inspect_dist])
+            # 确保法线朝外（仅点云模式需要，STL几何法线已正确）
+            if tree is not None and self.viewer._stl_polydata is None:
+                candidate_pos = target + normal * inspect_dist
+                dist_to_surface, _ = tree.query(candidate_pos)
+                if dist_to_surface < collision_dist:
+                    normal = -normal
+
+            print(f"[Inspect] P{i+1} target=({target[0]:.2f},{target[1]:.2f},{target[2]:.2f}) "
+                  f"normal=({normal[0]:.3f},{normal[1]:.3f},{normal[2]:.3f}) "
+                  f"heading=({heading[0]:.2f},{heading[1]:.2f},{heading[2]:.2f})")
+
+            # ── 云台坐标系 ──
+            left = np.cross(heading, up)
+            left_len = np.linalg.norm(left)
+            if left_len > 1e-6:
+                left = left / left_len
+            else:
+                left = np.array([0.0, 1.0, 0.0])
+
+            # ── 判断表面类型，选择搜索方向（C5: 必须在 Forward-Up 平面内）──
+            normal_up_dot = np.dot(normal, up)
+            is_top_surface = normal_up_dot > 0.7      # 法线朝上 → 顶面
+            is_bottom_surface = normal_up_dot < -0.7   # 法线朝下 → 底面
+            is_horizontal = is_top_surface or is_bottom_surface
+
+            if is_top_surface:
+                # 顶面：无人机在上方，LOS 朝下（在 Fwd-Up 平面内）
+                primary_dir = up.copy()
+                fallback_dirs = [heading, -heading, route_dir_h, -route_dir_h]
+            elif is_bottom_surface:
+                # 底面：无人机在下方，LOS 朝上（在 Fwd-Up 平面内）
+                # 必须从下方接近，否则 LOS 穿过桥体
+                primary_dir = -up.copy()
+                fallback_dirs = [heading, -heading, route_dir_h, -route_dir_h]
+            else:
+                # 垂直面：从 heading 方向搜索（LOS 沿 Forward 轴，在 Fwd-Up 平面内）
+                primary_dir = heading.copy()
+                if np.dot(heading, normal) > 0:
+                    primary_dir = -heading
+                fallback_dirs = [up, -up, primary_dir + up * 0.3, primary_dir - up * 0.3]
+
+            def _check_candidate(pos_c):
+                """检查候选位置是否满足所有约束"""
+                # C1: 碰撞检测
                 if tree is not None:
-                    dist, _ = tree.query(pos)
+                    dist, _ = tree.query(pos_c)
                     if dist < collision_dist:
-                        warnings.append(f"P{i+1} 无法找到安全位置")
-                        pos = target + np.array([0, 0, inspect_dist + 2.0])
+                        return False, 'collision'
+                # C2: 云台 pitch 范围（严格拒绝，不 clip）
+                pitch = self._calc_gimbal_pitch(pos_c, target, heading)
+                if not (self._gimbal_pitch_min <= pitch <= self._gimbal_pitch_max):
+                    return False, 'gimbal'
+                # C5: 视线在 Forward-Up 平面内
+                los = target - pos_c
+                los_left = np.dot(los, left)
+                if abs(los_left) > 0.1:
+                    return False, 'gimbal_yaw'
+                # C3: 视线不穿模
+                los_len = np.linalg.norm(los)
+                if los_len > 0.5:
+                    if self.viewer._stl_polydata is not None and self._stl_triangles is not None:
+                        # ── STL 射线相交检测（Möller–Trumbore 算法）──
+                        # 检测 LOS 是否在到达目标前穿过 STL 三角面
+                        if self._ray_stl_intersect(pos_c, target):
+                            return False, 'los_stl'
+                    elif tree is not None:
+                        # ── 点云距离检测（fallback）──
+                        n_samples = max(5, int(los_len / 0.5))
+                        for t in np.linspace(0.05, 0.95, n_samples):
+                            sample = pos_c + los * t
+                            d, _ = tree.query(sample)
+                            if d < 0.3:
+                                return False, 'los'
+                return True, 'ok'
+
+            # ── C6 搜索：从 inspect_dist 开始，优先最近 ──
+            best_pos = None
+            # 合并搜索方向：primary 优先，fallback 其次
+            all_dirs = [primary_dir] + fallback_dirs
+            # 加入法线方向作为备选
+            if not any(np.allclose(normal, d, atol=0.1) for d in all_dirs):
+                all_dirs.append(normal)
+
+            for offset in np.arange(inspect_dist, inspect_dist + 10.0, 0.5):
+                for move_dir in all_dirs:
+                    d_norm = np.linalg.norm(move_dir)
+                    if d_norm < 1e-6:
+                        continue
+                    pos_c = target + move_dir / d_norm * offset
+                    ok, reason = _check_candidate(pos_c)
+                    if ok:
+                        best_pos = pos_c
+                        break
+                if best_pos is not None:
+                    break
+
+            warned = False
+            if best_pos is None:
+                pos = target + normal * inspect_dist
                 warned = True
+                warnings.append(f"P{i+1} 无法满足所有约束")
+            else:
+                pos = best_pos
 
-            if warned:
-                warnings.append(f"P{i+1} 航点可能过近")
+            print(f"[Inspect] P{i+1} → pos=({pos[0]:.2f},{pos[1]:.2f},{pos[2]:.2f})")
 
-            # 朝向巡检目标点
-            quat = look_at_quaternion(target, pos)
-            gimbal_pitch_raw = self._calc_gimbal_pitch(pos, target)
-            gimbal_pitch = np.clip(gimbal_pitch_raw, self._gimbal_pitch_min, self._gimbal_pitch_max)
-            print(f"[Inspect] P{i+1} gimbal_pitch_raw={gimbal_pitch_raw:.1f}° → clipped={gimbal_pitch:.1f}° (limit [{self._gimbal_pitch_min}, {self._gimbal_pitch_max}])")
+            # ── 机头方向：螃蟹飞（⊥ 航线）──
+            quat = look_at_quaternion(pos + heading, pos)
+            gimbal_pitch = self._calc_gimbal_pitch(pos, target, heading)
+            # pitch 超范围时记录警告（不 clip）
+            if not (self._gimbal_pitch_min <= gimbal_pitch <= self._gimbal_pitch_max):
+                warnings.append(f"P{i+1} pitch={gimbal_pitch:.1f}°超范围，已强制使用最近可行位置")
+                gimbal_pitch = np.clip(gimbal_pitch, self._gimbal_pitch_min, self._gimbal_pitch_max)
+            print(f"[Inspect] P{i+1} gimbal_pitch={gimbal_pitch:.1f}° heading=({heading[0]:.2f},{heading[1]:.2f},{heading[2]:.2f})")
             self.waypoints.append({
                 'pos': pos,
                 'quat': quat,
@@ -2692,7 +3280,11 @@ class MainWindow(QMainWindow):
         self.waypoints = []
         tree = self._get_kdtree()
         safe_dist = self.viewer._safe_distance
-        collision_dist = safe_dist * 0.5
+        collision_dist = safe_dist * 1.5
+        warnings = []
+
+        # 检查速度vs拍摄间隔（水平方向沿边移动）
+        self._check_speed_overlap(speed, cstep, np.array([1.0, 0.0, 0.0]), warnings)
 
         for layer in range(num_layers + 1):
             z = cz + layer * vstep
@@ -2709,21 +3301,63 @@ class MainWindow(QMainWindow):
                         continue
                     pos_2d, heading = pts[pi]
                     pos = np.array([pos_2d[0], pos_2d[1], z])
+                    cube_center = np.array([cx, cy, z])
 
-                    # 碰撞检测：航点不能穿模
+                    outward = np.array([pos_2d[0] - cx, pos_2d[1] - cy, 0.0])
+                    out_norm = np.linalg.norm(outward)
+                    if out_norm > 1e-10:
+                        outward = outward / out_norm
+                    else:
+                        outward = np.array([1.0, 0.0, 0.0])
+
+                    # 综合约束检查：碰撞 + 云台角度 + 视线不穿模
+                    need_search = False
                     if tree is not None:
                         dist, _ = tree.query(pos)
                         if dist < collision_dist:
-                            # 沿指向中心的反方向（向外）推离
-                            outward = np.array([pos_2d[0] - cx, pos_2d[1] - cy, 0.0])
-                            out_norm = np.linalg.norm(outward)
-                            if out_norm > 1e-10:
-                                outward = outward / out_norm
-                            else:
-                                outward = np.array([1.0, 0.0, 0.0])
-                            safe_pos, _ = self._find_safe_position(pos, outward, tree, collision_dist, 0.0)
-                            if safe_pos is not None:
-                                pos = safe_pos
+                            need_search = True
+                    pitch = self._calc_gimbal_pitch(pos, cube_center)
+                    if not (self._gimbal_pitch_min <= pitch <= self._gimbal_pitch_max):
+                        need_search = True
+                    if not need_search and tree is not None:
+                        seg = cube_center - pos
+                        seg_len = np.linalg.norm(seg)
+                        if seg_len > 1.0:
+                            for tt in np.linspace(0.05, 0.95, max(5, int(seg_len / 0.5))):
+                                sample = pos + seg * tt
+                                d, _ = tree.query(sample)
+                                if d < 0.3:
+                                    need_search = True
+                                    break
+
+                    if need_search:
+                        # 拐角检测：检查附近点是否分布在多个方向
+                        max_off = 10.0
+                        if tree is not None:
+                            dist_q, _ = tree.query(pos)
+                            if dist_q < collision_dist:
+                                search_r = collision_dist * 2.0
+                                nearby_idxs = tree.query_ball_point(pos, search_r)
+                                if len(nearby_idxs) > 0:
+                                    nearby_pts = tree.data[nearby_idxs]
+                                    to_pts = nearby_pts - pos
+                                    horiz = to_pts[:, :2]
+                                    horiz_norms = np.linalg.norm(horiz, axis=1, keepdims=True)
+                                    horiz_norms[horiz_norms < 1e-10] = 1.0
+                                    horiz_dirs = horiz / horiz_norms
+                                    outward_2d = outward[:2]
+                                    dot_products = horiz_dirs @ outward_2d
+                                    opposite_face = np.sum(dot_products < -0.5)
+                                    side_face = np.sum(np.abs(dot_products) <= 0.5)
+                                    if opposite_face > 0 or side_face > 0:
+                                        max_off = 15.0
+
+                        safe_pos, warned = self._find_safe_position(
+                            cube_center, outward, tree, collision_dist, 0.0, max_offset=max_off)
+                        if safe_pos is not None:
+                            pos = safe_pos
+                        if warned:
+                            warnings.append(f"边{ei+1}层{layer} 无法满足所有约束")
 
                     # 重新计算heading（pos可能已调整）
                     to_cx = cx - pos[0]
@@ -2734,7 +3368,6 @@ class MainWindow(QMainWindow):
 
                     target = pos + heading
                     quat = look_at_quaternion(target, pos)
-                    cube_center = np.array([cx, cy, pos[2]])
                     gimbal_pitch = self._calc_gimbal_pitch(pos, cube_center)
                     gimbal_pitch = np.clip(gimbal_pitch, self._gimbal_pitch_min, self._gimbal_pitch_max)
                     self.waypoints.append({
@@ -2747,6 +3380,10 @@ class MainWindow(QMainWindow):
                     })
 
         self._display_route()
+
+        if warnings:
+            QMessageBox.warning(self, "约束警告",
+                f"生成 {len(self.waypoints)} 个航点\n\n" + "\n".join(warnings[:10]))
 
     def _apply_bridge_params(self):
         try:
@@ -2835,30 +3472,33 @@ class MainWindow(QMainWindow):
         line_spacing = round(cover * (1.0 - fwd_overlap), 2)
         self.edt_wp_spacing.setText(str(max(0.1, wp_spacing)))
         self.edt_spacing.setText(str(max(0.1, line_spacing)))
-        print(f"[Overlap] 巡检距离={inspect_dist}m FOV={fov}° 覆盖={cover:.1f}m → 航点间距={wp_spacing}m 线间距={line_spacing}m")
+        max_speed = wp_spacing / self._camera_min_interval if self._camera_min_interval > 0 else 999
+        print(f"[Overlap] 巡检距离={inspect_dist}m FOV={fov}° 覆盖={cover:.1f}m → 航点间距={wp_spacing}m 线间距={line_spacing}m 最大速度={max_speed:.1f}m/s")
 
     def _calc_cube_spacing(self):
         """根据相机FOV、巡检距离和重叠率自动计算立方体航线的水平步距和垂直步距"""
         import math
         try:
             dist = float(self.edt_dist.text())
-            fov = self._camera_fov
             fwd_overlap = self._forward_overlap / 100.0
             side_overlap = self._side_overlap / 100.0
         except ValueError:
             QMessageBox.warning(self, "提示", "请输入有效数值")
             return
-        if dist <= 0 or fov <= 0 or fov >= 180:
+        if dist <= 0 or self._camera_fov <= 0 or self._camera_fov >= 180:
             QMessageBox.warning(self, "提示", "巡检距离和FOV需为正数，FOV<180°")
             return
-        # 拍摄范围 = 2 × 巡检距离 × tan(FOV/2)
-        cover = 2.0 * dist * math.tan(math.radians(fov / 2.0))
-        # 水平步距由旁向重叠率计算，垂直步距由航向重叠率计算
-        h_step = round(cover * (1.0 - side_overlap), 2)
-        v_step = round(cover * (1.0 - fwd_overlap), 2)
+        hfov = self._camera_fov
+        vfov = self._vertical_fov()
+        # 水平覆盖用水平FOV，垂直覆盖用垂直FOV
+        h_cover = 2.0 * dist * math.tan(math.radians(hfov / 2.0))
+        v_cover = 2.0 * dist * math.tan(math.radians(vfov / 2.0))
+        h_step = round(h_cover * (1.0 - side_overlap), 2)
+        v_step = round(v_cover * (1.0 - fwd_overlap), 2)
         self.edt_cstep.setText(str(max(0.1, h_step)))
         self.edt_vstep.setText(str(max(0.1, v_step)))
-        print(f"[Cube Overlap] 巡检距离={dist}m FOV={fov}° 覆盖={cover:.1f}m → 水平步距={h_step}m 垂直步距={v_step}m")
+        max_speed = h_step / self._camera_min_interval if self._camera_min_interval > 0 else 999
+        print(f"[Cube Overlap] 巡检距离={dist}m 水平FOV={hfov}° 垂直FOV={vfov:.1f}° → 水平步距={h_step}m 垂直步距={v_step}m 最大速度={max_speed:.1f}m/s")
 
     def _calc_cyl_spacing(self):
         """根据相机FOV、巡检距离和重叠率自动计算圆柱体航线的水平步距和垂直步距"""
@@ -2866,31 +3506,28 @@ class MainWindow(QMainWindow):
         try:
             dist = float(self.edt_cyl_dist.text())
             diam = float(self.edt_cyl_diam.text())
-            fov = self._camera_fov
             fwd_overlap = self._forward_overlap / 100.0
             side_overlap = self._side_overlap / 100.0
         except ValueError:
             QMessageBox.warning(self, "提示", "请输入有效数值")
             return
-        if dist <= 0 or fov <= 0 or fov >= 180:
+        if dist <= 0 or self._camera_fov <= 0 or self._camera_fov >= 180:
             QMessageBox.warning(self, "提示", "巡检距离和FOV需为正数，FOV<180°")
             return
-        # 拍摄范围 = 2 × 巡检距离 × tan(FOV/2)
-        cover = 2.0 * dist * math.tan(math.radians(fov / 2.0))
-        # 垂直步距由航向重叠率计算
-        v_step = round(cover * (1.0 - fwd_overlap), 2)
+        hfov = self._camera_fov
+        vfov = self._vertical_fov()
+        # 垂直覆盖用垂直FOV
+        v_cover = 2.0 * dist * math.tan(math.radians(vfov / 2.0))
+        v_step = round(v_cover * (1.0 - fwd_overlap), 2)
         self.edt_cyl_vstep.setText(str(max(0.1, v_step)))
-        # 水平步距（角度）：根据圆周长度和旁向重叠率计算
+        # 水平步距（角度）：水平覆盖用水平FOV
+        h_cover = 2.0 * dist * math.tan(math.radians(hfov / 2.0))
         radius = diam / 2 + dist
-        circumference = 2 * math.pi * radius
-        # 每次拍摄覆盖的弧长
-        arc_cover = cover
-        # 考虑旁向重叠率，计算步进弧长
-        arc_step = arc_cover * (1.0 - side_overlap)
-        # 转换为角度
+        arc_step = h_cover * (1.0 - side_overlap)
         angle_step = round(math.degrees(arc_step / radius), 1)
         self.edt_cyl_astep.setText(str(max(1.0, angle_step)))
-        print(f"[Cyl Overlap] 巡检距离={dist}m FOV={fov}° 覆盖={cover:.1f}m → 水平步距={angle_step}° 垂直步距={v_step}m")
+        max_speed = arc_step / self._camera_min_interval if self._camera_min_interval > 0 else 999
+        print(f"[Cyl Overlap] 巡检距离={dist}m 水平FOV={hfov}° 垂直FOV={vfov:.1f}° → 弧长步距={arc_step:.2f}m 角度步距={angle_step}° 垂直步距={v_step}m 最大速度={max_speed:.1f}m/s")
 
     def _apply_flat_params(self):
         """应用面状航线参数并重新生成航线"""
@@ -3197,23 +3834,49 @@ class MainWindow(QMainWindow):
         except ValueError:
             self.viewer._safe_point = (0.0, 0.0, 5.0)
         self.viewer.add_route(self.waypoints, reset_camera=False)
-        self.lbl_info.setText(f"航点: {len(self.waypoints)}")
+        n = len(self.waypoints)
+        info = f"航点: {n}"
+        if n >= 1:
+            p0 = self.waypoints[0]['pos']
+            info += f"  |  首点: ({p0[0]:.1f}, {p0[1]:.1f}, {p0[2]:.1f})"
+        if n >= 2:
+            pn = self.waypoints[-1]['pos']
+            info += f"  |  末点: ({pn[0]:.1f}, {pn[1]:.1f}, {pn[2]:.1f})"
+        self.lbl_info.setText(info)
         self._update_route_time_label()
         self._check_safety_distance()
 
     @staticmethod
-    def _calc_gimbal_pitch(drone_pos, target_pos):
+    def _calc_gimbal_pitch(drone_pos, target_pos, heading=None):
         """计算云台pitch角度（度），使目标点位于相机画面中心
         drone_pos: 无人机位置 [x,y,z]
         target_pos: 目标点位置 [x,y,z]
-        返回: pitch角度（负值=朝下，-90=垂直朝下）
+        heading: 机头方向（前左上坐标系的 Forward 轴），可选
+                传入时用 atan2(los_up, los_fwd) 计算（螃蟹飞正确）
+                不传时用 atan(drop, h_dist) 计算（兼容旧行为）
+        返回: pitch角度（负值=朝下，正值=朝上，-90=垂直朝下，+90=垂直朝上）
         """
-        d = np.array(drone_pos)
-        t = np.array(target_pos)
-        drop = d[2] - t[2]  # 垂直落差
-        h_dist = np.sqrt((d[0] - t[0])**2 + (d[1] - t[1])**2)  # 水平距离
+        d = np.array(drone_pos, dtype=np.float64)
+        t = np.array(target_pos, dtype=np.float64)
+        los = t - d  # 无人机→目标视线
+
+        if heading is not None:
+            fwd = np.array(heading, dtype=np.float64)
+            fwd_len = np.linalg.norm(fwd)
+            if fwd_len > 1e-9:
+                fwd = fwd / fwd_len
+                los_fwd = np.dot(los, fwd)
+                los_up = los[2]  # dot(los, [0,0,1])
+                if los_fwd > 1e-9:
+                    # 目标在机头前方：用 heading 公式（螃蟹飞正确）
+                    return np.degrees(np.arctan2(los_up, los_fwd))
+                # 目标在侧面或后方：降级到水平距离公式
+
+        # 降级：无 heading 或目标不在机头前方时用水平距离
+        drop = d[2] - t[2]  # 正=无人机在上，负=无人机在下
+        h_dist = np.sqrt((d[0] - t[0])**2 + (d[1] - t[1])**2)
         if h_dist < 1e-6:
-            return -90.0  # 垂直朝下
+            return -90.0 if drop >= 0 else 90.0
         return -np.degrees(np.arctan(drop / h_dist))
 
     def _get_takeoff_params(self):
@@ -3274,7 +3937,7 @@ class MainWindow(QMainWindow):
             if idx < len(self.viewer._waypoint_actors):
                 self.viewer._waypoint_actors[idx].GetProperty().SetColor(1.0, 0.5, 0.0)
 
-        collision_dist = safe_dist * 0.5
+        collision_dist = safe_dist * 1.5
         seg_collisions = set(idx for idx, _ in collisions if idx >= 0)
         safe_collision = any(idx == -1 for idx, _ in collisions)
         msgs = [f"航点: {len(self.waypoints)}"]
@@ -3321,7 +3984,7 @@ class MainWindow(QMainWindow):
         low_z: [(idx, z_val), ...] 航点低于最低Z值
         """
         safe_dist = self.viewer._safe_distance
-        collision_dist = safe_dist * 0.5
+        collision_dist = safe_dist * 1.5
         sample_step = safe_dist * 0.5
 
         # ── 航点间距检测（只检查非相邻航点，相邻航点按重叠率设计本就近）──
