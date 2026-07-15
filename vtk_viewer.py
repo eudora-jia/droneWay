@@ -1,5 +1,6 @@
 """VTK 3D 点云/航线可视化组件"""
 
+import math
 import numpy as np
 from quaternion_utils import quaternion_forward
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QHBoxLayout, QPushButton, QSizePolicy
@@ -333,6 +334,7 @@ class VTKViewer(QWidget):
                     vtkBillboardTextActor3D, vtkTextActor,
                     vtkTransformPolyDataFilter, vtkTransform,
                     vtkGlyph3D, vtkInteractorStyleUser,
+                    vtkFloatArray, vtkTexture, vtkPNGReader,
                 )
                 vtk.vtkOutputWindow.SetGlobalWarningDisplay(0)
                 self._vtk_available = True
@@ -359,6 +361,9 @@ class VTKViewer(QWidget):
         self._vtkCellArray = vtkCellArray
         self._vtkPolyLine = vtkPolyLine
         self._vtkPolygon = vtkPolygon
+        self._vtkFloatArray = vtkFloatArray
+        self._vtkTexture = vtkTexture
+        self._vtkPNGReader = vtkPNGReader
         self._vtkBillboardTextActor3D = vtkBillboardTextActor3D
         self._vtkTransformPolyDataFilter = vtkTransformPolyDataFilter
         self._vtkTransform = vtkTransform
@@ -512,6 +517,8 @@ class VTKViewer(QWidget):
         self._anim_cone_actor = None
         self._anim_timer = None
         self._anim_speed = 1.0
+        self._camera_hfov = 80.0  # 水平FOV（度），由外部设置
+        self._camera_vfov = 60.0  # 垂直FOV（度），由外部设置
 
         self._timer_id = self.startTimer(16)  # ~60fps
 
@@ -875,10 +882,10 @@ class VTKViewer(QWidget):
             self._create_anim_drone_fallback()
             return
 
-        # 缩放到真实尺寸（动画用放大版，便于观察）
+        # 缩放到真实尺寸
         bounds = stl_polydata.GetBounds()
         stl_size = max(bounds[1]-bounds[0], bounds[3]-bounds[2], bounds[5]-bounds[4])
-        real_size = 2.0
+        real_size = 0.6
         scale = real_size / stl_size if stl_size > 0 else 1.0
 
         transform = vtk.vtkTransform()
@@ -909,7 +916,7 @@ class VTKViewer(QWidget):
     def _create_anim_drone_fallback(self):
         """STL加载失败时的简单线框模型"""
         vtk = self._vtk
-        arm_len = 5.0
+        arm_len = 1.0
         pts = vtk.vtkPoints()
         pts.InsertNextPoint(-arm_len, 0, 0)
         pts.InsertNextPoint(arm_len, 0, 0)
@@ -946,6 +953,7 @@ class VTKViewer(QWidget):
         t = vtk.vtkTransform()
         t.Translate(pos.tolist())
         t.RotateZ(yaw)
+        t.RotateX(180)  # 修正机身朝向：底朝天→正常
         self._anim_drone_actor.SetUserTransform(t)
 
     def _update_anim_camera(self, pos, quat):
@@ -959,7 +967,7 @@ class VTKViewer(QWidget):
             back = np.array([-1.0, 0.0, 0.0])
         else:
             back = back / back_len
-        cam_pos = pos + back * 8 + np.array([0, 0, 4])
+        cam_pos = pos + back * 15 + np.array([0, 0, 8])
         cam.SetPosition(cam_pos.tolist())
         cam.SetFocalPoint(pos.tolist())
         cam.SetViewUp(0, 0, 1)
@@ -1143,9 +1151,122 @@ class VTKViewer(QWidget):
         self._update_anim_camera(pos, quat)
         # 高亮云台覆盖
         self._update_gimbal_coverage(wp)
+        # 投影相机画面到表面
+        self._update_anim_projection(wp)
         if self.vtk_widget.GetRenderWindow():
             self.vtk_widget.GetRenderWindow().Render()
         self._anim_wp_idx += 1
+
+    def _update_anim_projection(self, wp):
+        """在当前航点位置投影相机画面到STL/点云表面"""
+        # 清除旧投影
+        if hasattr(self, '_anim_proj_actors'):
+            for a in self._anim_proj_actors:
+                self.renderer.RemoveActor(a)
+        self._anim_proj_actors = []
+        if 'target_pos' not in wp:
+            return
+        pos = np.array(wp['pos'], dtype=float)
+        tgt = np.array(wp['target_pos'], dtype=float)
+        los = tgt - pos
+        dist = np.linalg.norm(los)
+        if dist < 0.5:
+            return
+        hfov_rad = math.radians(self._camera_hfov)
+        vfov_rad = math.radians(self._camera_vfov)
+        half_w = dist * math.tan(hfov_rad / 2.0)
+        half_h = dist * math.tan(vfov_rad / 2.0)
+        # 航线方向
+        quat = wp.get('quat')
+        if quat is not None:
+            from quaternion_utils import quaternion_forward
+            heading = quaternion_forward(quat)
+        else:
+            heading = np.array([1.0, 0.0, 0.0])
+        fwd_h = np.array([heading[0], heading[1], 0.0])
+        fwd_len = np.linalg.norm(fwd_h)
+        if fwd_len < 1e-6:
+            fwd_h = np.array([1.0, 0.0, 0.0])
+        else:
+            fwd_h = fwd_h / fwd_len
+        right_h = np.cross(np.array([0.0, 0.0, 1.0]), fwd_h)
+        rn = np.linalg.norm(right_h)
+        if rn < 1e-6:
+            right_h = np.array([0.0, 1.0, 0.0])
+        else:
+            right_h = right_h / rn
+        # 4个角点
+        corners_3d = [
+            tgt + fwd_h * half_h + right_h * half_w,
+            tgt + fwd_h * half_h - right_h * half_w,
+            tgt - fwd_h * half_h - right_h * half_w,
+            tgt - fwd_h * half_h + right_h * half_w,
+        ]
+        # 投影每个角到表面
+        proj_corners = []
+        for corner in corners_3d:
+            pt = self._project_to_stl(pos, corner)
+            if pt is None:
+                pt = self._project_to_cloud(pos, corner)
+            if pt is None:
+                pt = corner
+            proj_corners.append(pt)
+        # 纹理贴图多边形
+        vtk = self._vtk
+        vtk_pts = self._vtkPoints()
+        tc = self._vtkFloatArray()
+        tc.SetNumberOfComponents(2)
+        tc.SetName("TextureCoordinates")
+        tex_coords = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+        for k, c in enumerate(proj_corners):
+            vtk_pts.InsertNextPoint(c.tolist())
+            tc.InsertNextTuple2(tex_coords[k][0], tex_coords[k][1])
+        polygon = self._vtkPolygon()
+        pid = polygon.GetPointIds()
+        pid.SetNumberOfIds(4)
+        for k in range(4):
+            pid.SetId(k, k)
+        cells = self._vtkCellArray()
+        cells.InsertNextCell(polygon)
+        polydata = self._vtkPolyData()
+        polydata.SetPoints(vtk_pts)
+        polydata.SetPolys(cells)
+        polydata.GetPointData().SetTCoords(tc)
+        tex = self._get_coverage_texture()
+        mapper = self._vtkPolyDataMapper()
+        mapper.SetInputData(polydata)
+        actor = self._vtkActor()
+        actor.SetMapper(mapper)
+        actor.SetTexture(tex)
+        actor.GetProperty().SetOpacity(0.6)
+        actor.GetProperty().SetLighting(False)
+        actor.SetPosition(0, 0, 0.01)
+        self.renderer.AddActor(actor)
+        self._anim_proj_actors.append(actor)
+        # 边框
+        edge_pts = self._vtkPoints()
+        for c in proj_corners:
+            edge_pts.InsertNextPoint(c.tolist())
+        edge_line = self._vtkPolyLine()
+        edge_line.GetPointIds().SetNumberOfIds(5)
+        for k in range(4):
+            edge_line.GetPointIds().SetId(k, k)
+        edge_line.GetPointIds().SetId(4, 0)
+        edge_cells = self._vtkCellArray()
+        edge_cells.InsertNextCell(edge_line)
+        edge_poly = self._vtkPolyData()
+        edge_poly.SetPoints(edge_pts)
+        edge_poly.SetLines(edge_cells)
+        edge_mapper = self._vtkPolyDataMapper()
+        edge_mapper.SetInputData(edge_poly)
+        edge_actor = self._vtkActor()
+        edge_actor.SetMapper(edge_mapper)
+        edge_actor.GetProperty().SetColor(0.0, 0.8, 1.0)
+        edge_actor.GetProperty().SetLineWidth(2)
+        edge_actor.GetProperty().SetLighting(False)
+        edge_actor.SetPosition(0, 0, 0.01)
+        self.renderer.AddActor(edge_actor)
+        self._anim_proj_actors.append(edge_actor)
 
     def _cleanup_anim(self):
         """清理动画资源"""
@@ -1158,6 +1279,10 @@ class VTKViewer(QWidget):
         if self._anim_cone_actor is not None:
             self.renderer.RemoveActor(self._anim_cone_actor)
             self._anim_cone_actor = None
+        if hasattr(self, '_anim_proj_actors'):
+            for a in self._anim_proj_actors:
+                self.renderer.RemoveActor(a)
+            self._anim_proj_actors = []
         if self.vtk_widget.GetRenderWindow():
             self.vtk_widget.GetRenderWindow().Render()
 
@@ -2501,8 +2626,106 @@ class VTKViewer(QWidget):
             self.renderer.AddActor(fg)
             self._actors.append(fg)
 
-        # ── 投影线：航点 → 目标方向投射到点云上的点 ──
+        # ── 相机覆盖区域投影（显示重叠率）──
         has_target = any('target_pos' in wp for wp in waypoints)
+        if has_target:
+            hfov_rad = math.radians(self._camera_hfov)
+            vfov_rad = math.radians(self._camera_vfov)
+            headings = self._compute_forward_headings(waypoints)
+            for i, wp in enumerate(waypoints):
+                if 'target_pos' not in wp:
+                    continue
+                pos = np.array(wp['pos'], dtype=float)
+                tgt = np.array(wp['target_pos'], dtype=float)
+                los = tgt - pos
+                dist = np.linalg.norm(los)
+                if dist < 0.5:
+                    continue
+                half_w = dist * math.tan(hfov_rad / 2.0)
+                half_h = dist * math.tan(vfov_rad / 2.0)
+                heading = headings[i] if i < len(headings) else np.array([1.0, 0.0, 0.0])
+                fwd_h = np.array([heading[0], heading[1], 0.0])
+                fwd_len = np.linalg.norm(fwd_h)
+                if fwd_len < 1e-6:
+                    fwd_h = np.array([1.0, 0.0, 0.0])
+                else:
+                    fwd_h = fwd_h / fwd_len
+                right_h = np.cross(np.array([0.0, 0.0, 1.0]), fwd_h)
+                rn = np.linalg.norm(right_h)
+                if rn < 1e-6:
+                    right_h = np.array([0.0, 1.0, 0.0])
+                else:
+                    right_h = right_h / rn
+                corners_3d = [
+                    tgt + fwd_h * half_h + right_h * half_w,
+                    tgt + fwd_h * half_h - right_h * half_w,
+                    tgt - fwd_h * half_h - right_h * half_w,
+                    tgt - fwd_h * half_h + right_h * half_w,
+                ]
+                proj_corners = []
+                for corner in corners_3d:
+                    pt = self._project_to_stl(pos, corner)
+                    if pt is None:
+                        pt = self._project_to_cloud(pos, corner)
+                    if pt is None:
+                        pt = corner
+                    proj_corners.append(pt)
+                # 纹理贴图（网格图案，用于显示重叠率）
+                vtk_pts = self._vtkPoints()
+                tc = self._vtkFloatArray()
+                tc.SetNumberOfComponents(2)
+                tc.SetName("TextureCoordinates")
+                tex_coords = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+                for k, c in enumerate(proj_corners):
+                    vtk_pts.InsertNextPoint(c.tolist())
+                    tc.InsertNextTuple2(tex_coords[k][0], tex_coords[k][1])
+                polygon = self._vtkPolygon()
+                pid = polygon.GetPointIds()
+                pid.SetNumberOfIds(4)
+                for k in range(4):
+                    pid.SetId(k, k)
+                cells = self._vtkCellArray()
+                cells.InsertNextCell(polygon)
+                polydata = self._vtkPolyData()
+                polydata.SetPoints(vtk_pts)
+                polydata.SetPolys(cells)
+                polydata.GetPointData().SetTCoords(tc)
+                tex = self._get_grid_texture()
+                mapper = self._vtkPolyDataMapper()
+                mapper.SetInputData(polydata)
+                actor = self._vtkActor()
+                actor.SetMapper(mapper)
+                actor.SetTexture(tex)
+                actor.GetProperty().SetOpacity(0.4)
+                actor.GetProperty().SetLighting(False)
+                actor.SetPosition(0, 0, 0.01)
+                self.renderer.AddActor(actor)
+                self._actors.append(actor)
+                # 边框
+                edge_pts = self._vtkPoints()
+                for c in proj_corners:
+                    edge_pts.InsertNextPoint(c.tolist())
+                edge_line = self._vtkPolyLine()
+                edge_line.GetPointIds().SetNumberOfIds(5)
+                for k in range(4):
+                    edge_line.GetPointIds().SetId(k, k)
+                edge_line.GetPointIds().SetId(4, 0)
+                edge_cells = self._vtkCellArray()
+                edge_cells.InsertNextCell(edge_line)
+                edge_poly = self._vtkPolyData()
+                edge_poly.SetPoints(edge_pts)
+                edge_poly.SetLines(edge_cells)
+                edge_mapper = self._vtkPolyDataMapper()
+                edge_mapper.SetInputData(edge_poly)
+                edge_actor = self._vtkActor()
+                edge_actor.SetMapper(edge_mapper)
+                edge_actor.GetProperty().SetColor(0.0, 0.8, 1.0)
+                edge_actor.GetProperty().SetLineWidth(2)
+                edge_actor.GetProperty().SetLighting(False)
+                edge_actor.SetPosition(0, 0, 0.01)
+                self.renderer.AddActor(edge_actor)
+                self._actors.append(edge_actor)
+
         # ── 机头方向箭头 ──
         if self.show_heading:
             headings = self._compute_forward_headings(waypoints)
@@ -2549,45 +2772,144 @@ class VTKViewer(QWidget):
                 self.renderer.AddActor(actor)
                 self._actors.append(actor)
 
-        # ── 投影线：航点 → 目标方向投射到点云上的点 ──
-        has_target = any('target_pos' in wp for wp in waypoints)
-        if has_target:
-            for i, wp in enumerate(waypoints):
-                if 'target_pos' not in wp:
-                    continue
-                pos = wp['pos']
-                tgt = wp['target_pos']
-                proj_pt = self._project_to_cloud(pos, tgt)
-                if proj_pt is not None:
-                    # 连线：航点 → 投影点
-                    line = self._vtkLineSource()
-                    line.SetPoint1(pos.tolist())
-                    line.SetPoint2(proj_pt.tolist())
-                    mapper = self._vtkPolyDataMapper()
-                    mapper.SetInputConnection(line.GetOutputPort())
-                    actor = self._vtkActor()
-                    actor.SetMapper(mapper)
-                    actor.GetProperty().SetColor(1.0, 0.8, 0.0)
-                    actor.GetProperty().SetLineWidth(2)
-                    self.renderer.AddActor(actor)
-                    self._actors.append(actor)
-                    # 投影点标记（小黄色球体）
-                    sphere = self._vtkSphereSource()
-                    sphere.SetCenter(proj_pt.tolist())
-                    sphere.SetRadius(0.12)
-                    sphere.Update()
-                    sm = self._vtkPolyDataMapper()
-                    sm.SetInputConnection(sphere.GetOutputPort())
-                    sa = self._vtkActor()
-                    sa.SetMapper(sm)
-                    sa.GetProperty().SetColor(1.0, 0.9, 0.2)
-                    self.renderer.AddActor(sa)
-                    self._actors.append(sa)
-
         if reset_camera:
             self._update_view()
         else:
             self.vtk_widget.GetRenderWindow().Render()
+
+    def _get_grid_texture(self):
+        """获取网格纹理（带缓存），用于生成航线时显示覆盖重叠率"""
+        if hasattr(self, '_grid_texture_cached') and self._grid_texture_cached is not None:
+            return self._grid_texture_cached
+        from PIL import Image, ImageDraw
+        import os, tempfile
+        w, h = 512, 512
+        img = Image.new('RGBA', (w, h), (30, 30, 50, 200))
+        draw = ImageDraw.Draw(img)
+        for y in range(h):
+            r = int(30 + 80 * y / h)
+            g = int(50 + 60 * y / h)
+            b = int(100 + 80 * y / h)
+            draw.line([(0, y), (w, y)], fill=(r, g, b, 180))
+        grid = 32
+        for x in range(0, w, grid):
+            draw.line([(x, 0), (x, h)], fill=(0, 200, 255, 100), width=1)
+        for y in range(0, h, grid):
+            draw.line([(0, y), (w, y)], fill=(0, 200, 255, 100), width=1)
+        draw.line([(w//2, 0), (w//2, h)], fill=(0, 255, 100, 200), width=2)
+        draw.line([(0, h//2), (w, h//2)], fill=(0, 255, 100, 200), width=2)
+        cx, cy, r = w//2, h//2, min(w, h)//4
+        draw.ellipse([cx-r, cy-r, cx+r, cy+r], outline=(0, 255, 100, 200), width=2)
+        tmp_path = os.path.join(tempfile.gettempdir(), '_grid_tex.png')
+        img.save(tmp_path)
+        reader = self._vtkPNGReader()
+        reader.SetFileName(tmp_path)
+        reader.Update()
+        tex = self._vtkTexture()
+        tex.SetInputConnection(reader.GetOutputPort())
+        tex.InterpolateOn()
+        self._grid_texture_cached = tex
+        return tex
+
+    def _get_coverage_texture(self):
+        """获取相机覆盖区域纹理（带缓存），优先加载 lena.png"""
+        if hasattr(self, '_coverage_texture_cached') and self._coverage_texture_cached is not None:
+            return self._coverage_texture_cached
+        import os, tempfile
+        vtk = self._vtk
+        # 查找 lena.png
+        search_dirs = [
+            os.path.dirname(os.path.abspath(__file__)),
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            os.getcwd(),
+            tempfile.gettempdir(),
+        ]
+        lena_path = None
+        for d in search_dirs:
+            candidate = os.path.join(d, 'lena.png')
+            if os.path.exists(candidate):
+                lena_path = candidate
+                break
+        if lena_path:
+            reader = self._vtkPNGReader()
+            reader.SetFileName(lena_path)
+            reader.Update()
+            tex = self._vtkTexture()
+            tex.SetInputConnection(reader.GetOutputPort())
+            tex.InterpolateOn()
+            self._coverage_texture_cached = tex
+            print(f"[Coverage] Loaded lena.png from {lena_path}")
+            return tex
+        # 回退：生成网格测试图
+        from PIL import Image, ImageDraw
+        # 生成测试图像（带网格 + 渐变）
+        w, h = 512, 512
+        img = Image.new('RGBA', (w, h), (30, 30, 50, 200))
+        draw = ImageDraw.Draw(img)
+        # 渐变背景
+        for y in range(h):
+            r = int(30 + 80 * y / h)
+            g = int(50 + 60 * y / h)
+            b = int(100 + 80 * y / h)
+            draw.line([(0, y), (w, y)], fill=(r, g, b, 180))
+        # 网格
+        grid = 32
+        for x in range(0, w, grid):
+            draw.line([(x, 0), (x, h)], fill=(0, 200, 255, 100), width=1)
+        for y in range(0, h, grid):
+            draw.line([(0, y), (w, y)], fill=(0, 200, 255, 100), width=1)
+        # 中心十字
+        draw.line([(w//2, 0), (w//2, h)], fill=(0, 255, 100, 200), width=2)
+        draw.line([(0, h//2), (w, h//2)], fill=(0, 255, 100, 200), width=2)
+        # 中心圆
+        cx, cy, r = w//2, h//2, min(w, h)//4
+        draw.ellipse([cx-r, cy-r, cx+r, cy+r], outline=(0, 255, 100, 200), width=2)
+        # 角落标记
+        mark = 40
+        for (sx, sy) in [(0, 0), (w-mark, 0), (0, h-mark), (w-mark, h-mark)]:
+            draw.rectangle([sx, sy, sx+mark, sy+mark], outline=(255, 255, 0, 200), width=2)
+        # 保存到临时文件
+        tmp_path = os.path.join(tempfile.gettempdir(), '_coverage_tex.png')
+        img.save(tmp_path)
+        # 加载为VTK纹理
+        reader = self._vtkPNGReader()
+        reader.SetFileName(tmp_path)
+        reader.Update()
+        tex = self._vtkTexture()
+        tex.SetInputConnection(reader.GetOutputPort())
+        tex.InterpolateOn()
+        self._coverage_texture_cached = tex
+        return tex
+
+    def _project_to_stl(self, pos, target_pos, max_dist=50.0):
+        """从航点沿目标方向投射射线，找到与STL表面的交点
+        pos: 航点位置 [x,y,z]
+        target_pos: 目标点位置 [x,y,z]
+        返回: 投影点 np.array 或 None
+        """
+        locator = getattr(self, '_stl_cell_locator', None)
+        if locator is None or self._stl_polydata is None:
+            return None
+        vtk = self._vtk
+        origin = np.array(pos, dtype=float)
+        target = np.array(target_pos, dtype=float)
+        direction = target - origin
+        dist = np.linalg.norm(direction)
+        if dist < 1e-6:
+            return None
+        direction = direction / dist
+        p1 = (origin - direction * 0.5).tolist()
+        p2 = (origin + direction * min(max_dist, dist * 2.0)).tolist()
+        t = vtk.reference(0.0)
+        x = [0.0, 0.0, 0.0]
+        pcoords = [0.0, 0.0, 0.0]
+        subId = vtk.reference(0)
+        cellId = vtk.reference(0)
+        cell = vtk.vtkGenericCell()
+        hit = locator.IntersectWithLine(p1, p2, 1e-6, t, x, pcoords, subId, cellId, cell)
+        if hit:
+            return np.array(x)
+        return None
 
     def _project_to_cloud(self, pos, target_pos, max_dist=50.0, steps=200):
         """从航点沿目标方向投射射线，找到与点云的最近交点
@@ -2950,13 +3272,13 @@ class VTKViewer(QWidget):
 
         sphere = self._vtkSphereSource()
         sphere.SetCenter(pos.tolist())
-        sphere.SetRadius(0.3)
+        sphere.SetRadius(0.2)
         sphere.Update()
         m = self._vtkPolyDataMapper()
         m.SetInputConnection(sphere.GetOutputPort())
         a = self._vtkActor()
         a.SetMapper(m)
-        a.GetProperty().SetColor(0.2, 0.8, 0.2)
+        a.GetProperty().SetColor(1.0, 0.8, 0.0)
         a.GetProperty().SetOpacity(0.7)
         self.renderer.AddActor(a)
         self._place_preview_actor = a

@@ -187,8 +187,8 @@ class MainWindow(QMainWindow):
             "M4T 长焦": 7.0,
         }
         self._camera_min_interval = 0.7  # 最小拍摄间隔（秒），M4T为0.7s
-        self._forward_overlap = 50
-        self._side_overlap = 50
+        self._forward_overlap = 30
+        self._side_overlap = 30
 
         # 云台参数
         self._gimbal_yaw = 0.0       # 偏航角（度），0=与机头同向
@@ -772,6 +772,8 @@ class MainWindow(QMainWindow):
         self._line_end_normal = None       # 直线终点法线
         self._polygon_normals = []         # 多边形顶点表面法线
         self._stl_triangles = None         # STL 三角面顶点数组，用于射线相交检测
+        self._stl_triangles_np = None      # STL 三角面 numpy 数组，用于表面距离计算
+        self._stl_distance_tree = None     # STL KDTree，用于碰撞检测
         self.viewer.inspect_points_confirmed.connect(self._on_inspect_confirmed)
         self.viewer.line_points_confirmed.connect(self._on_line_confirmed)
         self.viewer.line_point_picked.connect(self._on_line_point_picked)
@@ -2174,25 +2176,53 @@ class MainWindow(QMainWindow):
 
         self.waypoints = []
         warnings = []
+        _up = np.array([0.0, 0.0, 1.0])
         self._check_speed_overlap(speed, wp_spacing, main_dir_3d, warnings)
 
-        # 预计算搜索方向列表（与点状/直线航线一致）
-        # 面状航线的机头方向在循环内计算，这里用法线方向构建搜索方向
-        _up = np.array([0.0, 0.0, 1.0])
-        _search_dirs = []
-        for n_ratio in [0.3, 0.5, 0.7, 1.0]:
-            for h_ratio in [0.3, 0.5, 0.7, 1.0]:
-                move_dir = poly_normal * n_ratio + np.array([-poly_normal[0], -poly_normal[1], 0.0]) * h_ratio
-                move_len = np.linalg.norm(move_dir)
-                if move_len > 1e-6:
-                    _search_dirs.append(move_dir / move_len)
+        # 判断表面类型
+        normal_up_dot = np.dot(poly_normal, _up)
+        is_top_surface = normal_up_dot > 0.7
+        is_bottom_surface = normal_up_dot < -0.7
+
+        def _check_flat_candidate(pos_c, _target, _heading, _left):
+            """检查候选位置（STL版/点云版）"""
+            # C1: 碰撞检测
+            if self._stl_triangles_np is not None:
+                stl_dist = self._stl_surface_distance(pos_c)
+                if stl_dist < collision_dist:
+                    return False, f'collision_stl({stl_dist:.2f})'
+            elif tree is not None:
+                dist, _ = tree.query(pos_c)
+                if dist < collision_dist:
+                    return False, f'collision({dist:.2f})'
+            # C2: 云台 pitch
+            pitch = self._calc_gimbal_pitch(pos_c, _target, _heading)
+            if not (self._gimbal_pitch_min <= pitch <= self._gimbal_pitch_max):
+                return False, 'gimbal'
+            # C5: LOS 在 Fwd-Up 平面内
+            los = _target - pos_c
+            if abs(np.dot(los, _left)) > 0.1:
+                return False, 'gimbal_yaw'
+            # C3: LOS 不穿模
+            los_len = np.linalg.norm(los)
+            if los_len > 0.5:
+                if self.viewer._stl_polydata is not None and self._stl_triangles is not None:
+                    if self._ray_stl_intersect(pos_c, _target):
+                        return False, 'los_stl'
+                elif tree is not None:
+                    for tt in np.linspace(0.05, 0.95, max(5, int(los_len / 0.5))):
+                        sample = pos_c + los * tt
+                        d, _ = tree.query(sample)
+                        if d < 0.3:
+                            return False, 'los'
+            return True, 'ok'
 
         for i, target in enumerate(region_points):
-            normal = poly_normal
+            normal = poly_normal.copy()
             scan_dir = grid_scan_dirs[i] if i < len(grid_scan_dirs) else main_dir_3d
 
-            # 检查法线方向是否正确：candidate_pos 应在模型外侧
-            if tree is not None:
+            # 检查法线方向是否正确（仅点云模式需要，STL几何法线已正确）
+            if tree is not None and self.viewer._stl_polydata is None:
                 candidate_pos = target + normal * inspect_dist
                 dist_to_surface, _ = tree.query(candidate_pos)
                 if dist_to_surface < collision_dist:
@@ -2205,57 +2235,58 @@ class MainWindow(QMainWindow):
                 route_dir_h = route_dir_h / rdh_len
             else:
                 route_dir_h = np.array([1.0, 0.0, 0.0])
-            heading_h = np.cross(route_dir_h, np.array([0.0, 0.0, 1.0]))
+            heading_h = np.cross(route_dir_h, _up)
             hn = np.linalg.norm(heading_h)
             if hn > 1e-6:
                 heading_h = heading_h / hn
             else:
                 heading_h = np.array([1.0, 0.0, 0.0])
 
-            # 构建搜索方向：26个空间方向 + -heading 优先
-            search_directions = []
-            for sx in [-1, 0, 1]:
-                for sy in [-1, 0, 1]:
-                    for sz in [-1, 0, 1]:
-                        d = np.array([sx, sy, sz], dtype=np.float64)
-                        d_len = np.linalg.norm(d)
-                        if d_len > 1e-6:
-                            search_directions.append(d / d_len)
-            search_directions.insert(0, -heading_h)  # 优先尝试
-
             # Left 向量用于 C5 检查
-            left = np.cross(heading_h, np.array([0.0, 0.0, 1.0]))
+            left = np.cross(heading_h, _up)
             left_len = np.linalg.norm(left)
             if left_len > 1e-6:
                 left = left / left_len
 
-            def _check_candidate(pos_c, _target=target, _heading=heading_h, _left=left):
-                if tree is not None:
-                    dist, _ = tree.query(pos_c)
-                    if dist < collision_dist:
-                        return False
-                pitch = self._calc_gimbal_pitch(pos_c, _target, _heading)
-                if not (self._gimbal_pitch_min <= pitch <= self._gimbal_pitch_max):
-                    return False
-                los = _target - pos_c
-                if abs(np.dot(los, _left)) > 0.1:
-                    return False
-                if tree is not None:
-                    seg_len = np.linalg.norm(los)
-                    if seg_len > 1.0:
-                        for tt in np.linspace(0.05, 0.95, max(5, int(seg_len / 0.5))):
-                            sample = pos_c + los * tt
-                            d, _ = tree.query(sample)
-                            if d < 0.3:
-                                return False
-                return True
+            # 构建搜索方向（根据表面类型）
+            if is_bottom_surface:
+                pitch_max_rad = np.radians(self._gimbal_pitch_max)
+                base_dirs = []
+                for pitch_deg in [45, 35, 25, 50, 15, 10, 55]:
+                    pitch_rad = np.radians(pitch_deg)
+                    h_factor = np.cos(pitch_rad)
+                    drop_factor = -np.sin(pitch_rad)
+                    base_dirs.append(np.array([heading_h[0]*h_factor, heading_h[1]*h_factor, drop_factor]))
+                    base_dirs.append(np.array([-heading_h[0]*h_factor, -heading_h[1]*h_factor, drop_factor]))
+                base_dirs.extend([-_up, _up, heading_h, -heading_h])
+                search_directions = [d / np.linalg.norm(d) for d in base_dirs if np.linalg.norm(d) > 1e-6]
+            elif is_top_surface:
+                base_dirs = [_up]
+                for frac in [0.3, 0.5, 0.7, 1.0, 1.5, 2.0]:
+                    base_dirs.append(_up + heading_h * frac)
+                    base_dirs.append(_up - heading_h * frac)
+                base_dirs.extend([heading_h, -heading_h])
+                search_directions = [d / np.linalg.norm(d) for d in base_dirs if np.linalg.norm(d) > 1e-6]
+            else:
+                normal_in_plane = np.dot(normal, heading_h) * heading_h + np.dot(normal, _up) * _up
+                if np.linalg.norm(normal_in_plane) > 1e-6:
+                    normal_in_plane = normal_in_plane / np.linalg.norm(normal_in_plane)
+                else:
+                    normal_in_plane = heading_h.copy()
+                base_dirs = [normal_in_plane]
+                for frac in [0.3, 0.5, 0.7, 1.0, 1.5, 2.0]:
+                    base_dirs.append(normal_in_plane + _up * frac)
+                    base_dirs.append(normal_in_plane - _up * frac)
+                base_dirs.extend([heading_h, -heading_h, _up, -_up])
+                search_directions = [d / np.linalg.norm(d) for d in base_dirs if np.linalg.norm(d) > 1e-6]
 
             # 搜索满足约束的位置
             drone_pos = None
-            for offset in np.arange(inspect_dist, inspect_dist + 10.0, 0.5):
+            for offset in np.arange(inspect_dist, inspect_dist + 20.0, 0.5):
                 for move_dir in search_directions:
                     pos_c = target + move_dir * offset
-                    if _check_candidate(pos_c):
+                    ok, reason = _check_flat_candidate(pos_c, target, heading_h, left)
+                    if ok:
                         drone_pos = pos_c
                         break
                 if drone_pos is not None:
@@ -2267,20 +2298,18 @@ class MainWindow(QMainWindow):
                 warned = True
                 warnings.append(f"目标{i+1} 无法满足所有约束")
 
+            # 确保 heading 朝向目标（否则云台需要转180°）
+            los_to_target = target - drone_pos
+            final_heading = heading_h.copy()
+            if np.dot(final_heading, los_to_target) < 0:
+                final_heading = -final_heading
+
             # 云台俯仰角
-            gimbal_pitch = self._calc_gimbal_pitch(drone_pos, target, heading_h)
+            gimbal_pitch = self._calc_gimbal_pitch(drone_pos, target, final_heading)
             gimbal_pitch = np.clip(gimbal_pitch, self._gimbal_pitch_min, self._gimbal_pitch_max)
 
-            # 机头方向：水平朝向目标
-            to_target = target - drone_pos
-            heading = np.array([to_target[0], to_target[1], 0.0])
-            hn = np.linalg.norm(heading)
-            if hn > 1e-6:
-                heading = heading / hn
-            else:
-                heading = heading_h
-
-            quat = look_at_quaternion(drone_pos + heading, drone_pos)
+            # 机头方向
+            quat = look_at_quaternion(drone_pos + final_heading, drone_pos)
             self.waypoints.append({
                 'pos': drone_pos,
                 'quat': quat,
@@ -2307,6 +2336,7 @@ class MainWindow(QMainWindow):
 
     # ─── 生成圆柱体航线 ───
     def generate_cylinder_route(self):
+        import math
         # 自动计算步距（如果还是默认的"自动"）
         if self.edt_cyl_astep.text() == "自动" or self.edt_cyl_vstep.text() == "自动":
             self._calc_cyl_spacing()
@@ -2350,6 +2380,38 @@ class MainWindow(QMainWindow):
         collision_dist = safe_dist * 1.5
 
         warnings = []
+        up = np.array([0.0, 0.0, 1.0])
+
+        def _check_cyl_candidate(pos_c, target_c):
+            """检查候选位置是否满足所有约束（STL版/点云版）"""
+            # C1: 碰撞检测
+            if self._stl_triangles_np is not None:
+                stl_dist = self._stl_surface_distance(pos_c)
+                if stl_dist < collision_dist:
+                    return False, f'collision_stl({stl_dist:.2f})'
+            elif tree is not None:
+                d, _ = tree.query(pos_c)
+                if d < collision_dist:
+                    return False, f'collision({d:.2f})'
+            # C2: 云台 pitch
+            pitch = self._calc_gimbal_pitch(pos_c, target_c)
+            if not (self._gimbal_pitch_min <= pitch <= self._gimbal_pitch_max):
+                return False, 'gimbal'
+            # C3: LOS 不穿模
+            los = target_c - pos_c
+            los_len = np.linalg.norm(los)
+            if los_len > 0.5:
+                if self.viewer._stl_polydata is not None and self._stl_triangles is not None:
+                    if self._ray_stl_intersect(pos_c, target_c):
+                        return False, 'los_stl'
+                elif tree is not None:
+                    for tt in np.linspace(0.05, 0.95, max(5, int(los_len / 0.5))):
+                        sample = pos_c + los * tt
+                        d, _ = tree.query(sample)
+                        if d < 0.3:
+                            return False, 'los'
+            return True, 'ok'
+
         # 检查速度vs拍摄间隔：水平方向（弧长步距）
         hfov = self._camera_fov
         h_cover = 2.0 * dist * math.tan(math.radians(hfov / 2.0))
@@ -2377,31 +2439,25 @@ class MainWindow(QMainWindow):
                 else:
                     outward = np.array([1.0, 0.0, 0.0])
 
-                # 综合约束检查：碰撞 + 云台角度 + 视线不穿模
-                need_search = False
-                if tree is not None:
-                    dist, _ = tree.query(pos)
-                    if dist < collision_dist:
-                        need_search = True
-                pitch = self._calc_gimbal_pitch(pos, cyl_center)
-                if not (self._gimbal_pitch_min <= pitch <= self._gimbal_pitch_max):
-                    need_search = True
-                if not need_search and tree is not None:
-                    seg = cyl_center - pos
-                    seg_len = np.linalg.norm(seg)
-                    if seg_len > 1.0:
-                        for tt in np.linspace(0.05, 0.95, max(5, int(seg_len / 0.5))):
-                            sample = pos + seg * tt
-                            d, _ = tree.query(sample)
-                            if d < 0.3:
-                                need_search = True
+                # 综合约束检查（STL版/点云版）
+                ok, reason = _check_cyl_candidate(pos, cyl_center)
+                if not ok:
+                    # 搜索安全位置：沿 outward 方向偏移
+                    found = False
+                    for offset in np.arange(0.5, 10.0, 0.5):
+                        for direction in [outward, up, -up, outward + up*0.5, outward - up*0.5]:
+                            d_norm = np.linalg.norm(direction)
+                            if d_norm < 1e-6:
+                                continue
+                            cand = pos + direction / d_norm * offset
+                            ok2, _ = _check_cyl_candidate(cand, cyl_center)
+                            if ok2:
+                                pos = cand
+                                found = True
                                 break
-
-                if need_search:
-                    safe_pos, warned = self._find_safe_position(cyl_center, outward, tree, collision_dist, 0.0)
-                    if safe_pos is not None:
-                        pos = safe_pos
-                    if warned:
+                        if found:
+                            break
+                    if not found:
                         warnings.append(f"螺旋点{i+1} 无法满足所有约束")
 
                 # 机头朝向圆柱中心（径向内法线）
@@ -2455,31 +2511,24 @@ class MainWindow(QMainWindow):
                     pos = np.array([rx, ry, z])
                     cyl_center = np.array([cx, cy, z])
 
-                    # 综合约束检查：碰撞 + 云台角度 + 视线不穿模
-                    need_search = False
-                    if tree is not None:
-                        dist, _ = tree.query(pos)
-                        if dist < collision_dist:
-                            need_search = True
-                    pitch = self._calc_gimbal_pitch(pos, cyl_center)
-                    if not (self._gimbal_pitch_min <= pitch <= self._gimbal_pitch_max):
-                        need_search = True
-                    if not need_search and tree is not None:
-                        seg = cyl_center - pos
-                        seg_len = np.linalg.norm(seg)
-                        if seg_len > 1.0:
-                            for tt in np.linspace(0.05, 0.95, max(5, int(seg_len / 0.5))):
-                                sample = pos + seg * tt
-                                d, _ = tree.query(sample)
-                                if d < 0.3:
-                                    need_search = True
+                    # 综合约束检查（STL版/点云版）
+                    ok, reason = _check_cyl_candidate(pos, cyl_center)
+                    if not ok:
+                        found = False
+                        for offset in np.arange(0.5, 10.0, 0.5):
+                            for direction in [outward, up, -up, outward + up*0.5, outward - up*0.5]:
+                                d_norm = np.linalg.norm(direction)
+                                if d_norm < 1e-6:
+                                    continue
+                                cand = pos + direction / d_norm * offset
+                                ok2, _ = _check_cyl_candidate(cand, cyl_center)
+                                if ok2:
+                                    pos = cand
+                                    found = True
                                     break
-
-                    if need_search:
-                        safe_pos, warned = self._find_safe_position(cyl_center, outward, tree, collision_dist, 0.0)
-                        if safe_pos is not None:
-                            pos = safe_pos
-                        if warned:
+                            if found:
+                                break
+                        if not found:
                             warnings.append(f"Z字形点(col{col+1},layer{layer}) 无法满足所有约束")
 
                     target = pos + heading
@@ -2562,8 +2611,8 @@ class MainWindow(QMainWindow):
         else:
             normal = self._estimate_normal(mid_point)
 
-        # 检查法线方向是否正确：candidate_pos 应在模型外侧
-        if tree is not None:
+        # 检查法线方向是否正确（仅点云模式需要，STL几何法线已正确）
+        if tree is not None and self.viewer._stl_polydata is None:
             candidate_pos = mid_point + normal * inspect_dist
             dist_to_surface, _ = tree.query(candidate_pos)
             if dist_to_surface < collision_dist:
@@ -2585,58 +2634,98 @@ class MainWindow(QMainWindow):
 
         self.waypoints = []
         warnings = []
-
-        # 构建搜索方向：26个空间方向 + -crab_heading 优先
-        search_directions = []
-        for sx in [-1, 0, 1]:
-            for sy in [-1, 0, 1]:
-                for sz in [-1, 0, 1]:
-                    d = np.array([sx, sy, sz], dtype=np.float64)
-                    d_len = np.linalg.norm(d)
-                    if d_len > 1e-6:
-                        search_directions.append(d / d_len)
-        h_norm = np.linalg.norm(crab_heading)
-        if h_norm > 1e-6:
-            search_directions.insert(0, -crab_heading / h_norm)  # 优先尝试
+        up = np.array([0.0, 0.0, 1.0])
 
         # Left 向量用于 C5 检查
-        left = np.cross(crab_heading, np.array([0.0, 0.0, 1.0]))
+        left = np.cross(crab_heading, up)
         left_len = np.linalg.norm(left)
         if left_len > 1e-6:
             left = left / left_len
 
         def _check_candidate(pos_c):
             """检查候选位置是否满足所有约束"""
-            if tree is not None:
+            # C1: 碰撞检测（STL 版 / 点云版）
+            if self._stl_triangles_np is not None:
+                stl_dist = self._stl_surface_distance(pos_c)
+                if stl_dist < collision_dist:
+                    return False, f'collision_stl({stl_dist:.2f})'
+            elif tree is not None:
                 dist, _ = tree.query(pos_c)
                 if dist < collision_dist:
-                    return False
+                    return False, f'collision({dist:.2f})'
+            # C2: 云台 pitch
             pitch = self._calc_gimbal_pitch(pos_c, target, crab_heading)
             if not (self._gimbal_pitch_min <= pitch <= self._gimbal_pitch_max):
-                return False
+                return False, 'gimbal'
+            # C5: LOS 在 Fwd-Up 平面内
             los = target - pos_c
             if abs(np.dot(los, left)) > 0.1:
-                return False
-            if tree is not None:
-                seg_len = np.linalg.norm(los)
-                if seg_len > 1.0:
-                    for tt in np.linspace(0.05, 0.95, max(5, int(seg_len / 0.5))):
+                return False, 'gimbal_yaw'
+            # C3: LOS 不穿模
+            los_len = np.linalg.norm(los)
+            if los_len > 0.5:
+                if self.viewer._stl_polydata is not None and self._stl_triangles is not None:
+                    if self._ray_stl_intersect(pos_c, target):
+                        return False, 'los_stl'
+                elif tree is not None:
+                    for tt in np.linspace(0.05, 0.95, max(5, int(los_len / 0.5))):
                         sample = pos_c + los * tt
                         d, _ = tree.query(sample)
                         if d < 0.3:
-                            return False
-            return True
+                            return False, 'los'
+            return True, 'ok'
+
+        # 判断表面类型
+        normal_up_dot = np.dot(normal, up)
+        is_top_surface = normal_up_dot > 0.7
+        is_bottom_surface = normal_up_dot < -0.7
 
         for i in range(n_pts):
             t = i / (n_pts - 1)
-            target = p1 + t * (p2 - p1)  # 点云表面目标点
+            target = p1 + t * (p2 - p1)
+
+            # 构建搜索方向（根据表面类型）
+            if is_bottom_surface:
+                # 底面：沿 crab_heading 方向 + 向下偏移
+                pitch_max_rad = np.radians(self._gimbal_pitch_max)
+                base_dirs = []
+                for pitch_deg in [45, 35, 25, 50, 15, 10, 55]:
+                    pitch_rad = np.radians(pitch_deg)
+                    h_dist_factor = np.cos(pitch_rad)
+                    drop_factor = -np.sin(pitch_rad)
+                    base_dirs.append(np.array([crab_heading[0]*h_dist_factor, crab_heading[1]*h_dist_factor, drop_factor]))
+                    base_dirs.append(np.array([-crab_heading[0]*h_dist_factor, -crab_heading[1]*h_dist_factor, drop_factor]))
+                base_dirs.extend([-up, up, crab_heading, -crab_heading])
+                search_directions = [d / np.linalg.norm(d) for d in base_dirs if np.linalg.norm(d) > 1e-6]
+            elif is_top_surface:
+                # 顶面：上方 + 对角线
+                base_dirs = [up]
+                for frac in [0.3, 0.5, 0.7, 1.0, 1.5, 2.0]:
+                    base_dirs.append(up + crab_heading * frac)
+                    base_dirs.append(up - crab_heading * frac)
+                base_dirs.extend([crab_heading, -crab_heading])
+                search_directions = [d / np.linalg.norm(d) for d in base_dirs if np.linalg.norm(d) > 1e-6]
+            else:
+                # 垂直面：沿法线 + 对角线
+                normal_in_plane = np.dot(normal, crab_heading) * crab_heading + np.dot(normal, up) * up
+                if np.linalg.norm(normal_in_plane) > 1e-6:
+                    normal_in_plane = normal_in_plane / np.linalg.norm(normal_in_plane)
+                else:
+                    normal_in_plane = crab_heading.copy()
+                base_dirs = [normal_in_plane]
+                for frac in [0.3, 0.5, 0.7, 1.0, 1.5, 2.0]:
+                    base_dirs.append(normal_in_plane + up * frac)
+                    base_dirs.append(normal_in_plane - up * frac)
+                base_dirs.extend([crab_heading, -crab_heading, up, -up])
+                search_directions = [d / np.linalg.norm(d) for d in base_dirs if np.linalg.norm(d) > 1e-6]
 
             # 搜索满足约束的位置
             drone_pos = None
-            for offset in np.arange(inspect_dist, inspect_dist + 10.0, 0.5):
+            for offset in np.arange(inspect_dist, inspect_dist + 20.0, 0.5):
                 for move_dir in search_directions:
                     pos_c = target + move_dir * offset
-                    if _check_candidate(pos_c):
+                    ok, reason = _check_candidate(pos_c)
+                    if ok:
                         drone_pos = pos_c
                         break
                 if drone_pos is not None:
@@ -2648,12 +2737,18 @@ class MainWindow(QMainWindow):
                 warned = True
                 warnings.append(f"航点{i+1} 无法满足所有约束")
 
-            # 云台俯仰角：由航点→目标点几何关系计算
-            gimbal_pitch = self._calc_gimbal_pitch(drone_pos, target, crab_heading)
+            # 确保 heading 朝向目标（否则云台需要转180°）
+            los_to_target = target - drone_pos
+            heading_used = crab_heading.copy()
+            if np.dot(heading_used, los_to_target) < 0:
+                heading_used = -heading_used
+
+            # 云台俯仰角
+            gimbal_pitch = self._calc_gimbal_pitch(drone_pos, target, heading_used)
             gimbal_pitch = np.clip(gimbal_pitch, self._gimbal_pitch_min, self._gimbal_pitch_max)
 
-            # 机头方向：螃蟹飞（垂直于航线），确保与云台方向成90度
-            quat = look_at_quaternion(drone_pos + crab_heading, drone_pos)
+            # 机头方向：螃蟹飞（垂直于航线）
+            quat = look_at_quaternion(drone_pos + heading_used, drone_pos)
             self.waypoints.append({
                 'pos': drone_pos,
                 'quat': quat,
@@ -2792,10 +2887,12 @@ class MainWindow(QMainWindow):
         return actual_overlap
 
     def _precompute_stl_triangles(self):
-        """从 STL polydata 提取三角面顶点数组，用于射线相交检测"""
+        """从 STL polydata 提取三角面顶点数组 + 距离计算数据"""
         poly = self.viewer._stl_polydata
         if poly is None:
             self._stl_triangles = None
+            self._stl_distance_tree = None
+            self._stl_triangles_np = None
             return
         pts = poly.GetPoints()
         n_cells = poly.GetNumberOfCells()
@@ -2813,6 +2910,120 @@ class MainWindow(QMainWindow):
             print(f"[C3] 预计算 {len(verts)} 个三角面用于穿模检测")
         else:
             self._stl_triangles = None
+        # 预计算 STL 顶点 KDTree（用于快速筛选候选三角面）
+        stl_pts = getattr(self.viewer, '_stl_points_np', None)
+        if stl_pts is not None and len(stl_pts) > 0:
+            from scipy.spatial import cKDTree
+            self._stl_distance_tree = cKDTree(stl_pts)
+            # 构建 顶点→三角面 索引（用于精确距离计算）
+            self._stl_triangles_np = np.array(verts, dtype=np.float64) if verts else None
+            print(f"[C1] STL KDTree + 三角面索引已预计算 ({len(stl_pts)} 顶点, {len(verts)} 三角面)")
+        else:
+            self._stl_distance_tree = None
+            self._stl_triangles_np = None
+
+    def _point_to_triangle_dist(self, p, v0, v1, v2):
+        """计算点 p 到三角面 (v0,v1,v2) 的最短距离（精确）"""
+        # 三角面的两条边
+        e0 = v1 - v0
+        e1 = v2 - v0
+        # p 相对于 v0 的向量
+        d = v0 - p
+        a = np.dot(e0, e0)
+        b = np.dot(e0, e1)
+        c = np.dot(e1, e1)
+        dd = np.dot(d, e0)
+        ee = np.dot(d, e1)
+        det = a * c - b * b
+        s = b * ee - c * dd
+        t = b * dd - a * ee
+        if s + t <= det:
+            if s < 0:
+                if t < 0:
+                    # 区域4
+                    if dd < 0:
+                        t = 0
+                        s = min(max(-dd / a, 0), 1)
+                    else:
+                        s = 0
+                        t = min(max(-ee / c, 0), 1)
+                else:
+                    # 区域3
+                    s = 0
+                    t = min(max(-ee / c, 0), 1)
+            elif t < 0:
+                # 区域5
+                t = 0
+                s = min(max(-dd / a, 0), 1)
+            else:
+                # 区域0
+                inv_det = 1.0 / det
+                s *= inv_det
+                t *= inv_det
+        else:
+            if s < 0:
+                # 区域2
+                tmp0 = b + dd
+                tmp1 = c + ee
+                if tmp1 > tmp0:
+                    numer = tmp1 - tmp0
+                    denom = a - 2 * b + c
+                    s = min(max(numer / denom, 0), 1)
+                    t = 1 - s
+                else:
+                    s = 0
+                    t = min(max(-ee / c, 0), 1)
+            elif t < 0:
+                # 区域6
+                tmp0 = b + ee
+                tmp1 = a + dd
+                if tmp1 > tmp0:
+                    numer = tmp1 - tmp0
+                    denom = a - 2 * b + c
+                    t = min(max(numer / denom, 0), 1)
+                    s = 1 - t
+                else:
+                    t = 0
+                    s = min(max(-dd / a, 0), 1)
+            else:
+                # 区域1
+                numer = c + ee - b - dd
+                denom = a - 2 * b + c
+                s = min(max(numer / denom, 0), 1)
+                t = 1 - s
+        closest = v0 + s * e0 + t * e1
+        return np.linalg.norm(p - closest)
+
+    def _stl_surface_distance(self, pos):
+        """计算点 pos 到 STL 表面的精确最短距离
+        遍历所有三角面，用包围盒快速过滤，精确计算点到三角面距离
+        """
+        if self._stl_triangles_np is None:
+            return float('inf')
+        pos = np.asarray(pos, dtype=np.float64)
+        tri_verts = self._stl_triangles_np  # (M, 3, 3)
+        min_dist = float('inf')
+        for ti in range(len(tri_verts)):
+            tri = tri_verts[ti]
+            tri_min = tri.min(axis=0)
+            tri_max = tri.max(axis=0)
+            # 包围盒快速过滤：计算点到包围盒的距离
+            bbox_dist_sq = 0.0
+            for d in range(3):
+                if pos[d] < tri_min[d]:
+                    diff = tri_min[d] - pos[d]
+                    bbox_dist_sq += diff * diff
+                elif pos[d] > tri_max[d]:
+                    diff = pos[d] - tri_max[d]
+                    bbox_dist_sq += diff * diff
+            # 如果包围盒距离已经 >= 当前最小距离，跳过
+            if bbox_dist_sq >= min_dist * min_dist:
+                continue
+            # 精确计算点到三角面距离
+            dist = self._point_to_triangle_dist(pos, tri[0], tri[1], tri[2])
+            if dist < min_dist:
+                min_dist = dist
+        return min_dist
 
     def _ray_stl_intersect(self, ray_origin, ray_target):
         """检测射线 origin→target 是否在到达目标前穿过 STL 模型
@@ -3083,27 +3294,60 @@ class MainWindow(QMainWindow):
 
             if is_top_surface:
                 # 顶面：无人机在上方，LOS 朝下（在 Fwd-Up 平面内）
+                # 纯 up 可能被立方体侧面挡住（STL距离太近）
+                # 需要对角线方向：向上+水平远离边缘
                 primary_dir = up.copy()
-                fallback_dirs = [heading, -heading, route_dir_h, -route_dir_h]
+                # 对角线：多个角度的 向上+水平（避开立方体侧面）
+                fallback_dirs = [
+                    up + heading * 0.3, up - heading * 0.3,       # 浅角度
+                    up + route_dir_h * 0.3, up - route_dir_h * 0.3,
+                    up + heading * 0.7, up - heading * 0.7,       # 中角度
+                    up + route_dir_h * 0.7, up - route_dir_h * 0.7,
+                    up + heading * 1.5, up - heading * 1.5,       # 陡角度
+                    up + route_dir_h * 1.5, up - route_dir_h * 1.5,
+                    heading, -heading, route_dir_h, -route_dir_h,  # 纯水平
+                ]
             elif is_bottom_surface:
-                # 底面：无人机在下方，LOS 朝上（在 Fwd-Up 平面内）
-                # 必须从下方接近，否则 LOS 穿过桥体
-                primary_dir = -up.copy()
-                fallback_dirs = [heading, -heading, route_dir_h, -route_dir_h]
+                # 底面：无人机在下方，LOS 朝上
+                # C5 要求 LOS 在 Fwd-Up 平面内（Left 分量=0）
+                # → 无人机只能沿 heading 方向偏移（不能沿 route_dir 方向）
+                # 用 -heading：无人机在目标前方下方，LOS=(heading方向, 向上)
+                # pitch = atan2(drop, offset)，drop=offset*sin(pitch_max) 时 pitch 最大
+                primary_dir = -heading.copy()  # 前方下方
+                fallback_dirs = [heading, -up, up]
             else:
-                # 垂直面：从 heading 方向搜索（LOS 沿 Forward 轴，在 Fwd-Up 平面内）
-                primary_dir = heading.copy()
-                if np.dot(heading, normal) > 0:
-                    primary_dir = -heading
-                fallback_dirs = [up, -up, primary_dir + up * 0.3, primary_dir - up * 0.3]
+                # 垂直面：沿法线方向搜索（远离表面）
+                # heading 可能平行于表面，不能用于远离表面
+                # 将法线投影到 Fwd-Up 平面内（去掉 Left 分量）以满足 C5
+                normal_along_heading = np.dot(normal, heading) * heading
+                normal_along_up = np.dot(normal, up) * up
+                normal_in_plane = normal_along_heading + normal_along_up
+                if np.linalg.norm(normal_in_plane) > 1e-6:
+                    primary_dir = normal_in_plane / np.linalg.norm(normal_in_plane)
+                else:
+                    # 法线完全沿 Left 方向，用 heading 作为回退
+                    primary_dir = heading.copy()
+                # 对角线方向：法线+上/下（绕过桥体结构）
+                fallback_dirs = [
+                    normal_in_plane + up * 0.5, normal_in_plane - up * 0.5,  # 浅对角
+                    normal_in_plane + up * 1.0, normal_in_plane - up * 1.0,  # 中对角
+                    normal_in_plane + up * 2.0, normal_in_plane - up * 2.0,  # 陡对角
+                    heading, -heading, up, -up,  # 基础方向
+                ]
 
             def _check_candidate(pos_c):
                 """检查候选位置是否满足所有约束"""
-                # C1: 碰撞检测
-                if tree is not None:
+                # C1: 碰撞检测（STL 版 / 点云版）
+                if self._stl_triangles_np is not None:
+                    # STL 版：精确计算到三角面的最短距离
+                    stl_dist = self._stl_surface_distance(pos_c)
+                    if stl_dist < collision_dist:
+                        return False, f'collision_stl({stl_dist:.2f})'
+                elif tree is not None:
+                    # 点云版：用 KDTree 查询最近点距离
                     dist, _ = tree.query(pos_c)
                     if dist < collision_dist:
-                        return False, 'collision'
+                        return False, f'collision({dist:.2f})'
                 # C2: 云台 pitch 范围（严格拒绝，不 clip）
                 pitch = self._calc_gimbal_pitch(pos_c, target, heading)
                 if not (self._gimbal_pitch_min <= pitch <= self._gimbal_pitch_max):
@@ -3133,24 +3377,90 @@ class MainWindow(QMainWindow):
 
             # ── C6 搜索：从 inspect_dist 开始，优先最近 ──
             best_pos = None
-            # 合并搜索方向：primary 优先，fallback 其次
-            all_dirs = [primary_dir] + fallback_dirs
-            # 加入法线方向作为备选
-            if not any(np.allclose(normal, d, atol=0.1) for d in all_dirs):
-                all_dirs.append(normal)
 
-            for offset in np.arange(inspect_dist, inspect_dist + 10.0, 0.5):
-                for move_dir in all_dirs:
-                    d_norm = np.linalg.norm(move_dir)
-                    if d_norm < 1e-6:
-                        continue
-                    pos_c = target + move_dir / d_norm * offset
-                    ok, reason = _check_candidate(pos_c)
-                    if ok:
-                        best_pos = pos_c
+            if is_bottom_surface:
+                # ── 底面专用搜索 ──
+                # C5 要求 LOS 在 Fwd-Up 平面内 → 只能沿 heading 方向偏移
+                # 无人机在目标下方+前方（-heading 方向），总距离 = offset
+                # pitch = atan2(drop, h_dist)，其中 drop² + h_dist² = offset²
+                # 所以 drop = offset * sin(pitch)，h_dist = offset * cos(pitch)
+                pitch_max_rad = np.radians(self._gimbal_pitch_max)  # 55°
+                search_debug = []
+                for offset in np.arange(inspect_dist, inspect_dist + 10.0, 0.5):
+                    # 尝试不同 pitch 角度（从 45° 开始，优先中等角度）
+                    for pitch_deg in [45, 35, 25, 50, 15, 10, 55]:
+                        pitch_rad = np.radians(pitch_deg)
+                        h_dist = offset * np.cos(pitch_rad)  # 水平距离（沿 heading）
+                        drop = -offset * np.sin(pitch_rad)   # 垂直距离（向下！无人机在目标下方）
+                        # 无人机 = target + 前方偏移(-heading) + 向下偏移(-up)
+                        # 例：offset=3, pitch=35° → h_dist=2.46, drop=-1.72
+                        # pos = target + (-heading)*2.46 + up*(-1.72) → 在目标前下方
+                        pos_c = target + (-heading) * h_dist + up * drop
+                        ok, reason = _check_candidate(pos_c)
+                        if not ok and len(search_debug) < 6:
+                            search_debug.append(f"  offset={offset:.1f} pitch={pitch_deg}° → {reason}")
+                        if ok:
+                            best_pos = pos_c
+                            print(f"[Inspect] P{i+1} 底面搜索成功: offset={offset:.1f} pitch={pitch_deg}° "
+                                  f"pos=({pos_c[0]:.2f},{pos_c[1]:.2f},{pos_c[2]:.2f})")
+                            break
+                    if best_pos is not None:
                         break
-                if best_pos is not None:
-                    break
+                # 回退：沿 +heading 方向（无人机在目标后方下方）
+                if best_pos is None:
+                    for offset in np.arange(inspect_dist, inspect_dist + 10.0, 0.5):
+                        for pitch_deg in [45, 35, 25, 50, 15, 10]:
+                            pitch_rad = np.radians(pitch_deg)
+                            h_dist = offset * np.cos(pitch_rad)
+                            drop = -offset * np.sin(pitch_rad)
+                            pos_c = target + heading * h_dist + up * drop
+                            ok, reason = _check_candidate(pos_c)
+                            if not ok and len(search_debug) < 10:
+                                search_debug.append(f"  +heading offset={offset:.1f} pitch={pitch_deg}° → {reason}")
+                            if ok:
+                                best_pos = pos_c
+                                print(f"[Inspect] P{i+1} 底面(+heading)搜索成功: offset={offset:.1f} pitch={pitch_deg}°")
+                                break
+                        if best_pos is not None:
+                            break
+                # 最终回退：直接向下（-up）
+                if best_pos is None:
+                    for offset in np.arange(inspect_dist, inspect_dist + 5.0, 0.5):
+                        pos_c = target - up * offset
+                        ok, reason = _check_candidate(pos_c)
+                        if not ok and len(search_debug) < 14:
+                            search_debug.append(f"  -up offset={offset:.1f} → {reason}")
+                        if ok:
+                            best_pos = pos_c
+                            print(f"[Inspect] P{i+1} 底面(-up)搜索成功: offset={offset:.1f}")
+                            break
+                if best_pos is None:
+                    print(f"[Inspect] P{i+1} 底面搜索全部失败:")
+                    for line in search_debug:
+                        print(line)
+            else:
+                # ── 通用搜索（顶面/垂直面）──
+                all_dirs = [primary_dir] + fallback_dirs
+                if not any(np.allclose(normal, d, atol=0.1) for d in all_dirs):
+                    all_dirs.append(normal)
+
+                search_attempts = 0
+                for offset in np.arange(inspect_dist, inspect_dist + 20.0, 0.5):
+                    for move_dir in all_dirs:
+                        d_norm = np.linalg.norm(move_dir)
+                        if d_norm < 1e-6:
+                            continue
+                        pos_c = target + move_dir / d_norm * offset
+                        ok, reason = _check_candidate(pos_c)
+                        if not ok and search_attempts < 5:
+                            print(f"  [Search] offset={offset:.1f} dir=({move_dir[0]:.2f},{move_dir[1]:.2f},{move_dir[2]:.2f}) → {reason}")
+                            search_attempts += 1
+                        if ok:
+                            best_pos = pos_c
+                            print(f"[Inspect] P{i+1} 搜索成功: offset={offset:.1f} dir=({move_dir[0]:.2f},{move_dir[1]:.2f},{move_dir[2]:.2f})")
+                            break
+                    if best_pos is not None:
+                        break
 
             warned = False
             if best_pos is None:
@@ -3160,9 +3470,21 @@ class MainWindow(QMainWindow):
             else:
                 pos = best_pos
 
-            print(f"[Inspect] P{i+1} → pos=({pos[0]:.2f},{pos[1]:.2f},{pos[2]:.2f})")
+            # 打印距离信息（调试）
+            if self._stl_triangles_np is not None:
+                stl_d = self._stl_surface_distance(pos)
+                print(f"[Inspect] P{i+1} → pos=({pos[0]:.2f},{pos[1]:.2f},{pos[2]:.2f}) STL距离={stl_d:.2f}m 碰撞阈值={collision_dist:.1f}m")
+            elif tree is not None:
+                pc_d, _ = tree.query(pos)
+                print(f"[Inspect] P{i+1} → pos=({pos[0]:.2f},{pos[1]:.2f},{pos[2]:.2f}) 点云距离={pc_d:.2f}m 碰撞阈值={collision_dist:.1f}m")
+            else:
+                print(f"[Inspect] P{i+1} → pos=({pos[0]:.2f},{pos[1]:.2f},{pos[2]:.2f})")
 
             # ── 机头方向：螃蟹飞（⊥ 航线）──
+            # 确保 heading 朝向目标（否则云台需要转180°）
+            los_to_target = target - pos
+            if np.dot(heading, los_to_target) < 0:
+                heading = -heading
             quat = look_at_quaternion(pos + heading, pos)
             gimbal_pitch = self._calc_gimbal_pitch(pos, target, heading)
             # pitch 超范围时记录警告（不 clip）
@@ -3825,6 +4147,8 @@ class MainWindow(QMainWindow):
         takeoff_z, takeoff_yaw = self._get_takeoff_params()
         self.viewer._takeoff_z = takeoff_z
         self.viewer._takeoff_yaw = takeoff_yaw
+        self.viewer._camera_hfov = self._camera_fov
+        self.viewer._camera_vfov = self._vertical_fov()
         try:
             self.viewer._safe_point = (
                 float(self.edt_safe_x.text()),
@@ -4009,12 +4333,10 @@ class MainWindow(QMainWindow):
         safe_pos = np.array([sx, sy, sz])
         all_positions = [safe_pos] + [wp['pos'] for wp in self.waypoints]
 
-        # ── 线段采样碰撞检测（批量查询）──
+        # ── 线段采样碰撞检测（STL 版 / 点云版）──
         collisions = []
-        tree = self._get_kdtree()
-        if tree is not None and len(all_positions) >= 2:
-            all_pts = []
-            seg_labels = []
+        if self._stl_triangles_np is not None and len(all_positions) >= 2:
+            # STL 版：精确计算到三角面的最短距离
             for seg_i in range(len(all_positions) - 1):
                 p1 = all_positions[seg_i]
                 p2 = all_positions[seg_i + 1]
@@ -4024,15 +4346,35 @@ class MainWindow(QMainWindow):
                 n_samples = max(2, int(d / sample_step) + 1)
                 ts = np.linspace(0, 1, n_samples + 1)
                 pts = p1[None, :] + ts[:, None] * (p2 - p1)[None, :]
-                all_pts.append(pts)
-                label = -1 if seg_i == 0 else seg_i
-                seg_labels.extend([label] * len(pts))
+                for pt in pts:
+                    stl_dist = self._stl_surface_distance(pt)
+                    if stl_dist < collision_dist:
+                        label = -1 if seg_i == 0 else seg_i
+                        collisions.append((label, float(stl_dist)))
+        else:
+            # 点云版：用 KDTree
+            tree = self._get_kdtree()
+            if tree is not None and len(all_positions) >= 2:
+                all_pts = []
+                seg_labels = []
+                for seg_i in range(len(all_positions) - 1):
+                    p1 = all_positions[seg_i]
+                    p2 = all_positions[seg_i + 1]
+                    d = np.linalg.norm(p2 - p1)
+                    if d < 1e-10:
+                        continue
+                    n_samples = max(2, int(d / sample_step) + 1)
+                    ts = np.linspace(0, 1, n_samples + 1)
+                    pts = p1[None, :] + ts[:, None] * (p2 - p1)[None, :]
+                    all_pts.append(pts)
+                    label = -1 if seg_i == 0 else seg_i
+                    seg_labels.extend([label] * len(pts))
 
-            if all_pts:
-                all_pts_arr = np.vstack(all_pts)
-                dists, _ = tree.query(all_pts_arr)
-                hit_mask = dists < collision_dist
-                collisions = [(seg_labels[i], float(dists[i])) for i in np.where(hit_mask)[0]]
+                if all_pts:
+                    all_pts_arr = np.vstack(all_pts)
+                    dists, _ = tree.query(all_pts_arr)
+                    hit_mask = dists < collision_dist
+                    collisions = [(seg_labels[i], float(dists[i])) for i in np.where(hit_mask)[0]]
 
         # ── 最低Z值检测 ──
         low_z = []
