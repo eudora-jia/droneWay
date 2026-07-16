@@ -109,8 +109,8 @@ class FoxgloveInteractorStyle(object):
             if abs(pos[0] - start[0]) < 5 and abs(pos[1] - start[1]) < 5:
                 p = v._pick_3d(pos[0], pos[1])
                 if p is not None:
-                    # 吸附到最近点云点（仅点云模式，STL射线已精确）
-                    if v._stl_actor is None and v.points_data is not None and len(v.points_data) > 0:
+                    # 吸附到最近点云点（仅点云模式，STL/OBJ射线已精确）
+                    if not v._get_all_mesh_actors() and v.points_data is not None and len(v.points_data) > 0:
                         if v._cloud_tree is None:
                             from scipy.spatial import cKDTree
                             v._cloud_tree = cKDTree(v.points_data)
@@ -134,8 +134,8 @@ class FoxgloveInteractorStyle(object):
                         v._update_third_person_camera(render=True)
                 p = v._pick_3d(pos[0], pos[1])
                 if p is not None:
-                    # 吸附到最近点云点（仅点云模式，STL射线已精确）
-                    if v._stl_actor is None and v.points_data is not None and len(v.points_data) > 0:
+                    # 吸附到最近点云点（仅点云模式，STL/OBJ射线已精确）
+                    if not v._get_all_mesh_actors() and v.points_data is not None and len(v.points_data) > 0:
                         if v._cloud_tree is None:
                             from scipy.spatial import cKDTree
                             v._cloud_tree = cKDTree(v.points_data)
@@ -334,7 +334,7 @@ class VTKViewer(QWidget):
                     vtkBillboardTextActor3D, vtkTextActor,
                     vtkTransformPolyDataFilter, vtkTransform,
                     vtkGlyph3D, vtkInteractorStyleUser,
-                    vtkFloatArray, vtkTexture, vtkPNGReader,
+                    vtkFloatArray, vtkTexture, vtkPNGReader, vtkOBJReader, vtkOBJImporter,
                 )
                 vtk.vtkOutputWindow.SetGlobalWarningDisplay(0)
                 self._vtk_available = True
@@ -436,6 +436,7 @@ class VTKViewer(QWidget):
         # ─── STL 网格模型 ───
         self._stl_polydata = None
         self._stl_actor = None
+        self._obj_actors = []  # OBJ导入器创建的多个actor
         self._stl_locator = None  # vtkCellLocator 用于法线查询
         self._stl_normals = None  # vtkPolyData 法线数据
         self._stl_points_np = None
@@ -1424,6 +1425,186 @@ class VTKViewer(QWidget):
         print(f"[STL] Loaded: {path} ({n_triangles} triangles)")
         return True
 
+    def add_obj_mesh(self, path, color=(0.7, 0.7, 0.7), opacity=1.0):
+        """加载并渲染OBJ网格模型（支持MTL材质+纹理贴图）
+        path: OBJ文件路径
+        color: (R,G,B) 0~1
+        opacity: 透明度 0~1
+        """
+        if not self._vtk_available:
+            return False
+        vtk = self._vtk
+        import os
+        if not os.path.exists(path):
+            print(f"[OBJ] File not found: {path}")
+            return False
+
+        self.clear_stl_mesh()
+
+        obj_dir = os.path.dirname(os.path.abspath(path))
+
+        # ── 解析MTL材质 ──
+        mtl_file = None
+        mtl_kd = None       # 漫反射颜色 (r, g, b) 0~1
+        mtl_map_kd = None   # 纹理贴图文件名
+        try:
+            with open(path, 'r', errors='ignore') as f:
+                for line in f:
+                    if line.strip().startswith('mtllib '):
+                        mtl_file = line.strip().split(None, 1)[1].strip()
+                        break
+        except Exception:
+            pass
+
+        if mtl_file:
+            mtl_path = os.path.join(obj_dir, mtl_file)
+            if os.path.exists(mtl_path):
+                print(f"[OBJ] MTL: {mtl_path}")
+                try:
+                    with open(mtl_path, 'r', errors='ignore') as f:
+                        for line in f:
+                            parts = line.strip().split()
+                            if len(parts) >= 4 and parts[0] == 'Kd':
+                                mtl_kd = (float(parts[1]), float(parts[2]), float(parts[3]))
+                            elif len(parts) >= 2 and parts[0] == 'map_Kd':
+                                mtl_map_kd = parts[1]
+                except Exception as e:
+                    print(f"[OBJ] MTL parse error: {e}")
+            else:
+                print(f"[OBJ] MTL not found: {mtl_path}")
+
+        # ── 加载几何体 ──
+        reader = vtk.vtkOBJReader()
+        reader.SetFileName(path)
+        reader.Update()
+
+        polydata = reader.GetOutput()
+        if polydata.GetNumberOfPoints() == 0:
+            print(f"[OBJ] Empty mesh: {path}")
+            return False
+
+        # 清除旧法线，重新计算
+        polydata.GetPointData().SetNormals(None)
+        polydata.GetCellData().SetNormals(None)
+
+        normals_filter = vtk.vtkPolyDataNormals()
+        normals_filter.SetInputData(polydata)
+        normals_filter.ComputePointNormalsOn()
+        normals_filter.ComputeCellNormalsOff()
+        normals_filter.ConsistencyOn()
+        normals_filter.SplittingOff()
+        normals_filter.AutoOrientNormalsOn()
+        normals_filter.Update()
+        polydata_with_normals = normals_filter.GetOutput()
+
+        pn = polydata_with_normals.GetPointData().GetNormals()
+        if pn:
+            print(f"[OBJ] Point normals: {pn.GetNumberOfTuples()} tuples")
+        else:
+            print("[OBJ] WARNING: No point normals computed!")
+            polydata_with_normals = polydata
+
+        self._stl_polydata = polydata_with_normals
+        point_normals = polydata_with_normals.GetPointData().GetNormals()
+
+        stl_points = polydata_with_normals.GetPoints()
+        n_pts = stl_points.GetNumberOfPoints()
+        stl_np = np.array([stl_points.GetPoint(i) for i in range(n_pts)])
+        self._stl_points_np = stl_np
+
+        if point_normals is not None:
+            normals_np = np.array([point_normals.GetTuple(i) for i in range(n_pts)])
+            norms = np.linalg.norm(normals_np, axis=1, keepdims=True)
+            norms[norms < 1e-10] = 1.0
+            self._stl_normals_np = normals_np / norms
+        else:
+            self._stl_normals_np = None
+
+        from scipy.spatial import cKDTree
+        self._stl_tree = cKDTree(stl_np)
+
+        cell_loc = vtk.vtkCellLocator()
+        cell_loc.SetDataSet(polydata_with_normals)
+        cell_loc.BuildLocator()
+        self._stl_cell_locator = cell_loc
+
+        # ── 构建渲染Actor（带材质颜色和纹理） ──
+        has_texture = False
+        texture_actor = None
+
+        # 尝试加载纹理贴图
+        if mtl_map_kd:
+            tex_path = os.path.join(obj_dir, mtl_map_kd)
+            if os.path.exists(tex_path):
+                try:
+                    fsize = os.path.getsize(tex_path)
+                    print(f"[OBJ] Texture: {tex_path} ({fsize / 1024 / 1024:.1f} MB)")
+                    png_reader = vtk.vtkPNGReader()
+                    png_reader.SetFileName(tex_path)
+                    png_reader.Update()
+                    img = png_reader.GetOutput()
+                    if img and img.GetNumberOfPoints() > 0:
+                        texture = vtk.vtkTexture()
+                        texture.SetInputData(img)
+                        texture.InterpolateOn()
+                        texture.RepeatOff()
+
+                        # 检查是否有UV坐标
+                        tcoords = polydata_with_normals.GetPointData().GetTCoords()
+                        if tcoords and tcoords.GetNumberOfTuples() > 0:
+                            has_texture = True
+                            print(f"[OBJ] UV coords: {tcoords.GetNumberOfTuples()} tuples")
+                        else:
+                            print("[OBJ] No UV coords in mesh, texture ignored")
+                            texture = None
+                    else:
+                        print("[OBJ] Texture read failed")
+                except Exception as e:
+                    print(f"[OBJ] Texture load error: {e}")
+            else:
+                print(f"[OBJ] Texture not found: {tex_path}")
+
+        mapper = self._vtkPolyDataMapper()
+        mapper.SetInputData(polydata_with_normals)
+
+        if has_texture:
+            mapper.ScalarVisibilityOff()
+        else:
+            mapper.ScalarVisibilityOff()
+
+        actor = self._vtkActor()
+        actor.SetMapper(mapper)
+        prop = actor.GetProperty()
+
+        if has_texture and texture is not None:
+            actor.SetTexture(texture)
+            self._stl_colors = True
+        elif mtl_kd is not None:
+            prop.SetColor(mtl_kd)
+            self._stl_colors = True
+            print(f"[OBJ] Material Kd: ({mtl_kd[0]:.2f}, {mtl_kd[1]:.2f}, {mtl_kd[2]:.2f})")
+        else:
+            prop.SetColor(color)
+            self._stl_colors = False
+
+        prop.SetOpacity(opacity)
+        prop.SetAmbient(0.4)
+        prop.SetDiffuse(0.8)
+        prop.SetSpecular(0.2)
+        prop.SetSpecularPower(20)
+        prop.SetInterpolationToPhong()
+        prop.SetLighting(True)
+        prop.BackfaceCullingOn()
+
+        self.renderer.AddActor(actor)
+        self._actors.append(actor)
+        self._stl_actor = actor
+        self._obj_actors = [actor]
+
+        n_triangles = polydata_with_normals.GetNumberOfCells()
+        print(f"[OBJ] Loaded: {path} ({n_pts} vertices, {n_triangles} triangles)")
+        return True
+
     def get_stl_normal(self, point):
         """获取STL表面法线：找最近三角面，返回朝向观察者的几何法线"""
         if self._stl_polydata is None or self._stl_tree is None:
@@ -1576,20 +1757,34 @@ class VTKViewer(QWidget):
                     best_normal = tri_normal
         return best_pos, best_normal
 
-    def set_stl_opacity(self, opacity):
-        """设置STL模型透明度"""
+    def _get_all_mesh_actors(self):
+        """获取所有网格模型actor（STL + OBJ）"""
+        actors = []
         if self._stl_actor is not None:
-            self._stl_actor.GetProperty().SetOpacity(opacity)
-            if hasattr(self, 'vtk_widget') and self.vtk_widget:
-                self.vtk_widget.GetRenderWindow().Render()
+            actors.append(self._stl_actor)
+        actors.extend(self._obj_actors)
+        return actors
+
+    def set_stl_opacity(self, opacity):
+        """设置STL/OBJ模型透明度"""
+        for a in self._get_all_mesh_actors():
+            a.GetProperty().SetOpacity(opacity)
+        if self._get_all_mesh_actors() and hasattr(self, 'vtk_widget') and self.vtk_widget:
+            self.vtk_widget.GetRenderWindow().Render()
 
     def clear_stl_mesh(self):
-        """清除STL网格模型"""
+        """清除STL/OBJ网格模型"""
         if self._stl_actor is not None:
             self.renderer.RemoveActor(self._stl_actor)
             if self._stl_actor in self._actors:
                 self._actors.remove(self._stl_actor)
             self._stl_actor = None
+        # 清除OBJ导入器创建的多个actor
+        for a in self._obj_actors:
+            self.renderer.RemoveActor(a)
+            if a in self._actors:
+                self._actors.remove(a)
+        self._obj_actors = []
         self._stl_polydata = None
         self._stl_locator = None
         self._stl_normals = None
@@ -1824,8 +2019,8 @@ class VTKViewer(QWidget):
             self._fpv_drone_actor.SetVisibility(False)
 
         # FPV模式：关闭背面剔除（进入模型内部也能看到表面）
-        if self._stl_actor is not None:
-            self._stl_actor.GetProperty().BackfaceCullingOff()
+        for a in self._get_all_mesh_actors():
+            a.GetProperty().BackfaceCullingOff()
 
         self._update_fpv_camera()
 
@@ -1838,8 +2033,8 @@ class VTKViewer(QWidget):
             self.renderer.ResetCameraClippingRange = self._orig_reset_clip
             self._orig_reset_clip = None
         # 恢复背面剔除
-        if self._stl_actor is not None:
-            self._stl_actor.GetProperty().BackfaceCullingOn()
+        for a in self._get_all_mesh_actors():
+            a.GetProperty().BackfaceCullingOn()
         self.renderer.ResetCamera()
         if self.vtk_widget.GetRenderWindow():
             self.vtk_widget.GetRenderWindow().Render()
@@ -1857,10 +2052,10 @@ class VTKViewer(QWidget):
         cam.SetViewAngle(self._fpv_fov)
         cam.SetClippingRange(0.1, 5000.0)
 
-        # 确保STL保持表面渲染模式
-        if self._stl_actor is not None:
-            self._stl_actor.GetProperty().SetRepresentationToSurface()
-            self._stl_actor.GetProperty().EdgeVisibilityOff()
+        # 确保STL/OBJ保持表面渲染模式
+        for a in self._get_all_mesh_actors():
+            a.GetProperty().SetRepresentationToSurface()
+            a.GetProperty().EdgeVisibilityOff()
 
         self._update_drone_model()
         if render and self.vtk_widget.GetRenderWindow():
@@ -1957,10 +2152,10 @@ class VTKViewer(QWidget):
         if self._fpv_drone_actor is not None:
             self.renderer.AddActor(self._fpv_drone_actor)
             self._actors.append(self._fpv_drone_actor)
-        # 保留STL模型
-        if self._stl_actor is not None:
-            self.renderer.AddActor(self._stl_actor)
-            self._actors.append(self._stl_actor)
+        # 保留STL/OBJ模型
+        for a in self._get_all_mesh_actors():
+            self.renderer.AddActor(a)
+            self._actors.append(a)
 
     def add_point_cloud(self, points, render_mode='auto', point_size=0.05, colors=None, normals=None, reset_camera=True, use_lighting=True):
         """显示点云（支持球体/立方体/像素/圆片渲染模式）
@@ -2415,9 +2610,10 @@ class VTKViewer(QWidget):
             self.renderer.RemoveActor(self._poly_surface_actor)
             self._poly_surface_actor = None
 
+        mesh_actors = set(id(a) for a in self._get_all_mesh_actors())
         to_remove = []
         for i, actor in enumerate(self._actors):
-            if actor != self._cloud_actor and actor != self._fpv_drone_actor and actor != self._stl_actor:
+            if actor != self._cloud_actor and actor != self._fpv_drone_actor and id(actor) not in mesh_actors:
                 to_remove.append(i)
         for i in reversed(to_remove):
             self.renderer.RemoveActor(self._actors[i])
@@ -2951,8 +3147,9 @@ class VTKViewer(QWidget):
         if self.fpv_mode:
             return self._fpv_pick(screen_x, screen_y)
 
-        # 0) 优先：STL 表面拾取
-        if self._stl_actor is not None:
+        # 0) 优先：STL/OBJ 表面拾取
+        mesh_actors = self._get_all_mesh_actors()
+        if mesh_actors:
             # 多边形/巡检/直线模式：用射线求交，只取正面
             if self.polygon_mode or self.inspect_mode or self.line_mode:
                 pos, normal = self._pick_stl_top_surface(screen_x, screen_y)
@@ -2963,7 +3160,8 @@ class VTKViewer(QWidget):
             # 其他模式：CellPicker
             cell_picker = self._vtk.vtkCellPicker()
             cell_picker.PickFromListOn()
-            cell_picker.AddPickList(self._stl_actor)
+            for a in mesh_actors:
+                cell_picker.AddPickList(a)
             cell_picker.SetTolerance(0.01)
             if cell_picker.Pick(screen_x, screen_y, 0, self.renderer):
                 pos = np.array(cell_picker.GetPickPosition())
@@ -3034,8 +3232,8 @@ class VTKViewer(QWidget):
 
     def _fpv_pick(self, screen_x, screen_y):
         """FPV模式下拾取点云点 - 直接用DisplayToWorld计算射线"""
-        # 优先：STL 表面射线求交（精确法线）
-        if self._stl_actor is not None:
+        # 优先：STL/OBJ 表面射线求交（精确法线）
+        if self._get_all_mesh_actors():
             pos, normal = self._pick_stl_top_surface(screen_x, screen_y)
             if pos is not None:
                 if normal is not None:
@@ -3225,7 +3423,7 @@ class VTKViewer(QWidget):
 
     # ─── 多边形选择模式 ─────────────────────────────────────
     def enter_polygon_mode(self):
-        has_stl = self._stl_actor is not None
+        has_stl = bool(self._get_all_mesh_actors())
         has_cloud = self.points_data is not None and len(self.points_data) > 0
         if not has_stl and not has_cloud:
             print("[Polygon] No point cloud or STL loaded")
@@ -3247,7 +3445,7 @@ class VTKViewer(QWidget):
 
     # ─── 点击放置模式 ─────────────────────────────────────
     def enter_place_mode(self):
-        has_stl = self._stl_actor is not None
+        has_stl = bool(self._get_all_mesh_actors())
         has_cloud = self.points_data is not None and len(self.points_data) > 0
         if not has_stl and not has_cloud:
             print("[Place] No point cloud or STL loaded")
@@ -3395,7 +3593,7 @@ class VTKViewer(QWidget):
 
     # ─── 巡检选点模式 ─────────────────────────────────────────
     def enter_inspect_mode(self):
-        has_stl = self._stl_actor is not None
+        has_stl = bool(self._get_all_mesh_actors())
         has_cloud = self.points_data is not None and len(self.points_data) > 0
         if not has_stl and not has_cloud:
             print("[Inspect] No point cloud or STL loaded")
@@ -3438,7 +3636,7 @@ class VTKViewer(QWidget):
 
     # ─── 直线起终点选点 ───
     def enter_line_mode(self):
-        has_stl = self._stl_actor is not None
+        has_stl = bool(self._get_all_mesh_actors())
         has_cloud = self.points_data is not None and len(self.points_data) > 0
         if not has_stl and not has_cloud:
             print("[Line] No point cloud or STL loaded")

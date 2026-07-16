@@ -224,7 +224,7 @@ class MainWindow(QMainWindow):
         self._act_load_pc.triggered.connect(self.load_point_cloud)
         self._file_menu.addAction(self._act_load_pc)
 
-        self._act_load_stl = QAction("加载STL模型", self)
+        self._act_load_stl = QAction("加载模型(STL/OBJ)", self)
         self._act_load_stl.triggered.connect(self.load_stl_mesh)
         self._file_menu.addAction(self._act_load_stl)
 
@@ -1038,15 +1038,19 @@ class MainWindow(QMainWindow):
             self.progress_bar.setVisible(False)
 
     def load_stl_mesh(self):
-        """加载STL网格模型"""
+        """加载STL/OBJ网格模型"""
         path, _ = QFileDialog.getOpenFileName(
-            self, "打开STL文件", "", "STL 文件 (*.stl);;所有文件 (*)"
+            self, "打开模型文件", "", "模型文件 (*.stl *.obj);;STL 文件 (*.stl);;OBJ 文件 (*.obj);;所有文件 (*)"
         )
         if not path:
             return
-        ok = self.viewer.add_stl_mesh(path)
+        ext = os.path.splitext(path)[1].lower()
+        if ext == '.obj':
+            ok = self.viewer.add_obj_mesh(path)
+        else:
+            ok = self.viewer.add_stl_mesh(path)
         if ok:
-            self.statusBar().showMessage(f"已加载STL: {os.path.basename(path)}")
+            self.statusBar().showMessage(f"已加载模型: {os.path.basename(path)}")
             # 预计算三角面顶点数组（用于射线穿模检测）
             self._precompute_stl_triangles()
             # STL 不需要点云相关菜单
@@ -1054,7 +1058,7 @@ class MainWindow(QMainWindow):
             self._upsample_menu.setEnabled(False)
             self._color_menu.setEnabled(False)
         else:
-            QMessageBox.warning(self, "错误", "加载STL失败")
+            QMessageBox.warning(self, "错误", "加载模型失败")
 
     def _ensure_normals(self):
         """确保法线已估算（延迟执行，只在需要时调用）"""
@@ -1236,7 +1240,7 @@ class MainWindow(QMainWindow):
         has_cloud = self.points is not None and len(self.points) > 0
         has_stl = self.viewer._stl_actor is not None
         if not has_cloud and not has_stl:
-            QMessageBox.information(self, "提示", "请先加载点云或STL模型")
+            QMessageBox.information(self, "提示", "请先加载点云或模型")
             self._act_fpv.setChecked(False)
             return
 
