@@ -922,7 +922,8 @@ class VTKViewer(QWidget):
         actor.SetMapper(mapper)
         actor.GetProperty().SetColor(0.3, 0.3, 0.3)
         actor.GetProperty().SetLighting(True)
-
+        # 无人机始终渲染在最前面（不被桥梁遮挡）
+        actor.GetProperty().SetRenderLinesAsTubes(True)
         self.renderer.AddActor(actor)
         self._anim_drone_actor = actor
 
@@ -1155,6 +1156,15 @@ class VTKViewer(QWidget):
         if not self._anim_playing or self._anim_wp_idx >= len(self._anim_waypoints):
             self.stop_route_animation()
             return
+        if self._anim_wp_idx == 0:
+            print(f"[Anim] Drone actor: {self._anim_drone_actor is not None}")
+            print(f"[Anim] Bridge visible: stl={self._stl_actor.GetVisibility() if self._stl_actor else 'N/A'}")
+            wp0 = self._anim_waypoints[0]
+            pos0 = np.array(wp0['pos'])
+            cam = self.renderer.GetActiveCamera()
+            cp = cam.GetPosition()
+            print(f"[Anim] wp0 pos={pos0}, cam_pos=({cp[0]:.1f},{cp[1]:.1f},{cp[2]:.1f})")
+            print(f"[Anim] drone bounds: {self._anim_drone_actor.GetBounds()}")
         wp = self._anim_waypoints[self._anim_wp_idx]
         pos = np.array(wp['pos'])
         quat = wp['quat']
@@ -1177,6 +1187,9 @@ class VTKViewer(QWidget):
             for a in self._anim_proj_actors:
                 self.renderer.RemoveActor(a)
         self._anim_proj_actors = []
+        # 检查投影开关
+        if not getattr(self, '_anim_proj_enabled', True):
+            return
         if 'target_pos' not in wp:
             return
         pos = np.array(wp['pos'], dtype=float)
@@ -1423,7 +1436,7 @@ class VTKViewer(QWidget):
         prop.SetSpecularPower(20)
         prop.SetInterpolationToPhong()
         prop.SetLighting(True)
-        prop.BackfaceCullingOn()  # 剔除背面，避免拾取到内表面
+        prop.BackfaceCullingOff()  # 不剔除背面，底面也能正常显示
         print(f"[STL] Color={color}, Opacity={opacity}")
 
         self.renderer.AddActor(actor)
@@ -2866,7 +2879,7 @@ class VTKViewer(QWidget):
 
         # ── 相机覆盖区域投影（显示重叠率）──
         has_target = any('target_pos' in wp for wp in waypoints)
-        if has_target:
+        if has_target and getattr(self, '_coverage_enabled', True):
             hfov_rad = math.radians(self._camera_hfov)
             vfov_rad = math.radians(self._camera_vfov)
             headings = self._compute_forward_headings(waypoints)

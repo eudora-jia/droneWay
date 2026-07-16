@@ -364,6 +364,18 @@ class MainWindow(QMainWindow):
         self._act_anim_play.triggered.connect(self._toggle_route_animation)
         self._route_menu.addAction(self._act_anim_play)
 
+        self._act_anim_proj = QAction("动画投影", self)
+        self._act_anim_proj.setCheckable(True)
+        self._act_anim_proj.setChecked(True)
+        self._act_anim_proj.toggled.connect(lambda on: setattr(self.viewer, '_anim_proj_enabled', on))
+        self._route_menu.addAction(self._act_anim_proj)
+
+        self._act_coverage = QAction("重叠率覆盖", self)
+        self._act_coverage.setCheckable(True)
+        self._act_coverage.setChecked(True)
+        self._act_coverage.toggled.connect(self._toggle_coverage)
+        self._route_menu.addAction(self._act_coverage)
+
         # ─── 设置 ───
         self._settings_menu = menubar.addMenu("设置")
         self._act_bridge_params = QAction("桥梁参数", self)
@@ -392,6 +404,34 @@ class MainWindow(QMainWindow):
         self._act_lang_en.setActionGroup(self._lang_group)
         self._act_lang_en.triggered.connect(lambda: self._switch_language('en'))
         self._lang_menu.addAction(self._act_lang_en)
+
+        # ─── 帮助 ───
+        self._help_menu = menubar.addMenu("帮助")
+        self._act_about = QAction("关于", self)
+        self._act_about.triggered.connect(self._show_about)
+        self._help_menu.addAction(self._act_about)
+
+    def _show_about(self):
+        """显示关于对话框"""
+        QMessageBox.about(
+            self,
+            "关于 BridgeRoutePlanner",
+            "<h2>BridgeRoutePlanner</h2>"
+            "<p>桥梁巡检无人机航线规划工具</p>"
+            "<p>Bridge Inspection Drone Waypoint Planner</p>"
+            "<hr>"
+            "<p><b>版本：</b>1.0.0</p>"
+            "<p><b>功能：</b></p>"
+            "<ul>"
+            "<li>STL/OBJ 三维桥梁模型加载与可视化</li>"
+            "<li>点云数据处理与显示</li>"
+            "<li>多边形/直线/点状/立方体/圆柱体航线规划</li>"
+            "<li>航线动画播放与相机投影模拟</li>"
+            "<li>FPV 无人机视角漫游</li>"
+            "<li>重叠率覆盖可视化</li>"
+            "</ul>"
+            "<p><b>技术栈：</b>Python + PyQt5 + VTK</p>"
+        )
 
     def _init_ui(self):
         central = QWidget()
@@ -539,21 +579,26 @@ class MainWindow(QMainWindow):
         fl.addWidget(QLabel("速度(m/s):"), 0, 2)
         self.edt_flat_speed = QLineEdit("1"); fl.addWidget(self.edt_flat_speed, 0, 3)
 
-        fl.addWidget(QLabel("航点间距:"), 1, 0)
+        fl.addWidget(QLabel("扫描方向:"), 1, 0)
+        self.cmb_scan_dir = QComboBox()
+        self.cmb_scan_dir.addItems(["沿最长边", "垂直最长边"])
+        fl.addWidget(self.cmb_scan_dir, 1, 1)
+        fl.addWidget(QLabel("航点间距:"), 1, 2)
         self.edt_wp_spacing = QLineEdit("自动")
         self.edt_wp_spacing.setReadOnly(True)
         self.edt_wp_spacing.setStyleSheet("QLineEdit { background: #333; color: #888; border: 1px solid #444; }")
-        fl.addWidget(self.edt_wp_spacing, 1, 1)
-        fl.addWidget(QLabel("线间距:"), 1, 2)
+        fl.addWidget(self.edt_wp_spacing, 1, 3)
+
+        fl.addWidget(QLabel("线间距:"), 2, 0)
         self.edt_spacing = QLineEdit("自动")
         self.edt_spacing.setReadOnly(True)
         self.edt_spacing.setStyleSheet("QLineEdit { background: #333; color: #888; border: 1px solid #444; }")
-        fl.addWidget(self.edt_spacing, 1, 3)
+        fl.addWidget(self.edt_spacing, 2, 1)
 
         btn_calc_overlap = QPushButton("自动算间距")
         btn_calc_overlap.setStyleSheet("QPushButton { background: #2a2a2a; border: 1px solid #555; padding: 4px; color: #d0d0d0; } QPushButton:hover { border-color: #ffa500; color: #ffa500; }")
         btn_calc_overlap.clicked.connect(self._calc_overlap_spacing)
-        fl.addWidget(btn_calc_overlap, 2, 0, 1, 4)
+        fl.addWidget(btn_calc_overlap, 2, 2, 1, 2)
 
         btn_apply_flat = QPushButton("应用")
         btn_apply_flat.setStyleSheet("QPushButton { background: #2a2a2a; border: 1px solid #555; padding: 4px; color: #d0d0d0; } QPushButton:hover { border-color: #ffa500; color: #ffa500; }")
@@ -2189,6 +2234,10 @@ class MainWindow(QMainWindow):
         nrm = np.linalg.norm(cross_dir_3d)
         if nrm > 1e-10:
             cross_dir_3d /= nrm
+
+        # 用户选择"垂直最长边"时交换主副方向
+        if self.cmb_scan_dir.currentIndex() == 1:
+            main_dir_3d, cross_dir_3d = cross_dir_3d, main_dir_3d
 
         # 在多边形平面内生成均匀网格
         # 投影多边形顶点到 (main_dir, cross_dir) 2D 坐标系
@@ -3996,24 +4045,35 @@ class MainWindow(QMainWindow):
         if not self.waypoints:
             QMessageBox.warning(self, "提示", "请先生成航线")
             return
-        self._on_anim_started()
+        # 同步投影开关
+        self.viewer._anim_proj_enabled = self._act_anim_proj.isChecked()
         self.viewer.start_route_animation(self.waypoints, speed=1.0, camera_fov=self._camera_fov)
+        self._on_anim_started()
 
     def _on_anim_started(self):
-        """动画开始：禁用其他操作"""
+        """动画开始：禁用其他操作，STL模型半透明"""
         self._act_anim_play.setText("停止动画")
         self._file_menu.setEnabled(False)
         self._view_menu.setEnabled(False)
         self._settings_menu.setEnabled(False)
-        # 禁用侧边栏
         for w in self.findChildren(QPushButton):
             if w.text() not in ("停止动画",):
                 w.setEnabled(False)
         for w in self.findChildren(QComboBox):
             w.setEnabled(False)
+        # 动画时从渲染器移除桥梁模型
+        stl_removed = False
+        if self.viewer._stl_actor is not None:
+            self.viewer.renderer.RemoveActor(self.viewer._stl_actor)
+            stl_removed = True
+        obj_removed = 0
+        for a in self.viewer._obj_actors:
+            self.viewer.renderer.RemoveActor(a)
+            obj_removed += 1
+        print(f"[Anim] Bridge removed: stl={stl_removed}, obj_actors={obj_removed}")
 
     def _on_anim_stopped(self):
-        """动画结束：恢复操作"""
+        """动画结束：恢复操作，STL模型恢复不透明"""
         self._act_anim_play.setText("航线动画播放")
         self._file_menu.setEnabled(True)
         self._view_menu.setEnabled(True)
@@ -4022,6 +4082,16 @@ class MainWindow(QMainWindow):
             w.setEnabled(True)
         for w in self.findChildren(QComboBox):
             w.setEnabled(True)
+        # 动画结束，把桥梁模型加回渲染器
+        if self.viewer._stl_actor is not None:
+            self.viewer.renderer.AddActor(self.viewer._stl_actor)
+        for a in self.viewer._obj_actors:
+            self.viewer.renderer.AddActor(a)
+
+    def _toggle_coverage(self, on):
+        """切换重叠率覆盖显示"""
+        self.viewer._coverage_enabled = on
+        self._refresh_route_display()
 
     def _refresh_route_display(self):
         if self.waypoints:

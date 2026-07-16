@@ -25,6 +25,10 @@ def main():
             break
 
     window = MainWindow()
+    # 窗口图标也设一遍（Windows 任务栏需要）
+    icon = app.windowIcon()
+    if not icon.isNull():
+        window.setWindowIcon(icon)
     window.show()
 
     sys.exit(app.exec_())
