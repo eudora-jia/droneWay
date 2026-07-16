@@ -156,6 +156,20 @@ class MainWindow(QMainWindow):
         },
     }
 
+    # ─── 按钮样式常量 ───
+    _BTN_NORMAL = (
+        "QPushButton { background: #2a2a2a; border: 1px solid #555; padding: 4px; color: #d0d0d0; }"
+        " QPushButton:hover { border-color: #ffa500; color: #ffa500; }"
+    )
+    _BTN_ACCENT = (
+        "QPushButton { background: #2a2a2a; border: 2px solid #ffa500; font-weight: bold;"
+        " padding: 6px; color: #ffa500; } QPushButton:hover { background: #333; }"
+    )
+    _BTN_DANGER = (
+        "QPushButton { background: #2a2a2a; border: 1px solid #884444; padding: 6px; color: #d0d0d0; }"
+        " QPushButton:hover { border-color: #ff4444; color: #ff4444; }"
+    )
+
     def __init__(self):
         super().__init__()
         self._lang = 'zh'
@@ -546,7 +560,7 @@ class MainWindow(QMainWindow):
         pk.addLayout(minz_row)
 
         btn_apply_safety = QPushButton("应用")
-        btn_apply_safety.setStyleSheet("QPushButton { background: #2a2a2a; border: 1px solid #555; padding: 4px; color: #d0d0d0; } QPushButton:hover { border-color: #ffa500; color: #ffa500; }")
+        btn_apply_safety.setStyleSheet(self._BTN_NORMAL)
         btn_apply_safety.clicked.connect(self._apply_safety_settings)
         pk.addWidget(btn_apply_safety)
 
@@ -596,17 +610,17 @@ class MainWindow(QMainWindow):
         fl.addWidget(self.edt_spacing, 2, 1)
 
         btn_calc_overlap = QPushButton("自动算间距")
-        btn_calc_overlap.setStyleSheet("QPushButton { background: #2a2a2a; border: 1px solid #555; padding: 4px; color: #d0d0d0; } QPushButton:hover { border-color: #ffa500; color: #ffa500; }")
+        btn_calc_overlap.setStyleSheet(self._BTN_NORMAL)
         btn_calc_overlap.clicked.connect(self._calc_overlap_spacing)
         fl.addWidget(btn_calc_overlap, 2, 2, 1, 2)
 
         btn_apply_flat = QPushButton("应用")
-        btn_apply_flat.setStyleSheet("QPushButton { background: #2a2a2a; border: 1px solid #555; padding: 4px; color: #d0d0d0; } QPushButton:hover { border-color: #ffa500; color: #ffa500; }")
+        btn_apply_flat.setStyleSheet(self._BTN_NORMAL)
         btn_apply_flat.clicked.connect(self._apply_flat_params)
         fl.addWidget(btn_apply_flat, 3, 0, 1, 4)
 
         self.btn_poly_select = QPushButton("选择顶点（右键确认）")
-        self.btn_poly_select.setStyleSheet("QPushButton { background: #2a2a2a; border: 2px solid #ffa500; font-weight: bold; padding: 6px; color: #ffa500; } QPushButton:hover { background: #333; }")
+        self.btn_poly_select.setStyleSheet(self._BTN_ACCENT)
         self.btn_poly_select.clicked.connect(self._start_polygon_select)
         fl.addWidget(self.btn_poly_select, 4, 0, 1, 4)
 
@@ -647,7 +661,7 @@ class MainWindow(QMainWindow):
         self.edt_cspeed = QLineEdit("1"); cl.addWidget(self.edt_cspeed, 4, 1)
 
         btn_cube_calc = QPushButton("自动算间距")
-        btn_cube_calc.setStyleSheet("QPushButton { background: #2a2a2a; border: 1px solid #555; padding: 4px; color: #d0d0d0; } QPushButton:hover { border-color: #ffa500; color: #ffa500; }")
+        btn_cube_calc.setStyleSheet(self._BTN_NORMAL)
         btn_cube_calc.clicked.connect(self._calc_cube_spacing)
         cl.addWidget(btn_cube_calc, 4, 2, 1, 2)
 
@@ -666,12 +680,12 @@ class MainWindow(QMainWindow):
         self.sld_cube_start_angle.valueChanged.connect(lambda v: self.lbl_cube_angle_val.setText(f"{v}°"))
 
         btn_apply_cube = QPushButton("应用")
-        btn_apply_cube.setStyleSheet("QPushButton { background: #2a2a2a; border: 1px solid #555; padding: 4px; color: #d0d0d0; } QPushButton:hover { border-color: #ffa500; color: #ffa500; }")
+        btn_apply_cube.setStyleSheet(self._BTN_NORMAL)
         btn_apply_cube.clicked.connect(self._apply_cube_params)
         cl.addWidget(btn_apply_cube, 6, 0, 1, 4)
 
         self.btn_cube_place = QPushButton("点击放置（右键确认生成）")
-        self.btn_cube_place.setStyleSheet("QPushButton { background: #2a2a2a; border: 2px solid #ffa500; font-weight: bold; padding: 6px; color: #ffa500; } QPushButton:hover { background: #333; }")
+        self.btn_cube_place.setStyleSheet(self._BTN_ACCENT)
         self.btn_cube_place.clicked.connect(lambda: self._start_place_mode("cube"))
         cl.addWidget(self.btn_cube_place, 7, 0, 1, 4)
         self._route_stack.addWidget(tab_cube)
@@ -708,7 +722,7 @@ class MainWindow(QMainWindow):
         self.edt_cyl_speed = QLineEdit("1"); cyl.addWidget(self.edt_cyl_speed, 3, 3)
 
         btn_cyl_calc = QPushButton("自动算间距")
-        btn_cyl_calc.setStyleSheet("QPushButton { background: #2a2a2a; border: 1px solid #555; padding: 4px; color: #d0d0d0; } QPushButton:hover { border-color: #ffa500; color: #ffa500; }")
+        btn_cyl_calc.setStyleSheet(self._BTN_NORMAL)
         btn_cyl_calc.clicked.connect(self._calc_cyl_spacing)
         cyl.addWidget(btn_cyl_calc, 4, 0, 1, 2)
 
@@ -732,12 +746,12 @@ class MainWindow(QMainWindow):
         self.sld_cyl_start_angle.valueChanged.connect(lambda v: self.lbl_cyl_angle_val.setText(f"{v}°"))
 
         btn_apply_cyl = QPushButton("应用")
-        btn_apply_cyl.setStyleSheet("QPushButton { background: #2a2a2a; border: 1px solid #555; padding: 4px; color: #d0d0d0; } QPushButton:hover { border-color: #ffa500; color: #ffa500; }")
+        btn_apply_cyl.setStyleSheet(self._BTN_NORMAL)
         btn_apply_cyl.clicked.connect(self._apply_cyl_params)
         cyl.addWidget(btn_apply_cyl, 6, 0, 1, 4)
 
         self.btn_cyl_place = QPushButton("点击放置（右键确认生成）")
-        self.btn_cyl_place.setStyleSheet("QPushButton { background: #2a2a2a; border: 2px solid #ffa500; font-weight: bold; padding: 6px; color: #ffa500; } QPushButton:hover { background: #333; }")
+        self.btn_cyl_place.setStyleSheet(self._BTN_ACCENT)
         self.btn_cyl_place.clicked.connect(lambda: self._start_place_mode("cylinder"))
         cyl.addWidget(self.btn_cyl_place, 7, 0, 1, 4)
         self._route_stack.addWidget(tab_cyl)
@@ -807,7 +821,7 @@ class MainWindow(QMainWindow):
         il.addWidget(self.edt_inspect_speed, 3, 3)
 
         self.btn_gen_inspect = QPushButton("生成点状航线")
-        self.btn_gen_inspect.setStyleSheet("QPushButton { background: #2a2a2a; border: 2px solid #ffa500; font-weight: bold; padding: 6px; color: #ffa500; } QPushButton:hover { background: #333; }")
+        self.btn_gen_inspect.setStyleSheet(self._BTN_ACCENT)
         self.btn_gen_inspect.clicked.connect(self.generate_inspect_route)
         il.addWidget(self.btn_gen_inspect, 4, 0, 1, 4)
 
@@ -826,7 +840,7 @@ class MainWindow(QMainWindow):
         self._route_stack.addWidget(tab_inspect)
 
         self.btn_clear = QPushButton("清除")
-        self.btn_clear.setStyleSheet("QPushButton { background: #2a2a2a; border: 1px solid #884444; padding: 6px; color: #d0d0d0; } QPushButton:hover { border-color: #ff4444; color: #ff4444; }")
+        self.btn_clear.setStyleSheet(self._BTN_DANGER)
         ctrl_layout.addWidget(self.btn_clear)
 
         ctrl_layout.addWidget(self._route_stack)
@@ -2301,37 +2315,7 @@ class MainWindow(QMainWindow):
         is_bottom_surface = normal_up_dot < -0.7
 
         def _check_flat_candidate(pos_c, _target, _heading, _left):
-            """检查候选位置（STL版/点云版）"""
-            # C1: 碰撞检测
-            if self._stl_triangles_np is not None:
-                stl_dist = self._stl_surface_distance(pos_c)
-                if stl_dist < collision_dist:
-                    return False, f'collision_stl({stl_dist:.2f})'
-            elif tree is not None:
-                dist, _ = tree.query(pos_c)
-                if dist < collision_dist:
-                    return False, f'collision({dist:.2f})'
-            # C2: 云台 pitch
-            pitch = self._calc_gimbal_pitch(pos_c, _target, _heading)
-            if not (self._gimbal_pitch_min <= pitch <= self._gimbal_pitch_max):
-                return False, 'gimbal'
-            # C5: LOS 在 Fwd-Up 平面内
-            los = _target - pos_c
-            if abs(np.dot(los, _left)) > 0.1:
-                return False, 'gimbal_yaw'
-            # C3: LOS 不穿模
-            los_len = np.linalg.norm(los)
-            if los_len > 0.5:
-                if self.viewer._stl_polydata is not None and self._stl_triangles is not None:
-                    if self._ray_stl_intersect(pos_c, _target):
-                        return False, 'los_stl'
-                elif tree is not None:
-                    for tt in np.linspace(0.05, 0.95, max(5, int(los_len / 0.5))):
-                        sample = pos_c + los * tt
-                        d, _ = tree.query(sample)
-                        if d < 0.3:
-                            return False, 'los'
-            return True, 'ok'
+            return self._check_wp_candidate(pos_c, _target, tree, collision_dist, _heading, _left)
 
         for i, target in enumerate(region_points):
             normal = poly_normal.copy()
@@ -2499,34 +2483,7 @@ class MainWindow(QMainWindow):
         up = np.array([0.0, 0.0, 1.0])
 
         def _check_cyl_candidate(pos_c, target_c):
-            """检查候选位置是否满足所有约束（STL版/点云版）"""
-            # C1: 碰撞检测
-            if self._stl_triangles_np is not None:
-                stl_dist = self._stl_surface_distance(pos_c)
-                if stl_dist < collision_dist:
-                    return False, f'collision_stl({stl_dist:.2f})'
-            elif tree is not None:
-                d, _ = tree.query(pos_c)
-                if d < collision_dist:
-                    return False, f'collision({d:.2f})'
-            # C2: 云台 pitch
-            pitch = self._calc_gimbal_pitch(pos_c, target_c)
-            if not (self._gimbal_pitch_min <= pitch <= self._gimbal_pitch_max):
-                return False, 'gimbal'
-            # C3: LOS 不穿模
-            los = target_c - pos_c
-            los_len = np.linalg.norm(los)
-            if los_len > 0.5:
-                if self.viewer._stl_polydata is not None and self._stl_triangles is not None:
-                    if self._ray_stl_intersect(pos_c, target_c):
-                        return False, 'los_stl'
-                elif tree is not None:
-                    for tt in np.linspace(0.05, 0.95, max(5, int(los_len / 0.5))):
-                        sample = pos_c + los * tt
-                        d, _ = tree.query(sample)
-                        if d < 0.3:
-                            return False, 'los'
-            return True, 'ok'
+            return self._check_wp_candidate(pos_c, target_c, tree, collision_dist)
 
         # 检查速度vs拍摄间隔：水平方向（弧长步距）
         hfov = self._camera_fov
@@ -2759,37 +2716,7 @@ class MainWindow(QMainWindow):
             left = left / left_len
 
         def _check_candidate(pos_c):
-            """检查候选位置是否满足所有约束"""
-            # C1: 碰撞检测（STL 版 / 点云版）
-            if self._stl_triangles_np is not None:
-                stl_dist = self._stl_surface_distance(pos_c)
-                if stl_dist < collision_dist:
-                    return False, f'collision_stl({stl_dist:.2f})'
-            elif tree is not None:
-                dist, _ = tree.query(pos_c)
-                if dist < collision_dist:
-                    return False, f'collision({dist:.2f})'
-            # C2: 云台 pitch
-            pitch = self._calc_gimbal_pitch(pos_c, target, crab_heading)
-            if not (self._gimbal_pitch_min <= pitch <= self._gimbal_pitch_max):
-                return False, 'gimbal'
-            # C5: LOS 在 Fwd-Up 平面内
-            los = target - pos_c
-            if abs(np.dot(los, left)) > 0.1:
-                return False, 'gimbal_yaw'
-            # C3: LOS 不穿模
-            los_len = np.linalg.norm(los)
-            if los_len > 0.5:
-                if self.viewer._stl_polydata is not None and self._stl_triangles is not None:
-                    if self._ray_stl_intersect(pos_c, target):
-                        return False, 'los_stl'
-                elif tree is not None:
-                    for tt in np.linspace(0.05, 0.95, max(5, int(los_len / 0.5))):
-                        sample = pos_c + los * tt
-                        d, _ = tree.query(sample)
-                        if d < 0.3:
-                            return False, 'los'
-            return True, 'ok'
+            return self._check_wp_candidate(pos_c, target, tree, collision_dist, crab_heading, left)
 
         # 判断表面类型
         normal_up_dot = np.dot(normal, up)
@@ -3112,33 +3039,32 @@ class MainWindow(QMainWindow):
 
     def _stl_surface_distance(self, pos):
         """计算点 pos 到 STL 表面的精确最短距离
-        遍历所有三角面，用包围盒快速过滤，精确计算点到三角面距离
+        向量化包围盒过滤 + 精确计算候选三角面距离
         """
         if self._stl_triangles_np is None:
             return float('inf')
         pos = np.asarray(pos, dtype=np.float64)
         tri_verts = self._stl_triangles_np  # (M, 3, 3)
+
+        # 向量化包围盒过滤
+        tri_min = tri_verts.min(axis=1)  # (M, 3)
+        tri_max = tri_verts.max(axis=1)  # (M, 3)
+        # 点到包围盒各轴距离（轴对齐范围内为0）
+        diff_low = np.maximum(tri_min - pos, 0.0)   # (M, 3)
+        diff_high = np.maximum(pos - tri_max, 0.0)   # (M, 3)
+        bbox_dist_sq = np.sum((diff_low + diff_high) ** 2, axis=1)  # (M,)
+
+        # 按包围盒距离排序，优先检查近的三角面
+        order = np.argsort(bbox_dist_sq)
         min_dist = float('inf')
-        for ti in range(len(tri_verts)):
-            tri = tri_verts[ti]
-            tri_min = tri.min(axis=0)
-            tri_max = tri.max(axis=0)
-            # 包围盒快速过滤：计算点到包围盒的距离
-            bbox_dist_sq = 0.0
-            for d in range(3):
-                if pos[d] < tri_min[d]:
-                    diff = tri_min[d] - pos[d]
-                    bbox_dist_sq += diff * diff
-                elif pos[d] > tri_max[d]:
-                    diff = pos[d] - tri_max[d]
-                    bbox_dist_sq += diff * diff
-            # 如果包围盒距离已经 >= 当前最小距离，跳过
-            if bbox_dist_sq >= min_dist * min_dist:
-                continue
-            # 精确计算点到三角面距离
-            dist = self._point_to_triangle_dist(pos, tri[0], tri[1], tri[2])
+        min_dist_sq = min_dist * min_dist
+        for idx in order:
+            if bbox_dist_sq[idx] >= min_dist_sq:
+                break  # 后续所有三角面包围盒都更远，提前终止
+            dist = self._point_to_triangle_dist(pos, tri_verts[idx, 0], tri_verts[idx, 1], tri_verts[idx, 2])
             if dist < min_dist:
                 min_dist = dist
+                min_dist_sq = min_dist * min_dist
         return min_dist
 
     def _ray_stl_intersect(self, ray_origin, ray_target):
@@ -3452,44 +3378,7 @@ class MainWindow(QMainWindow):
                 ]
 
             def _check_candidate(pos_c):
-                """检查候选位置是否满足所有约束"""
-                # C1: 碰撞检测（STL 版 / 点云版）
-                if self._stl_triangles_np is not None:
-                    # STL 版：精确计算到三角面的最短距离
-                    stl_dist = self._stl_surface_distance(pos_c)
-                    if stl_dist < collision_dist:
-                        return False, f'collision_stl({stl_dist:.2f})'
-                elif tree is not None:
-                    # 点云版：用 KDTree 查询最近点距离
-                    dist, _ = tree.query(pos_c)
-                    if dist < collision_dist:
-                        return False, f'collision({dist:.2f})'
-                # C2: 云台 pitch 范围（严格拒绝，不 clip）
-                pitch = self._calc_gimbal_pitch(pos_c, target, heading)
-                if not (self._gimbal_pitch_min <= pitch <= self._gimbal_pitch_max):
-                    return False, 'gimbal'
-                # C5: 视线在 Forward-Up 平面内
-                los = target - pos_c
-                los_left = np.dot(los, left)
-                if abs(los_left) > 0.1:
-                    return False, 'gimbal_yaw'
-                # C3: 视线不穿模
-                los_len = np.linalg.norm(los)
-                if los_len > 0.5:
-                    if self.viewer._stl_polydata is not None and self._stl_triangles is not None:
-                        # ── STL 射线相交检测（Möller–Trumbore 算法）──
-                        # 检测 LOS 是否在到达目标前穿过 STL 三角面
-                        if self._ray_stl_intersect(pos_c, target):
-                            return False, 'los_stl'
-                    elif tree is not None:
-                        # ── 点云距离检测（fallback）──
-                        n_samples = max(5, int(los_len / 0.5))
-                        for t in np.linspace(0.05, 0.95, n_samples):
-                            sample = pos_c + los * t
-                            d, _ = tree.query(sample)
-                            if d < 0.3:
-                                return False, 'los'
-                return True, 'ok'
+                return self._check_wp_candidate(pos_c, target, tree, collision_dist, heading, left)
 
             # ── C6 搜索：从 inspect_dist 开始，优先最近 ──
             best_pos = None
@@ -4360,6 +4249,50 @@ class MainWindow(QMainWindow):
             self.viewer.add_route(self.waypoints, reset_camera=False)
             self._check_safety_distance()
 
+    def _get_min_z(self):
+        """解析最低飞行Z值，失败返回 -999（相当于不检查）"""
+        try:
+            return float(self.edt_min_z.text())
+        except ValueError:
+            return -999
+
+    def _check_wp_candidate(self, pos, target, tree, collision_dist, heading=None, left=None):
+        """检查候选航点是否满足所有约束（STL版/点云版）
+        C1: 碰撞检测  C2: 云台 pitch  C5: 云台 yaw（可选）  C3: LOS 不穿模
+        heading/left 都不为 None 时才执行 C5 检查
+        """
+        # C1: 碰撞检测
+        if self._stl_triangles_np is not None:
+            stl_dist = self._stl_surface_distance(pos)
+            if stl_dist < collision_dist:
+                return False, f'collision_stl({stl_dist:.2f})'
+        elif tree is not None:
+            d, _ = tree.query(pos)
+            if d < collision_dist:
+                return False, f'collision({d:.2f})'
+        # C2: 云台 pitch
+        pitch = self._calc_gimbal_pitch(pos, target, heading)
+        if not (self._gimbal_pitch_min <= pitch <= self._gimbal_pitch_max):
+            return False, 'gimbal'
+        # C5: LOS 在 Fwd-Up 平面内（仅当 heading 和 left 都提供时）
+        los = target - pos
+        if heading is not None and left is not None:
+            if abs(np.dot(los, left)) > 0.1:
+                return False, 'gimbal_yaw'
+        # C3: LOS 不穿模
+        los_len = np.linalg.norm(los)
+        if los_len > 0.5:
+            if self.viewer._stl_polydata is not None and self._stl_triangles is not None:
+                if self._ray_stl_intersect(pos, target):
+                    return False, 'los_stl'
+            elif tree is not None:
+                for tt in np.linspace(0.05, 0.95, max(5, int(los_len / 0.5))):
+                    sample = pos + los * tt
+                    d, _ = tree.query(sample)
+                    if d < 0.3:
+                        return False, 'los'
+        return True, 'ok'
+
     def _get_kdtree(self):
         # 优先使用STL网格的KDTree
         if self.viewer._stl_tree is not None:
@@ -4390,10 +4323,7 @@ class MainWindow(QMainWindow):
             if idx >= 0 and idx < len(self.viewer._waypoint_actors):
                 self.viewer._waypoint_actors[idx].GetProperty().SetColor(1.0, 0.0, 1.0)
 
-        try:
-            min_z = float(self.edt_min_z.text())
-        except ValueError:
-            min_z = -999
+        min_z = self._get_min_z()
         for idx, z_val in low_z:
             if idx < len(self.viewer._waypoint_actors):
                 self.viewer._waypoint_actors[idx].GetProperty().SetColor(1.0, 0.5, 0.0)
@@ -4515,10 +4445,7 @@ class MainWindow(QMainWindow):
 
         # ── 最低Z值检测 ──
         low_z = []
-        try:
-            min_z = float(self.edt_min_z.text())
-        except ValueError:
-            min_z = -999
+        min_z = self._get_min_z()
         if min_z > -900:
             for i, wp in enumerate(self.waypoints):
                 if wp['pos'][2] < min_z:
@@ -4590,10 +4517,7 @@ class MainWindow(QMainWindow):
                 warnings.append(f"安全点路径碰撞 (距点云 {dist:.2f}m)")
             else:
                 warnings.append(f"{idx+1} 号航点碰撞 (距点云 {dist:.2f}m)")
-        try:
-            min_z = float(self.edt_min_z.text())
-        except ValueError:
-            min_z = -999
+        min_z = self._get_min_z()
         for idx, z_val in low_z:
             warnings.append(f"{idx+1} 号航点Z={z_val:.1f}m < {min_z}m")
         if warnings:

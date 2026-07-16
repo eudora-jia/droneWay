@@ -421,7 +421,6 @@ class VTKViewer(QWidget):
         QTimer.singleShot(100, lambda: self._view_frame.move(self.width() - 260, 8))
 
         self.renderer.SetBackground(243/255, 243/255, 244/255)  # #F3F3F4
-        self.renderer.TwoSidedLightingOn()
         self.renderer.TwoSidedLightingOn()  # 双面光照，防止背面全黑
 
         # 添加侧面辅助光，增强棱角立体感
