@@ -498,6 +498,7 @@ class MainWindow(QMainWindow):
 
         # -- 桥梁参数（默认值，通过设置菜单弹窗编辑）--
         self._bridge_name_val = "我的桥梁"
+        self._part_name_val = "自定义航线"
         self._bridge_type_val = 0
         self._bridge_len_val = "100"
         self._bridge_wid_val = "15"
@@ -1451,37 +1452,42 @@ class MainWindow(QMainWindow):
         edt_name = QLineEdit(self._bridge_name_val)
         layout.addWidget(edt_name, 0, 1, 1, 3)
 
-        layout.addWidget(QLabel("桥型:"), 1, 0)
+        layout.addWidget(QLabel("部件名称:"), 1, 0)
+        edt_part = QLineEdit(self._part_name_val)
+        layout.addWidget(edt_part, 1, 1, 1, 3)
+
+        layout.addWidget(QLabel("桥型:"), 2, 0)
         cmb_type = QComboBox()
         cmb_type.addItems(["跨河桥", "跨线桥", "高架桥"])
         cmb_type.setCurrentIndex(self._bridge_type_val)
-        layout.addWidget(cmb_type, 1, 1, 1, 3)
+        layout.addWidget(cmb_type, 2, 1, 1, 3)
 
-        layout.addWidget(QLabel("桥长(m):"), 2, 0)
+        layout.addWidget(QLabel("桥长(m):"), 3, 0)
         edt_len = QLineEdit(self._bridge_len_val)
-        layout.addWidget(edt_len, 2, 1)
-        layout.addWidget(QLabel("桥宽(m):"), 2, 2)
+        layout.addWidget(edt_len, 3, 1)
+        layout.addWidget(QLabel("桥宽(m):"), 3, 2)
         edt_wid = QLineEdit(self._bridge_wid_val)
-        layout.addWidget(edt_wid, 2, 3)
+        layout.addWidget(edt_wid, 3, 3)
 
-        layout.addWidget(QLabel("净空(m):"), 3, 0)
+        layout.addWidget(QLabel("净空(m):"), 4, 0)
         edt_clr = QLineEdit(self._bridge_clr_val)
-        layout.addWidget(edt_clr, 3, 1)
-        layout.addWidget(QLabel("跨距(m):"), 3, 2)
+        layout.addWidget(edt_clr, 4, 1)
+        layout.addWidget(QLabel("跨距(m):"), 4, 2)
         edt_span = QLineEdit(self._bridge_span_val)
-        layout.addWidget(edt_span, 3, 3)
+        layout.addWidget(edt_span, 4, 3)
 
         chk_render = QCheckBox("渲染")
         chk_render.setChecked(self._bridge_render)
-        layout.addWidget(chk_render, 4, 0, 1, 2)
+        layout.addWidget(chk_render, 5, 0, 1, 2)
 
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         btns.accepted.connect(dlg.accept)
         btns.rejected.connect(dlg.reject)
-        layout.addWidget(btns, 5, 0, 1, 4)
+        layout.addWidget(btns, 6, 0, 1, 4)
 
         if dlg.exec_() == QDialog.Accepted:
             self._bridge_name_val = edt_name.text()
+            self._part_name_val = edt_part.text().strip() or "自定义航线"
             self._bridge_type_val = cmb_type.currentIndex()
             self._bridge_len_val = edt_len.text()
             self._bridge_wid_val = edt_wid.text()
@@ -4499,7 +4505,8 @@ class MainWindow(QMainWindow):
 
         from datetime import datetime
         ts = datetime.now().strftime("%y%m%d%H%M")
-        default_name = f"{getattr(self, '_bridge_name', '航线')}_{ts}.json"
+        part = getattr(self, '_part_name_val', '自定义航线')
+        default_name = f"{getattr(self, '_bridge_name', '航线')}_{part}_{ts}.json"
         path, _ = QFileDialog.getSaveFileName(
             self, "保存航线", default_name, "JSON 文件 (*.json)"
         )
@@ -4675,7 +4682,7 @@ class MainWindow(QMainWindow):
             gimbal_pitch = wp.get('gimbal_pitch', -90.0)
             speed = wp.get('speed', 1.0)
             action = wp.get('action', 'fly')
-            shoot = (action == 'scan')
+            shoot = True  # 默认拍摄
 
             q = wp['quat']
             yaw = np.degrees(np.arctan2(
@@ -4712,12 +4719,13 @@ class MainWindow(QMainWindow):
 
             way_point_list.append(wp_data)
 
+        part_name = getattr(self, '_part_name_val', '自定义航线')
         maicro_data = {
             "aircraftModel": "DJI_MATRICE_4_SERIES",
             "createdTime": ts,
             "bridgeName": bridge_name,
-            "partName": "自定义航线",
-            "name": f"{bridge_name}_自定义航线",
+            "partName": part_name,
+            "name": f"{bridge_name}_{part_name}",
             "photoCount": len([w for w in way_point_list if w.get("shoot")]),
             "partType": 1,
             "exposure": {"shutter": 500, "ev": 0, "iso": 400},
@@ -4740,7 +4748,8 @@ class MainWindow(QMainWindow):
 
         from datetime import datetime
         ts = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-        default_name = f"{getattr(self, '_bridge_name', '航线')}_{ts}.json"
+        part = getattr(self, '_part_name_val', '自定义航线')
+        default_name = f"{getattr(self, '_bridge_name', '航线')}_{part}_{ts}.json"
         path, _ = QFileDialog.getSaveFileName(
             self, "导出maicro航线文件", default_name, "JSON 文件 (*.json)"
         )
@@ -4773,7 +4782,7 @@ class MainWindow(QMainWindow):
             gimbal_pitch = wp.get('gimbal_pitch', -90.0)
             speed = wp.get('speed', 1.0)
             action = wp.get('action', 'fly')
-            shoot = (action == 'scan')
+            shoot = True  # 默认拍摄
 
             # 从 quat 计算 yaw 角度
             q = wp['quat']
@@ -4815,12 +4824,13 @@ class MainWindow(QMainWindow):
 
             way_point_list.append(wp_data)
 
+        part_name = getattr(self, '_part_name_val', '自定义航线')
         maicro_data = {
             "aircraftModel": "DJI_MATRICE_4_SERIES",
             "createdTime": ts,
             "bridgeName": bridge_name,
-            "partName": "自定义航线",
-            "name": f"{bridge_name}_自定义航线",
+            "partName": part_name,
+            "name": f"{bridge_name}_{part_name}",
             "photoCount": len([w for w in way_point_list if w.get("shoot")]),
             "partType": 1,
             "exposure": {
