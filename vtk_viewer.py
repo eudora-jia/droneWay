@@ -386,36 +386,41 @@ class VTKViewer(QWidget):
         from PyQt5.QtWidgets import QFrame, QHBoxLayout, QLabel, QButtonGroup
         from PyQt5.QtCore import Qt as QtCore
         self._view_frame = QFrame(self)
-        self._view_frame.setStyleSheet("QFrame { background: rgba(0,0,0,140); border-radius: 6px; }")
-        self._view_frame.setFixedSize(240, 36)
+        self._view_frame.setStyleSheet("QFrame { background: transparent; border: none; }")
+        self._view_frame.setFixedSize(250, 28)
         view_layout = QHBoxLayout(self._view_frame)
-        view_layout.setContentsMargins(6, 2, 6, 2)
-        view_layout.setSpacing(2)
+        view_layout.setContentsMargins(0, 0, 0, 0)
+        view_layout.setSpacing(1)
 
-        self._view_btns = QButtonGroup(self)
         views = [
-            ("⬇俯", "top", "#5b9bd5"),
-            ("⬆仰", "bottom", "#70ad47"),
-            ("⬛前", "front", "#ed7d31"),
-            ("▐侧", "side", "#9b59b6"),
-            ("◆透", "persp", "#607d8b"),
+            ("TOP", "top"),
+            ("BOT", "bottom"),
+            ("FRONT", "front"),
+            ("SIDE", "side"),
+            ("3D", "persp"),
         ]
         self._view_btns_list = []
-        for i, (label, name, color) in enumerate(views):
+        for i, (label, name) in enumerate(views):
             btn = QLabel(label)
             btn.setAlignment(QtCore.AlignCenter)
-            btn.setFixedSize(40, 30)
-            btn.setStyleSheet(f"QLabel {{ color: #ccc; font-size: 11px; }}")
+            btn.setFixedSize(48, 26)
+            btn.setStyleSheet(
+                "QLabel { color: #555; background: #2a2a2a; border: 1px solid #3a3a3a; "
+                "font-size: 10px; font-family: Consolas, monospace; }"
+            )
             btn.mousePressEvent = lambda e, n=name, idx=i: self._on_view_label_click(n, idx)
             view_layout.addWidget(btn)
-            self._view_btns_list.append((btn, name, color))
-        # 默认高亮透视
+            self._view_btns_list.append((btn, name))
+        # 默认高亮3D
         self._view_btn_active = 4
-        self._view_btns_list[4][0].setStyleSheet(f"QLabel {{ color: {self._view_btns_list[4][2]}; font-size: 11px; font-weight: bold; }}")
+        self._view_btns_list[4][0].setStyleSheet(
+            "QLabel { color: #ffa500; background: #333; border: 1px solid #ffa500; "
+            "font-size: 10px; font-family: Consolas, monospace; font-weight: bold; }"
+        )
         self._view_frame.raise_()
-        QTimer.singleShot(100, lambda: self._view_frame.move(self.width() - 250, 8))
+        QTimer.singleShot(100, lambda: self._view_frame.move(self.width() - 260, 8))
 
-        self.renderer.SetBackground(0.95, 0.95, 0.93)  # 奶白色背景
+        self.renderer.SetBackground(243/255, 243/255, 244/255)  # #F3F3F4
         self.renderer.TwoSidedLightingOn()
         self.renderer.TwoSidedLightingOn()  # 双面光照，防止背面全黑
 
@@ -663,15 +668,22 @@ class VTKViewer(QWidget):
             self._setup_fpv_keyboard()
             self._enter_fpv_camera()
         else:
+            # 先清空按键状态，防止残留
+            self._fpv_keys.clear()
+            self._fpv_mouse_active = False
             # 移除FPV键盘和鼠标observer
             rwi = self.vtk_widget.GetRenderWindow().GetInteractor()
-            for attr in ['_fpv_key_press_obs', '_fpv_key_release_obs',
-                         '_fpv_right_press_obs', '_fpv_right_release_obs',
-                         '_fpv_move_obs', '_fpv_left_press_obs']:
-                obs_id = getattr(self, attr, None)
-                if obs_id is not None:
-                    rwi.RemoveObserver(obs_id)
-                    setattr(self, attr, None)
+            if rwi is not None:
+                for attr in ['_fpv_key_press_obs', '_fpv_key_release_obs',
+                             '_fpv_right_press_obs', '_fpv_right_release_obs',
+                             '_fpv_move_obs', '_fpv_left_press_obs']:
+                    obs_id = getattr(self, attr, None)
+                    if obs_id is not None:
+                        try:
+                            rwi.RemoveObserver(obs_id)
+                        except Exception:
+                            pass
+                        setattr(self, attr, None)
             self._remove_drone_model()
             self._exit_fpv_camera()
 
@@ -1427,9 +1439,7 @@ class VTKViewer(QWidget):
 
     def add_obj_mesh(self, path, color=(0.7, 0.7, 0.7), opacity=1.0):
         """加载并渲染OBJ网格模型（支持MTL材质+纹理贴图）
-        path: OBJ文件路径
-        color: (R,G,B) 0~1
-        opacity: 透明度 0~1
+        快速显示 → 延迟计算法线/KDTree/CellLocator/纹理
         """
         if not self._vtk_available:
             return False
@@ -1443,10 +1453,10 @@ class VTKViewer(QWidget):
 
         obj_dir = os.path.dirname(os.path.abspath(path))
 
-        # ── 解析MTL材质 ──
+        # ── 解析MTL材质（纯文本解析，极快） ──
+        mtl_kd = None
+        mtl_map_kd = None
         mtl_file = None
-        mtl_kd = None       # 漫反射颜色 (r, g, b) 0~1
-        mtl_map_kd = None   # 纹理贴图文件名
         try:
             with open(path, 'r', errors='ignore') as f:
                 for line in f:
@@ -1470,23 +1480,93 @@ class VTKViewer(QWidget):
                                 mtl_map_kd = parts[1]
                 except Exception as e:
                     print(f"[OBJ] MTL parse error: {e}")
-            else:
-                print(f"[OBJ] MTL not found: {mtl_path}")
 
-        # ── 加载几何体 ──
+        # ── 加载几何体（vtkOBJReader，较快） ──
         reader = vtk.vtkOBJReader()
         reader.SetFileName(path)
         reader.Update()
 
         polydata = reader.GetOutput()
-        if polydata.GetNumberOfPoints() == 0:
+        n_pts = polydata.GetNumberOfPoints()
+        if n_pts == 0:
             print(f"[OBJ] Empty mesh: {path}")
             return False
 
-        # 清除旧法线，重新计算
+        n_tri = polydata.GetNumberOfCells()
+        print(f"[OBJ] Geometry: {n_pts} vertices, {n_tri} triangles")
+
+        # ── 立即创建Actor显示（用材质颜色，不等纹理/法线） ──
+        mapper = self._vtkPolyDataMapper()
+        mapper.SetInputData(polydata)
+        mapper.ScalarVisibilityOff()
+
+        actor = self._vtkActor()
+        actor.SetMapper(mapper)
+        prop = actor.GetProperty()
+        if mtl_kd is not None:
+            prop.SetColor(mtl_kd)
+            self._stl_colors = True
+            print(f"[OBJ] Material Kd: ({mtl_kd[0]:.2f}, {mtl_kd[1]:.2f}, {mtl_kd[2]:.2f})")
+        else:
+            prop.SetColor(color)
+            self._stl_colors = False
+        prop.SetOpacity(opacity)
+        prop.SetAmbient(0.4)
+        prop.SetDiffuse(0.8)
+        prop.SetSpecular(0.2)
+        prop.SetSpecularPower(20)
+        prop.SetInterpolationToPhong()
+        prop.SetLighting(True)
+        prop.BackfaceCullingOff()  # 不剔除背面，内部墙也显示颜色
+
+        self.renderer.AddActor(actor)
+        self._actors.append(actor)
+        self._stl_actor = actor
+        self._obj_actors = [actor]
+
+        # 先存raw polydata，后续延迟处理会替换
+        self._stl_polydata = polydata
+
+        # 刷新UI让模型先显示出来
+        if hasattr(self, 'vtk_widget') and self.vtk_widget:
+            self.vtk_widget.GetRenderWindow().Render()
+
+        # ── 延迟执行重操作（法线、KDTree、CellLocator、纹理） ──
+        self._obj_deferred = {
+            'path': path,
+            'polydata': polydata,
+            'mtl_kd': mtl_kd,
+            'mtl_map_kd': mtl_map_kd,
+            'obj_dir': obj_dir,
+            'actor': actor,
+            'opacity': opacity,
+        }
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(100, self._deferred_obj_finish)
+
+        return True
+
+    def _deferred_obj_finish(self):
+        """OBJ延迟加载：法线 + KDTree + CellLocator + 纹理"""
+        info = getattr(self, '_obj_deferred', None)
+        if info is None:
+            return
+        self._obj_deferred = None
+
+        vtk = self._vtk
+        import os
+        polydata = info['polydata']
+        actor = info['actor']
+
+        # 检查actor是否还在（可能已被clear_stl_mesh清除）
+        if actor not in self._actors:
+            return
+
+        print("[OBJ] Deferred: computing normals...")
+
+        # 法线计算
         polydata.GetPointData().SetNormals(None)
         polydata.GetCellData().SetNormals(None)
-
         normals_filter = vtk.vtkPolyDataNormals()
         normals_filter.SetInputData(polydata)
         normals_filter.ComputePointNormalsOn()
@@ -1499,111 +1579,73 @@ class VTKViewer(QWidget):
 
         pn = polydata_with_normals.GetPointData().GetNormals()
         if pn:
-            print(f"[OBJ] Point normals: {pn.GetNumberOfTuples()} tuples")
+            print(f"[OBJ] Normals: {pn.GetNumberOfTuples()} tuples")
         else:
-            print("[OBJ] WARNING: No point normals computed!")
             polydata_with_normals = polydata
 
         self._stl_polydata = polydata_with_normals
-        point_normals = polydata_with_normals.GetPointData().GetNormals()
 
+        # 更新mapper使用带法线的polydata
+        mapper = actor.GetMapper()
+        mapper.SetInputData(polydata_with_normals)
+
+        # KDTree + CellLocator
         stl_points = polydata_with_normals.GetPoints()
         n_pts = stl_points.GetNumberOfPoints()
         stl_np = np.array([stl_points.GetPoint(i) for i in range(n_pts)])
         self._stl_points_np = stl_np
 
-        if point_normals is not None:
-            normals_np = np.array([point_normals.GetTuple(i) for i in range(n_pts)])
+        if pn:
+            normals_np = np.array([pn.GetTuple(i) for i in range(n_pts)])
             norms = np.linalg.norm(normals_np, axis=1, keepdims=True)
             norms[norms < 1e-10] = 1.0
             self._stl_normals_np = normals_np / norms
         else:
             self._stl_normals_np = None
 
+        print("[OBJ] Deferred: building KDTree...")
         from scipy.spatial import cKDTree
         self._stl_tree = cKDTree(stl_np)
 
+        print("[OBJ] Deferred: building CellLocator...")
         cell_loc = vtk.vtkCellLocator()
         cell_loc.SetDataSet(polydata_with_normals)
         cell_loc.BuildLocator()
         self._stl_cell_locator = cell_loc
 
-        # ── 构建渲染Actor（带材质颜色和纹理） ──
-        has_texture = False
-        texture_actor = None
-
-        # 尝试加载纹理贴图
+        # 纹理（最后加载，最慢）
+        mtl_map_kd = info.get('mtl_map_kd')
         if mtl_map_kd:
-            tex_path = os.path.join(obj_dir, mtl_map_kd)
+            tex_path = os.path.join(info['obj_dir'], mtl_map_kd)
             if os.path.exists(tex_path):
+                fsize = os.path.getsize(tex_path)
+                print(f"[OBJ] Deferred: loading texture ({fsize / 1024 / 1024:.1f} MB)...")
                 try:
-                    fsize = os.path.getsize(tex_path)
-                    print(f"[OBJ] Texture: {tex_path} ({fsize / 1024 / 1024:.1f} MB)")
                     png_reader = vtk.vtkPNGReader()
                     png_reader.SetFileName(tex_path)
                     png_reader.Update()
                     img = png_reader.GetOutput()
                     if img and img.GetNumberOfPoints() > 0:
-                        texture = vtk.vtkTexture()
-                        texture.SetInputData(img)
-                        texture.InterpolateOn()
-                        texture.RepeatOff()
-
-                        # 检查是否有UV坐标
                         tcoords = polydata_with_normals.GetPointData().GetTCoords()
                         if tcoords and tcoords.GetNumberOfTuples() > 0:
-                            has_texture = True
-                            print(f"[OBJ] UV coords: {tcoords.GetNumberOfTuples()} tuples")
+                            texture = vtk.vtkTexture()
+                            texture.SetInputData(img)
+                            texture.InterpolateOn()
+                            texture.RepeatOff()
+                            actor.SetTexture(texture)
+                            self._stl_colors = True
+                            print(f"[OBJ] Texture applied ({tcoords.GetNumberOfTuples()} UV coords)")
                         else:
-                            print("[OBJ] No UV coords in mesh, texture ignored")
-                            texture = None
+                            print("[OBJ] No UV coords, texture skipped")
                     else:
                         print("[OBJ] Texture read failed")
                 except Exception as e:
-                    print(f"[OBJ] Texture load error: {e}")
-            else:
-                print(f"[OBJ] Texture not found: {tex_path}")
+                    print(f"[OBJ] Texture error: {e}")
 
-        mapper = self._vtkPolyDataMapper()
-        mapper.SetInputData(polydata_with_normals)
+        if hasattr(self, 'vtk_widget') and self.vtk_widget:
+            self.vtk_widget.GetRenderWindow().Render()
 
-        if has_texture:
-            mapper.ScalarVisibilityOff()
-        else:
-            mapper.ScalarVisibilityOff()
-
-        actor = self._vtkActor()
-        actor.SetMapper(mapper)
-        prop = actor.GetProperty()
-
-        if has_texture and texture is not None:
-            actor.SetTexture(texture)
-            self._stl_colors = True
-        elif mtl_kd is not None:
-            prop.SetColor(mtl_kd)
-            self._stl_colors = True
-            print(f"[OBJ] Material Kd: ({mtl_kd[0]:.2f}, {mtl_kd[1]:.2f}, {mtl_kd[2]:.2f})")
-        else:
-            prop.SetColor(color)
-            self._stl_colors = False
-
-        prop.SetOpacity(opacity)
-        prop.SetAmbient(0.4)
-        prop.SetDiffuse(0.8)
-        prop.SetSpecular(0.2)
-        prop.SetSpecularPower(20)
-        prop.SetInterpolationToPhong()
-        prop.SetLighting(True)
-        prop.BackfaceCullingOn()
-
-        self.renderer.AddActor(actor)
-        self._actors.append(actor)
-        self._stl_actor = actor
-        self._obj_actors = [actor]
-
-        n_triangles = polydata_with_normals.GetNumberOfCells()
-        print(f"[OBJ] Loaded: {path} ({n_pts} vertices, {n_triangles} triangles)")
-        return True
+        print("[OBJ] Deferred loading complete")
 
     def get_stl_normal(self, point):
         """获取STL表面法线：找最近三角面，返回朝向观察者的几何法线"""
@@ -1848,6 +1890,8 @@ class VTKViewer(QWidget):
 
     def _fpv_on_key_release(self, obj, event):
         """FPV键盘释放"""
+        if not self.fpv_mode:
+            return
         key = obj.GetKeySym().lower()
         self._fpv_keys.discard(key)
 
@@ -2032,9 +2076,7 @@ class VTKViewer(QWidget):
         if hasattr(self, '_orig_reset_clip') and self._orig_reset_clip is not None:
             self.renderer.ResetCameraClippingRange = self._orig_reset_clip
             self._orig_reset_clip = None
-        # 恢复背面剔除
-        for a in self._get_all_mesh_actors():
-            a.GetProperty().BackfaceCullingOn()
+        # 不恢复背面剔除——模型加载时已设定，OBJ=Off，STL=On
         self.renderer.ResetCamera()
         if self.vtk_widget.GetRenderWindow():
             self.vtk_widget.GetRenderWindow().Render()
@@ -3013,8 +3055,12 @@ class VTKViewer(QWidget):
             return self._coverage_texture_cached
         import os, tempfile
         vtk = self._vtk
-        # 查找 lena.png
-        search_dirs = [
+        # 查找 lena.png（支持 PyInstaller 打包路径）
+        import sys
+        search_dirs = []
+        if getattr(sys, 'frozen', False):
+            search_dirs.append(sys._MEIPASS)
+        search_dirs += [
             os.path.dirname(os.path.abspath(__file__)),
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             os.getcwd(),
@@ -3707,11 +3753,16 @@ class VTKViewer(QWidget):
 
     def _on_view_label_click(self, name, idx):
         """视角标签点击"""
-        for j, (lbl, n, color) in enumerate(self._view_btns_list):
-            if j == idx:
-                lbl.setStyleSheet(f"QLabel {{ color: {color}; font-size: 11px; font-weight: bold; }}")
-            else:
-                lbl.setStyleSheet("QLabel {{ color: #ccc; font-size: 11px; }}")
+        _active_style = (
+            "QLabel { color: #ffa500; background: #333; border: 1px solid #ffa500; "
+            "font-size: 10px; font-family: Consolas, monospace; font-weight: bold; }"
+        )
+        _inactive_style = (
+            "QLabel { color: #555; background: #2a2a2a; border: 1px solid #3a3a3a; "
+            "font-size: 10px; font-family: Consolas, monospace; }"
+        )
+        for j, (lbl, n) in enumerate(self._view_btns_list):
+            lbl.setStyleSheet(_active_style if j == idx else _inactive_style)
         self._view_btn_active = idx
         self._set_view(name)
 
@@ -3854,7 +3905,7 @@ class VTKViewer(QWidget):
         m.SetInputData(grid_poly)
         a = self._vtkActor()
         a.SetMapper(m)
-        a.GetProperty().SetColor(0.5, 0.5, 0.5)
+        a.GetProperty().SetColor(86/255, 165/255, 251/255)  # #56A5FB
         a.GetProperty().SetOpacity(0.6)
         a.GetProperty().SetLighting(False)
         self.renderer.AddActor(a)

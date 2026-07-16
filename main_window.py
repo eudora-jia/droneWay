@@ -452,8 +452,8 @@ class MainWindow(QMainWindow):
         self._bridge_render = False
         self._bridge_info_label = QLabel(self.viewer)
         self._bridge_info_label.setStyleSheet(
-            "QLabel { background: rgba(0,0,0,160); color: #fff; padding: 6px 10px; "
-            "border-radius: 4px; font-size: 12px; }"
+            "QLabel { background: rgba(26,26,26,220); color: #ffa500; "
+            "border: 1px solid #444; padding: 6px 10px; font-size: 12px; }"
         )
         self._bridge_info_label.setVisible(False)
         self._bridge_info_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
@@ -476,7 +476,7 @@ class MainWindow(QMainWindow):
         self.edt_takeoff_z = QLineEdit("1.2")
         self.edt_takeoff_z.setMaximumWidth(60)
         self.edt_takeoff_z.setReadOnly(True)
-        self.edt_takeoff_z.setStyleSheet("QLineEdit { background: #eee; color: #666; }")
+        self.edt_takeoff_z.setStyleSheet("QLineEdit { background: #333; color: #888; border: 1px solid #444; }")
         tk_row.addWidget(self.edt_takeoff_z)
         tk_row.addWidget(QLabel("初始偏航角(°):"))
         self.edt_takeoff_yaw = QLineEdit("-90")
@@ -506,12 +506,12 @@ class MainWindow(QMainWindow):
         pk.addLayout(minz_row)
 
         btn_apply_safety = QPushButton("应用")
-        btn_apply_safety.setStyleSheet("QPushButton { background: #d0d8e8; padding: 4px; } QPushButton:hover { background: #c0c8d8; }")
+        btn_apply_safety.setStyleSheet("QPushButton { background: #2a2a2a; border: 1px solid #555; padding: 4px; color: #d0d0d0; } QPushButton:hover { border-color: #ffa500; color: #ffa500; }")
         btn_apply_safety.clicked.connect(self._apply_safety_settings)
         pk.addWidget(btn_apply_safety)
 
         lbl_wp_hint = QLabel("Ctrl+左键点击航点可拖动编辑位置")
-        lbl_wp_hint.setStyleSheet("color: #888; font-size: 10px;")
+        lbl_wp_hint.setStyleSheet("color: #666; font-size: 10px;")
         lbl_wp_hint.setWordWrap(True)
         pk.addWidget(lbl_wp_hint)
 
@@ -542,26 +542,26 @@ class MainWindow(QMainWindow):
         fl.addWidget(QLabel("航点间距:"), 1, 0)
         self.edt_wp_spacing = QLineEdit("自动")
         self.edt_wp_spacing.setReadOnly(True)
-        self.edt_wp_spacing.setStyleSheet("QLineEdit { background: #eee; color: #666; }")
+        self.edt_wp_spacing.setStyleSheet("QLineEdit { background: #333; color: #888; border: 1px solid #444; }")
         fl.addWidget(self.edt_wp_spacing, 1, 1)
         fl.addWidget(QLabel("线间距:"), 1, 2)
         self.edt_spacing = QLineEdit("自动")
         self.edt_spacing.setReadOnly(True)
-        self.edt_spacing.setStyleSheet("QLineEdit { background: #eee; color: #666; }")
+        self.edt_spacing.setStyleSheet("QLineEdit { background: #333; color: #888; border: 1px solid #444; }")
         fl.addWidget(self.edt_spacing, 1, 3)
 
         btn_calc_overlap = QPushButton("自动算间距")
-        btn_calc_overlap.setStyleSheet("QPushButton { background: #e8e0d0; padding: 4px; } QPushButton:hover { background: #d8d0c0; }")
+        btn_calc_overlap.setStyleSheet("QPushButton { background: #2a2a2a; border: 1px solid #555; padding: 4px; color: #d0d0d0; } QPushButton:hover { border-color: #ffa500; color: #ffa500; }")
         btn_calc_overlap.clicked.connect(self._calc_overlap_spacing)
         fl.addWidget(btn_calc_overlap, 2, 0, 1, 4)
 
         btn_apply_flat = QPushButton("应用")
-        btn_apply_flat.setStyleSheet("QPushButton { background: #d0d8e8; padding: 4px; } QPushButton:hover { background: #c0c8d8; }")
+        btn_apply_flat.setStyleSheet("QPushButton { background: #2a2a2a; border: 1px solid #555; padding: 4px; color: #d0d0d0; } QPushButton:hover { border-color: #ffa500; color: #ffa500; }")
         btn_apply_flat.clicked.connect(self._apply_flat_params)
         fl.addWidget(btn_apply_flat, 3, 0, 1, 4)
 
         self.btn_poly_select = QPushButton("选择顶点（右键确认）")
-        self.btn_poly_select.setStyleSheet("QPushButton { background: #d8e8d8; font-weight: bold; padding: 6px; } QPushButton:hover { background: #c8d8c8; }")
+        self.btn_poly_select.setStyleSheet("QPushButton { background: #2a2a2a; border: 2px solid #ffa500; font-weight: bold; padding: 6px; color: #ffa500; } QPushButton:hover { background: #333; }")
         self.btn_poly_select.clicked.connect(self._start_polygon_select)
         fl.addWidget(self.btn_poly_select, 4, 0, 1, 4)
 
@@ -590,19 +590,19 @@ class MainWindow(QMainWindow):
         cl.addWidget(QLabel("水平步距:"), 3, 0)
         self.edt_cstep = QLineEdit("自动")
         self.edt_cstep.setReadOnly(True)
-        self.edt_cstep.setStyleSheet("QLineEdit { background: #eee; color: #666; }")
+        self.edt_cstep.setStyleSheet("QLineEdit { background: #333; color: #888; border: 1px solid #444; }")
         cl.addWidget(self.edt_cstep, 3, 1)
         cl.addWidget(QLabel("垂直步距:"), 3, 2)
         self.edt_vstep = QLineEdit("自动")
         self.edt_vstep.setReadOnly(True)
-        self.edt_vstep.setStyleSheet("QLineEdit { background: #eee; color: #666; }")
+        self.edt_vstep.setStyleSheet("QLineEdit { background: #333; color: #888; border: 1px solid #444; }")
         cl.addWidget(self.edt_vstep, 3, 3)
 
         cl.addWidget(QLabel("速度:"), 4, 0)
         self.edt_cspeed = QLineEdit("1"); cl.addWidget(self.edt_cspeed, 4, 1)
 
         btn_cube_calc = QPushButton("自动算间距")
-        btn_cube_calc.setStyleSheet("QPushButton { background: #e8e0d0; padding: 4px; } QPushButton:hover { background: #d8d0c0; }")
+        btn_cube_calc.setStyleSheet("QPushButton { background: #2a2a2a; border: 1px solid #555; padding: 4px; color: #d0d0d0; } QPushButton:hover { border-color: #ffa500; color: #ffa500; }")
         btn_cube_calc.clicked.connect(self._calc_cube_spacing)
         cl.addWidget(btn_cube_calc, 4, 2, 1, 2)
 
@@ -621,12 +621,12 @@ class MainWindow(QMainWindow):
         self.sld_cube_start_angle.valueChanged.connect(lambda v: self.lbl_cube_angle_val.setText(f"{v}°"))
 
         btn_apply_cube = QPushButton("应用")
-        btn_apply_cube.setStyleSheet("QPushButton { background: #d0d8e8; padding: 4px; } QPushButton:hover { background: #c0c8d8; }")
+        btn_apply_cube.setStyleSheet("QPushButton { background: #2a2a2a; border: 1px solid #555; padding: 4px; color: #d0d0d0; } QPushButton:hover { border-color: #ffa500; color: #ffa500; }")
         btn_apply_cube.clicked.connect(self._apply_cube_params)
         cl.addWidget(btn_apply_cube, 6, 0, 1, 4)
 
         self.btn_cube_place = QPushButton("点击放置（右键确认生成）")
-        self.btn_cube_place.setStyleSheet("QPushButton { background: #d8e8d8; font-weight: bold; padding: 6px; } QPushButton:hover { background: #c8d8c8; }")
+        self.btn_cube_place.setStyleSheet("QPushButton { background: #2a2a2a; border: 2px solid #ffa500; font-weight: bold; padding: 6px; color: #ffa500; } QPushButton:hover { background: #333; }")
         self.btn_cube_place.clicked.connect(lambda: self._start_place_mode("cube"))
         cl.addWidget(self.btn_cube_place, 7, 0, 1, 4)
         self._route_stack.addWidget(tab_cube)
@@ -651,19 +651,19 @@ class MainWindow(QMainWindow):
         cyl.addWidget(QLabel("水平步距(°):"), 2, 2)
         self.edt_cyl_astep = QLineEdit("自动")
         self.edt_cyl_astep.setReadOnly(True)
-        self.edt_cyl_astep.setStyleSheet("QLineEdit { background: #eee; color: #666; }")
+        self.edt_cyl_astep.setStyleSheet("QLineEdit { background: #333; color: #888; border: 1px solid #444; }")
         cyl.addWidget(self.edt_cyl_astep, 2, 3)
 
         cyl.addWidget(QLabel("垂直步距:"), 3, 0)
         self.edt_cyl_vstep = QLineEdit("自动")
         self.edt_cyl_vstep.setReadOnly(True)
-        self.edt_cyl_vstep.setStyleSheet("QLineEdit { background: #eee; color: #666; }")
+        self.edt_cyl_vstep.setStyleSheet("QLineEdit { background: #333; color: #888; border: 1px solid #444; }")
         cyl.addWidget(self.edt_cyl_vstep, 3, 1)
         cyl.addWidget(QLabel("速度:"), 3, 2)
         self.edt_cyl_speed = QLineEdit("1"); cyl.addWidget(self.edt_cyl_speed, 3, 3)
 
         btn_cyl_calc = QPushButton("自动算间距")
-        btn_cyl_calc.setStyleSheet("QPushButton { background: #e8e0d0; padding: 4px; } QPushButton:hover { background: #d8d0c0; }")
+        btn_cyl_calc.setStyleSheet("QPushButton { background: #2a2a2a; border: 1px solid #555; padding: 4px; color: #d0d0d0; } QPushButton:hover { border-color: #ffa500; color: #ffa500; }")
         btn_cyl_calc.clicked.connect(self._calc_cyl_spacing)
         cyl.addWidget(btn_cyl_calc, 4, 0, 1, 2)
 
@@ -687,12 +687,12 @@ class MainWindow(QMainWindow):
         self.sld_cyl_start_angle.valueChanged.connect(lambda v: self.lbl_cyl_angle_val.setText(f"{v}°"))
 
         btn_apply_cyl = QPushButton("应用")
-        btn_apply_cyl.setStyleSheet("QPushButton { background: #d0d8e8; padding: 4px; } QPushButton:hover { background: #c0c8d8; }")
+        btn_apply_cyl.setStyleSheet("QPushButton { background: #2a2a2a; border: 1px solid #555; padding: 4px; color: #d0d0d0; } QPushButton:hover { border-color: #ffa500; color: #ffa500; }")
         btn_apply_cyl.clicked.connect(self._apply_cyl_params)
         cyl.addWidget(btn_apply_cyl, 6, 0, 1, 4)
 
         self.btn_cyl_place = QPushButton("点击放置（右键确认生成）")
-        self.btn_cyl_place.setStyleSheet("QPushButton { background: #d8e8d8; font-weight: bold; padding: 6px; } QPushButton:hover { background: #c8d8c8; }")
+        self.btn_cyl_place.setStyleSheet("QPushButton { background: #2a2a2a; border: 2px solid #ffa500; font-weight: bold; padding: 6px; color: #ffa500; } QPushButton:hover { background: #333; }")
         self.btn_cyl_place.clicked.connect(lambda: self._start_place_mode("cylinder"))
         cyl.addWidget(self.btn_cyl_place, 7, 0, 1, 4)
         self._route_stack.addWidget(tab_cyl)
@@ -703,7 +703,7 @@ class MainWindow(QMainWindow):
         ll.setSpacing(4)
 
         btn_pick_line = QPushButton("选择起终点")
-        btn_pick_line.setStyleSheet("QPushButton { background: #e8e0d0; padding: 4px; font-weight: bold; } QPushButton:hover { background: #d8d0c0; }")
+        btn_pick_line.setStyleSheet("QPushButton { background: #2a2a2a; border: 1px solid #555; padding: 4px; font-weight: bold; color: #d0d0d0; } QPushButton:hover { border-color: #ffa500; color: #ffa500; }")
         btn_pick_line.clicked.connect(self._start_line_mode)
         ll.addWidget(btn_pick_line, 0, 0, 1, 4)
 
@@ -725,11 +725,11 @@ class MainWindow(QMainWindow):
         ll.addWidget(QLabel("航点间距:"), 4, 0)
         self.edt_line_spacing = QLineEdit("自动")
         self.edt_line_spacing.setReadOnly(True)
-        self.edt_line_spacing.setStyleSheet("QLineEdit { background: #eee; color: #666; }")
+        self.edt_line_spacing.setStyleSheet("QLineEdit { background: #333; color: #888; border: 1px solid #444; }")
         ll.addWidget(self.edt_line_spacing, 4, 1)
 
         btn_apply_line = QPushButton("应用")
-        btn_apply_line.setStyleSheet("QPushButton { background: #d0d8e8; padding: 6px; font-weight: bold; } QPushButton:hover { background: #c0c8d8; }")
+        btn_apply_line.setStyleSheet("QPushButton { background: #2a2a2a; border: 1px solid #555; padding: 6px; font-weight: bold; color: #d0d0d0; } QPushButton:hover { border-color: #ffa500; color: #ffa500; }")
         btn_apply_line.clicked.connect(self.generate_line_route)
         ll.addWidget(btn_apply_line, 5, 0, 1, 4)
 
@@ -743,7 +743,7 @@ class MainWindow(QMainWindow):
             il.setColumnStretch(c, 1)
 
         self.btn_inspect = QPushButton("选择点")
-        self.btn_inspect.setStyleSheet("QPushButton { background: #e8e0d0; font-weight: bold; padding: 6px; } QPushButton:hover { background: #d8d0c0; }")
+        self.btn_inspect.setStyleSheet("QPushButton { background: #2a2a2a; border: 1px solid #555; font-weight: bold; padding: 6px; color: #d0d0d0; } QPushButton:hover { border-color: #ffa500; color: #ffa500; }")
         self.btn_inspect.clicked.connect(self._start_inspect_mode)
         il.addWidget(self.btn_inspect, 0, 0, 1, 4)
 
@@ -762,7 +762,7 @@ class MainWindow(QMainWindow):
         il.addWidget(self.edt_inspect_speed, 3, 3)
 
         self.btn_gen_inspect = QPushButton("生成点状航线")
-        self.btn_gen_inspect.setStyleSheet("QPushButton { background: #d0e8d0; font-weight: bold; padding: 6px; } QPushButton:hover { background: #c0d8c0; }")
+        self.btn_gen_inspect.setStyleSheet("QPushButton { background: #2a2a2a; border: 2px solid #ffa500; font-weight: bold; padding: 6px; color: #ffa500; } QPushButton:hover { background: #333; }")
         self.btn_gen_inspect.clicked.connect(self.generate_inspect_route)
         il.addWidget(self.btn_gen_inspect, 4, 0, 1, 4)
 
@@ -781,7 +781,7 @@ class MainWindow(QMainWindow):
         self._route_stack.addWidget(tab_inspect)
 
         self.btn_clear = QPushButton("清除")
-        self.btn_clear.setStyleSheet("QPushButton { background: #e8d0d0; padding: 6px; } QPushButton:hover { background: #d8c0c0; }")
+        self.btn_clear.setStyleSheet("QPushButton { background: #2a2a2a; border: 1px solid #884444; padding: 6px; color: #d0d0d0; } QPushButton:hover { border-color: #ff4444; color: #ff4444; }")
         ctrl_layout.addWidget(self.btn_clear)
 
         ctrl_layout.addWidget(self._route_stack)
@@ -793,7 +793,7 @@ class MainWindow(QMainWindow):
         self.lbl_info = QLabel("航点: 0")
         rl.addWidget(self.lbl_info)
         self.lbl_route_time = QLabel("")
-        self.lbl_route_time.setStyleSheet("color: #555; font-size: 11px;")
+        self.lbl_route_time.setStyleSheet("color: #888; font-size: 11px;")
         rl.addWidget(self.lbl_route_time)
 
         ctrl_layout.addWidget(grp_route)
@@ -801,7 +801,7 @@ class MainWindow(QMainWindow):
 
         # -- 快捷键提示 --
         lbl_help = QLabel("快捷键: 1=俯视 2=正视 3=侧视 4=透视 5=仰视  Esc=取消多边形")
-        lbl_help.setStyleSheet("color: #666; font-size: 10px; padding: 4px;")
+        lbl_help.setStyleSheet("color: #666; font-size: 10px; padding: 4px; background: transparent;")
         lbl_help.setWordWrap(True)
         ctrl_layout.addWidget(lbl_help)
 
@@ -837,31 +837,94 @@ class MainWindow(QMainWindow):
             self.edt_dy.setText(self.edt_dx.text())
 
     def _apply_style(self):
-        # 跳过 QFontDatabase().families() 扫描（Windows 下很慢），直接用 CSS 回退列表
         self.setStyleSheet("""
-            QMainWindow { background: #f0f0ee; }
-            QWidget { color: #000; font-family: "Microsoft YaHei", "SimHei", "WenQuanYi Micro Hei", "Noto Sans CJK SC", "PingFang SC", "Segoe UI", Arial; font-size: 12px; }
+            QMainWindow { background: #1a1a1a; }
+            QWidget {
+                color: #d0d0d0;
+                font-family: "Consolas", "Courier New", "Microsoft YaHei", monospace;
+                font-size: 12px;
+                background: #1a1a1a;
+            }
             QGroupBox {
-                border: 1px solid #ccc; border-radius: 6px;
-                margin-top: 8px; padding: 10px 8px; font-weight: bold; color: #000;
+                border: 2px solid #444;
+                margin-top: 10px; padding: 12px 8px;
+                font-weight: bold; color: #ffa500;
             }
-            QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 4px; color: #000; }
+            QGroupBox::title {
+                subcontrol-origin: margin; left: 12px; padding: 0 6px;
+                color: #ffa500;
+            }
             QLineEdit {
-                background: #fff; border: 1px solid #bbb; border-radius: 3px;
-                padding: 3px 6px; color: #000;
+                background: #2a2a2a; border: 1px solid #555;
+                padding: 4px 6px; color: #d0d0d0;
             }
-            QLineEdit:focus { border-color: #4a9eff; }
+            QLineEdit:focus { border-color: #ffa500; }
             QPushButton {
-                background: #e0e0de; border: 1px solid #bbb; border-radius: 4px;
-                padding: 6px 14px; color: #000; min-height: 24px;
+                background: #2a2a2a; border: 2px solid #555;
+                padding: 6px 14px; color: #d0d0d0; min-height: 24px;
             }
-            QPushButton:hover { background: #d0d0ce; }
-            QPushButton:pressed { background: #c0c0be; }
+            QPushButton:hover { border-color: #ffa500; color: #ffa500; }
+            QPushButton:pressed { background: #333; border-color: #e69500; }
             QComboBox {
-                background: #fff; border: 1px solid #bbb; border-radius: 3px;
-                padding: 3px 6px; color: #000;
+                background: #2a2a2a; border: 1px solid #555;
+                padding: 4px 6px; color: #d0d0d0;
             }
-            QComboBox QAbstractItemView { background: #fff; color: #000; selection-background-color: #4a9eff; }
+            QComboBox QAbstractItemView {
+                background: #2a2a2a; color: #d0d0d0;
+                selection-background-color: #ffa500; selection-color: #1a1a1a;
+            }
+            QLabel { color: #d0d0d0; background: transparent; }
+            QCheckBox { color: #d0d0d0; background: transparent; }
+            QRadioButton { color: #d0d0d0; background: transparent; }
+            QSpinBox {
+                background: #2a2a2a; border: 1px solid #555;
+                padding: 2px 4px; color: #d0d0d0;
+            }
+            QDoubleSpinBox {
+                background: #2a2a2a; border: 1px solid #555;
+                padding: 2px 4px; color: #d0d0d0;
+            }
+            QProgressBar {
+                border: 2px solid #444; background: #2a2a2a;
+                text-align: center; color: #d0d0d0;
+            }
+            QProgressBar::chunk { background: #ffa500; }
+            QMenuBar {
+                background: #222; color: #d0d0d0;
+                border-bottom: 1px solid #444;
+            }
+            QMenuBar::item:selected { background: #ffa500; color: #1a1a1a; }
+            QMenu {
+                background: #2a2a2a; color: #d0d0d0;
+                border: 1px solid #444;
+            }
+            QMenu::item:selected { background: #ffa500; color: #1a1a1a; }
+            QToolBar {
+                background: #222; border: none;
+                spacing: 4px; padding: 2px;
+            }
+            QStatusBar {
+                background: #222; color: #888;
+                border-top: 1px solid #444;
+            }
+            QScrollBar:vertical {
+                background: #1a1a1a; width: 12px;
+                border: 1px solid #333;
+            }
+            QScrollBar::handle:vertical {
+                background: #444; min-height: 20px;
+            }
+            QScrollBar::handle:vertical:hover { background: #ffa500; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            QScrollBar:horizontal {
+                background: #1a1a1a; height: 12px;
+                border: 1px solid #333;
+            }
+            QScrollBar::handle:horizontal {
+                background: #444; min-width: 20px;
+            }
+            QScrollBar::handle:horizontal:hover { background: #ffa500; }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
         """)
 
     def _on_route_type_changed(self, index):
@@ -1296,7 +1359,7 @@ class MainWindow(QMainWindow):
         edt_speed = QLineEdit(f"{self.viewer._fpv_speed:.1f}")
         layout.addWidget(edt_speed, 5, 1)
         lbl_hint = QLabel("60fps时实际速度=此值×60")
-        lbl_hint.setStyleSheet("color: #888; font-size: 10px;")
+        lbl_hint.setStyleSheet("color: #666; font-size: 10px;")
         layout.addWidget(lbl_hint, 6, 0, 1, 2)
 
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -1418,7 +1481,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("水平FOV(°):"), 2, 0)
         edt_fov = QLineEdit(str(self._camera_fov))
         edt_fov.setReadOnly(True)
-        edt_fov.setStyleSheet("QLineEdit { background: #eee; color: #666; }")
+        edt_fov.setStyleSheet("QLineEdit { background: #333; color: #888; border: 1px solid #444; }")
         layout.addWidget(edt_fov, 2, 1)
 
         layout.addWidget(QLabel("变焦(倍):"), 2, 2)
@@ -1478,7 +1541,7 @@ class MainWindow(QMainWindow):
         edt_min_interval = QLineEdit(f"{self._camera_min_interval:.1f}")
         layout.addWidget(edt_min_interval, 4, 1)
         lbl_interval_hint = QLabel("(M4T=0.7s)")
-        lbl_interval_hint.setStyleSheet("color: #888; font-size: 10px;")
+        lbl_interval_hint.setStyleSheet("color: #666; font-size: 10px;")
         layout.addWidget(lbl_interval_hint, 4, 2, 1, 2)
 
         # ── 云台参数 ──
@@ -1488,7 +1551,7 @@ class MainWindow(QMainWindow):
         edt_yaw = QLineEdit(f"{self._gimbal_yaw:.1f}")
         layout.addWidget(edt_yaw, 6, 1)
         lbl_yaw_hint = QLabel("(0=与机头同向)")
-        lbl_yaw_hint.setStyleSheet("color: #888; font-size: 10px;")
+        lbl_yaw_hint.setStyleSheet("color: #666; font-size: 10px;")
         layout.addWidget(lbl_yaw_hint, 6, 2, 1, 2)
 
         layout.addWidget(QLabel("俯仰限位(°):"), 7, 0)
@@ -1584,7 +1647,7 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(QLabel("拍摄范围:"), 7, 0)
         lbl_range = QLabel("- m × - m")
-        lbl_range.setStyleSheet("QLabel { font-weight: bold; color: #2196F3; }")
+        lbl_range.setStyleSheet("QLabel { font-weight: bold; color: #ffa500; }")
         layout.addWidget(lbl_range, 7, 1, 1, 3)
 
         # 相机焦距范围映射（广角端焦距, 最大光学变焦倍数）
