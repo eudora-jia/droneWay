@@ -3065,12 +3065,13 @@ class VTKViewer(QWidget):
         """获取相机覆盖区域纹理（带缓存），优先加载 lena.png"""
         if hasattr(self, '_coverage_texture_cached') and self._coverage_texture_cached is not None:
             return self._coverage_texture_cached
-        import os, tempfile
+        import os, tempfile, glob as _glob
         vtk = self._vtk
         # 查找 lena.png（支持 PyInstaller 打包路径）
         import sys
         search_dirs = []
-        if getattr(sys, 'frozen', False):
+        is_frozen = getattr(sys, 'frozen', False)
+        if is_frozen:
             search_dirs.append(sys._MEIPASS)
         search_dirs += [
             os.path.dirname(os.path.abspath(__file__)),
@@ -3084,6 +3085,29 @@ class VTKViewer(QWidget):
             if os.path.exists(candidate):
                 lena_path = candidate
                 break
+        if not lena_path and is_frozen:
+            # 最后尝试：递归搜索 _MEIPASS 下所有 lena.png
+            for root, dirs, files in os.walk(sys._MEIPASS):
+                if 'lena.png' in files:
+                    lena_path = os.path.join(root, 'lena.png')
+                    break
+        if not lena_path and is_frozen:
+            # 写日志帮助排查
+            try:
+                log_path = os.path.join(os.path.dirname(sys.executable), 'lena_debug.log')
+                with open(log_path, 'w') as flog:
+                    flog.write(f"frozen={is_frozen}\n")
+                    flog.write(f"_MEIPASS={sys._MEIPASS}\n")
+                    flog.write(f"executable={sys.executable}\n")
+                    flog.write(f"search_dirs={search_dirs}\n")
+                    for d in search_dirs:
+                        exists = os.path.exists(os.path.join(d, 'lena.png'))
+                        flog.write(f"  {'[OK]' if exists else '[--]'} {os.path.join(d, 'lena.png')}\n")
+                    flog.write(f"\n_MEIPASS contents:\n")
+                    for f in sorted(os.listdir(sys._MEIPASS)):
+                        flog.write(f"  {f}\n")
+            except Exception:
+                pass
         if lena_path:
             reader = self._vtkPNGReader()
             reader.SetFileName(lena_path)
