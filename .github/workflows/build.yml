@@ -26,7 +26,7 @@ jobs:
 
       - name: Build exe
         run: |
-          pyinstaller --onedir --windowed --name BridgeRoutePlanner --add-data "M4T_v2_simple.stl;." --add-data "cable_stayed_bridge.stl;." main.py
+          pyinstaller BridgeRoutePlanner.spec --clean
 
       - name: Zip output folder
         run: |
