@@ -1449,6 +1449,29 @@ class VTKViewer(QWidget):
         print(f"[STL] Loaded: {path} ({n_triangles} triangles)")
         return True
 
+    def _parse_obj_usemtl(self, obj_path):
+        """解析OBJ文件中的 usemtl 指令，返回 {材质名: 面数} 字典
+        按OBJ文件中出现的顺序，累积每个材质对应的面数
+        """
+        import os
+        mtl_counts = {}  # {材质名: 面数}，保持插入顺序
+        if not os.path.exists(obj_path):
+            return mtl_counts
+        try:
+            with open(obj_path, 'r', errors='ignore') as f:
+                current_mtl = None
+                for line in f:
+                    stripped = line.strip()
+                    if stripped.startswith('usemtl '):
+                        current_mtl = stripped.split(None, 1)[1].strip()
+                        if current_mtl not in mtl_counts:
+                            mtl_counts[current_mtl] = 0
+                    elif stripped.startswith('f ') and current_mtl is not None:
+                        mtl_counts[current_mtl] += 1
+        except Exception as e:
+            print(f"[OBJ] usemtl parse error: {e}")
+        return mtl_counts
+
     def add_obj_mesh(self, path, color=(0.7, 0.7, 0.7), opacity=1.0):
         """加载并渲染OBJ网格模型（支持MTL材质+纹理贴图）
         快速显示 → 延迟计算法线/KDTree/CellLocator/纹理
@@ -1465,10 +1488,11 @@ class VTKViewer(QWidget):
 
         obj_dir = os.path.dirname(os.path.abspath(path))
 
-        # ── 解析MTL材质（纯文本解析，极快） ──
+        # ── 解析MTL材质（多材质支持） ──
         mtl_kd = None
         mtl_map_kd = None
         mtl_file = None
+        materials = []  # [{'name': str, 'Kd': (r,g,b), 'map_Kd': str}, ...]
         try:
             with open(path, 'r', errors='ignore') as f:
                 for line in f:
@@ -1483,15 +1507,34 @@ class VTKViewer(QWidget):
             if os.path.exists(mtl_path):
                 print(f"[OBJ] MTL: {mtl_path}")
                 try:
+                    cur = None
                     with open(mtl_path, 'r', errors='ignore') as f:
                         for line in f:
                             parts = line.strip().split()
-                            if len(parts) >= 4 and parts[0] == 'Kd':
-                                mtl_kd = (float(parts[1]), float(parts[2]), float(parts[3]))
-                            elif len(parts) >= 2 and parts[0] == 'map_Kd':
-                                mtl_map_kd = parts[1]
+                            if not parts:
+                                continue
+                            if parts[0] == 'newmtl':
+                                cur = {'name': parts[1] if len(parts) > 1 else '', 'Kd': None, 'map_Kd': None}
+                                materials.append(cur)
+                            elif parts[0] == 'Kd' and len(parts) >= 4:
+                                kd = (float(parts[1]), float(parts[2]), float(parts[3]))
+                                if cur is not None:
+                                    cur['Kd'] = kd
+                                else:
+                                    mtl_kd = kd
+                            elif parts[0] == 'map_Kd' and len(parts) >= 2:
+                                if cur is not None:
+                                    cur['map_Kd'] = parts[1]
+                                else:
+                                    mtl_map_kd = parts[1]
                 except Exception as e:
                     print(f"[OBJ] MTL parse error: {e}")
+                # 兼容：没有 newmtl 时取第一个 Kd/map_Kd
+                if materials and mtl_kd is None and materials[0]['Kd']:
+                    mtl_kd = materials[0]['Kd']
+                if materials and mtl_map_kd is None and materials[0]['map_Kd']:
+                    mtl_map_kd = materials[0]['map_Kd']
+                print(f"[OBJ] Materials: {len(materials)} ({', '.join(m['name'] for m in materials[:5])}{'...' if len(materials) > 5 else ''})")
 
         # ── 加载几何体（vtkOBJReader，较快） ──
         reader = vtk.vtkOBJReader()
@@ -1539,6 +1582,12 @@ class VTKViewer(QWidget):
         # 先存raw polydata，后续延迟处理会替换
         self._stl_polydata = polydata
 
+        # ── 解析OBJ面→材质映射（多材质纹理支持） ──
+        face_mtl_map = self._parse_obj_usemtl(path)
+        has_multi_materials = len(materials) > 1 and len(face_mtl_map) > 0
+        if has_multi_materials:
+            print(f"[OBJ] Multi-material: {len(materials)} materials, {len(face_mtl_map)} face groups")
+
         # 刷新UI让模型先显示出来
         if hasattr(self, 'vtk_widget') and self.vtk_widget:
             self.vtk_widget.GetRenderWindow().Render()
@@ -1551,12 +1600,158 @@ class VTKViewer(QWidget):
             'mtl_map_kd': mtl_map_kd,
             'obj_dir': obj_dir,
             'actor': actor,
+            'materials': materials,
+            'face_mtl_map': face_mtl_map,
+            'has_multi_materials': has_multi_materials,
             'opacity': opacity,
         }
         from PyQt5.QtCore import QTimer
         QTimer.singleShot(100, self._deferred_obj_finish)
 
         return True
+
+    def _apply_single_texture(self, actor, tex_path, polydata):
+        """为单个actor加载并应用纹理"""
+        vtk = self._vtk
+        try:
+            reader = self._vtkPNGReader()
+            reader.SetFileName(tex_path)
+            reader.Update()
+            tex = self._vtkTexture()
+            tex.SetInputConnection(reader.GetOutputPort())
+            tex.InterpolateOn()
+            actor.SetTexture(tex)
+            print(f"[OBJ] Single texture applied: {os.path.basename(tex_path)}")
+        except Exception as e:
+            print(f"[OBJ] Texture load failed: {tex_path}: {e}")
+
+    def _apply_multi_textures(self, polydata, info):
+        """多材质纹理：按材质分组创建独立actor，各自加载纹理"""
+        vtk = self._vtk
+        materials = info['materials']
+        face_mtl_map = info['face_mtl_map']
+        obj_dir = info['obj_dir']
+        opacity = info['opacity']
+
+        if not materials or not face_mtl_map:
+            return
+
+        # 收集每个材质组的面索引
+        mtl_groups = []  # [(material_dict, [face_indices]), ...]
+        face_idx = 0
+        for mtl in materials:
+            mtl_name = mtl['name']
+            count = face_mtl_map.get(mtl_name, 0)
+            if count > 0:
+                indices = list(range(face_idx, face_idx + count))
+                mtl_groups.append((mtl, indices))
+            face_idx += count
+
+        if not mtl_groups:
+            return
+
+        # 获取原始actor的属性
+        orig_actor = info['actor']
+        orig_prop = orig_actor.GetProperty()
+        ambient = orig_prop.GetAmbient()
+        diffuse = orig_prop.GetDiffuse()
+        specular = orig_prop.GetSpecular()
+        specular_power = orig_prop.GetSpecularPower()
+
+        # 移除原始actor
+        self.renderer.RemoveActor(orig_actor)
+        if orig_actor in self._actors:
+            self._actors.remove(orig_actor)
+
+        new_actors = []
+        n_cells = polydata.GetNumberOfCells()
+
+        print(f"[OBJ] Creating {len(mtl_groups)} material actors...")
+
+        for mtl, face_indices in mtl_groups:
+            mtl_name = mtl['name']
+            mtl_kd = mtl.get('Kd')
+            map_kd = mtl.get('map_Kd')
+
+            # 用vtkIdTypeArray收集属于该材质组的cell
+            id_list = vtk.vtkIdList()
+            valid_indices = [i for i in face_indices if i < n_cells]
+            for idx in valid_indices:
+                id_list.InsertNextId(idx)
+
+            if id_list.GetNumberOfIds() == 0:
+                continue
+
+            # 提取子polydata
+            extractor = vtk.vtkExtractCells()
+            extractor.SetInputData(polydata)
+            extractor.SetCellList(id_list)
+            extractor.Update()
+            sub_pd = extractor.GetOutput()
+
+            if sub_pd.GetNumberOfCells() == 0:
+                continue
+
+            # 计算法线
+            normals_filter = vtk.vtkPolyDataNormals()
+            normals_filter.SetInputData(sub_pd)
+            normals_filter.ComputePointNormalsOn()
+            normals_filter.ComputeCellNormalsOff()
+            normals_filter.ConsistencyOn()
+            normals_filter.SplittingOff()
+            normals_filter.AutoOrientNormalsOn()
+            normals_filter.Update()
+            sub_pd_n = normals_filter.GetOutput()
+
+            # 创建actor
+            mapper = self._vtkPolyDataMapper()
+            mapper.SetInputData(sub_pd_n)
+            actor = self._vtkActor()
+            actor.SetMapper(mapper)
+
+            prop = actor.GetProperty()
+            prop.SetAmbient(ambient)
+            prop.SetDiffuse(diffuse)
+            prop.SetSpecular(specular)
+            prop.SetSpecularPower(specular_power)
+            prop.SetInterpolationToPhong()
+            prop.SetLighting(True)
+            prop.BackfaceCullingOff()
+            prop.SetOpacity(opacity)
+
+            # 设置颜色
+            if mtl_kd:
+                prop.SetColor(mtl_kd)
+            else:
+                prop.SetColor(orig_prop.GetColor())
+
+            # 加载纹理
+            if map_kd:
+                tex_path = os.path.join(obj_dir, map_kd)
+                if os.path.exists(tex_path):
+                    try:
+                        reader = self._vtkPNGReader()
+                        reader.SetFileName(tex_path)
+                        reader.Update()
+                        tex = self._vtkTexture()
+                        tex.SetInputConnection(reader.GetOutputPort())
+                        tex.InterpolateOn()
+                        actor.SetTexture(tex)
+                        print(f"[OBJ]   {mtl_name}: texture {map_kd} ({len(valid_indices)} faces)")
+                    except Exception as e:
+                        print(f"[OBJ]   {mtl_name}: texture failed: {e}")
+                else:
+                    print(f"[OBJ]   {mtl_name}: texture not found {tex_path} ({len(valid_indices)} faces)")
+            else:
+                print(f"[OBJ]   {mtl_name}: no texture, Kd=({mtl_kd[0]:.2f},{mtl_kd[1]:.2f},{mtl_kd[2]:.2f}) {len(valid_indices)} faces")
+
+            self.renderer.AddActor(actor)
+            self._actors.append(actor)
+            new_actors.append(actor)
+
+        self._obj_actors = new_actors
+        self._stl_actor = new_actors[0] if new_actors else None
+        print(f"[OBJ] Multi-texture done: {len(new_actors)} actors")
 
     def _deferred_obj_finish(self):
         """OBJ延迟加载：法线 + KDTree + CellLocator + 纹理"""
@@ -1626,33 +1821,15 @@ class VTKViewer(QWidget):
         self._stl_cell_locator = cell_loc
 
         # 纹理（最后加载，最慢）
-        mtl_map_kd = info.get('mtl_map_kd')
-        if mtl_map_kd:
-            tex_path = os.path.join(info['obj_dir'], mtl_map_kd)
-            if os.path.exists(tex_path):
-                fsize = os.path.getsize(tex_path)
-                print(f"[OBJ] Deferred: loading texture ({fsize / 1024 / 1024:.1f} MB)...")
-                try:
-                    png_reader = vtk.vtkPNGReader()
-                    png_reader.SetFileName(tex_path)
-                    png_reader.Update()
-                    img = png_reader.GetOutput()
-                    if img and img.GetNumberOfPoints() > 0:
-                        tcoords = polydata_with_normals.GetPointData().GetTCoords()
-                        if tcoords and tcoords.GetNumberOfTuples() > 0:
-                            texture = vtk.vtkTexture()
-                            texture.SetInputData(img)
-                            texture.InterpolateOn()
-                            texture.RepeatOff()
-                            actor.SetTexture(texture)
-                            self._stl_colors = True
-                            print(f"[OBJ] Texture applied ({tcoords.GetNumberOfTuples()} UV coords)")
-                        else:
-                            print("[OBJ] No UV coords, texture skipped")
-                    else:
-                        print("[OBJ] Texture read failed")
-                except Exception as e:
-                    print(f"[OBJ] Texture error: {e}")
+        has_multi = info.get('has_multi_materials', False)
+        if has_multi:
+            self._apply_multi_textures(polydata_with_normals, info)
+        else:
+            mtl_map_kd = info.get('mtl_map_kd')
+            if mtl_map_kd:
+                tex_path = os.path.join(info['obj_dir'], mtl_map_kd)
+                if os.path.exists(tex_path):
+                    self._apply_single_texture(actor, tex_path, polydata_with_normals)
 
         if hasattr(self, 'vtk_widget') and self.vtk_widget:
             self.vtk_widget.GetRenderWindow().Render()
