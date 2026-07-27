@@ -436,6 +436,10 @@ class VTKViewer(QWidget):
         self.points_data = None
         self._cloud_tree = None
         self._cloud_actor = None
+        self._voxel_actor = None
+        self._voxel_size = 0.5
+        self._voxel_dict = {}
+        self._voxel_mn = None
 
         # ─── STL 网格模型 ───
         self._stl_polydata = None
@@ -447,6 +451,7 @@ class VTKViewer(QWidget):
         self._stl_normals_np = None
         self._stl_tree = None
         self._stl_cell_locator = None
+        self._use_trimesh = False  # OBJ是否通过trimesh加载（多材质）
         self._picked_normal = None  # 最近一次拾取点的法线
 
         # ─── 点击放置模式 ───
@@ -666,7 +671,13 @@ class VTKViewer(QWidget):
             self._create_drone_model()
             self._setup_fpv_keyboard()
             self._enter_fpv_camera()
+            # FPV模式隐藏坐标轴和网格
+            for a in self._axes_actors:
+                a.SetVisibility(False)
         else:
+            # 恢复坐标轴和网格
+            for a in self._axes_actors:
+                a.SetVisibility(True)
             # 先清空按键状态，防止残留
             self._fpv_keys.clear()
             self._fpv_mouse_active = False
@@ -674,6 +685,7 @@ class VTKViewer(QWidget):
             rwi = self.vtk_widget.GetRenderWindow().GetInteractor()
             if rwi is not None:
                 for attr in ['_fpv_key_press_obs', '_fpv_key_release_obs',
+                             '_fpv_char_obs',
                              '_fpv_right_press_obs', '_fpv_right_release_obs',
                              '_fpv_move_obs', '_fpv_left_press_obs']:
                     obs_id = getattr(self, attr, None)
@@ -1449,6 +1461,29 @@ class VTKViewer(QWidget):
         print(f"[STL] Loaded: {path} ({n_triangles} triangles)")
         return True
 
+    def _load_obj_trimesh(self, path):
+        """用trimesh加载OBJ，返回Scene或None（trimesh不可用时回退）"""
+        try:
+            import trimesh
+            scene = trimesh.load(path)
+            if isinstance(scene, trimesh.Scene):
+                # 检查是否有纹理
+                has_textures = False
+                for geom in scene.geometry.values():
+                    if hasattr(geom, 'visual') and hasattr(geom.visual, 'uv'):
+                        if geom.visual.uv is not None and len(geom.visual.uv) > 0:
+                            has_textures = True
+                            break
+                if has_textures:
+                    return scene
+                # 无纹理时合并为单个mesh
+                return scene.dump(concatenate=True)
+            else:
+                return scene
+        except Exception as e:
+            print(f"[OBJ] trimesh load failed: {e}")
+            return None
+
     def _parse_obj_usemtl(self, obj_path):
         """解析OBJ文件中的 usemtl 指令，返回 {材质名: 面数} 字典
         按OBJ文件中出现的顺序，累积每个材质对应的面数
@@ -1536,51 +1571,96 @@ class VTKViewer(QWidget):
                     mtl_map_kd = materials[0]['map_Kd']
                 print(f"[OBJ] Materials: {len(materials)} ({', '.join(m['name'] for m in materials[:5])}{'...' if len(materials) > 5 else ''})")
 
-        # ── 加载几何体（vtkOBJReader，较快） ──
-        reader = vtk.vtkOBJReader()
-        reader.SetFileName(path)
-        reader.Update()
+        # ── 加载几何体（优先trimesh，回退vtkOBJReader） ──
+        trimesh_scene = self._load_obj_trimesh(path)
+        use_trimesh = trimesh_scene is not None
+        self._use_trimesh = use_trimesh
 
-        polydata = reader.GetOutput()
-        n_pts = polydata.GetNumberOfPoints()
-        if n_pts == 0:
-            print(f"[OBJ] Empty mesh: {path}")
-            return False
+        if use_trimesh:
+            import numpy as np
+            # trimesh加载成功，合并所有顶点用于KDTree
+            all_verts = []
+            if hasattr(trimesh_scene, 'geometry'):
+                # Scene: 多个材质mesh
+                for geom in trimesh_scene.geometry.values():
+                    if hasattr(geom, 'vertices'):
+                        all_verts.append(np.array(geom.vertices))
+                print(f"[OBJ] trimesh: {len(trimesh_scene.geometry)} materials")
+            else:
+                # 单个Trimesh
+                all_verts.append(np.array(trimesh_scene.vertices))
+                print(f"[OBJ] trimesh: single mesh")
 
-        n_tri = polydata.GetNumberOfCells()
-        print(f"[OBJ] Geometry: {n_pts} vertices, {n_tri} triangles")
+            combined_verts = np.vstack(all_verts) if all_verts else np.zeros((0, 3))
+            n_pts = len(combined_verts)
+            n_tri = sum(g.faces.shape[0] for g in trimesh_scene.geometry.values()) if hasattr(trimesh_scene, 'geometry') else trimesh_scene.faces.shape[0]
+            print(f"[OBJ] Geometry: {n_pts} vertices, {n_tri} triangles")
 
-        # ── 立即创建Actor显示（用材质颜色，不等纹理/法线） ──
-        mapper = self._vtkPolyDataMapper()
-        mapper.SetInputData(polydata)
-        mapper.ScalarVisibilityOff()
+            # 创建一个临时actor用于快速显示（用第一个材质的颜色）
+            first_geom = list(trimesh_scene.geometry.values())[0] if hasattr(trimesh_scene, 'geometry') else trimesh_scene
+            tmp_pts = vtk.vtkPoints()
+            for p in first_geom.vertices[:min(100, len(first_geom.vertices))]:
+                tmp_pts.InsertNextPoint(p)
+            tmp_pd = vtk.vtkPolyData()
+            tmp_pd.SetPoints(tmp_pts)
+            mapper = self._vtkPolyDataMapper()
+            mapper.SetInputData(tmp_pd)
+            actor = self._vtkActor()
+            actor.SetMapper(mapper)
+            prop = actor.GetProperty()
+            prop.SetColor(mtl_kd if mtl_kd else color)
+            prop.SetOpacity(opacity)
+            prop.SetAmbient(0.4)
+            prop.SetDiffuse(0.8)
+            prop.SetSpecular(0.2)
+            prop.SetSpecularPower(20)
+            prop.SetInterpolationToPhong()
+            prop.SetLighting(True)
+            prop.BackfaceCullingOff()
+            self.renderer.AddActor(actor)
+            self._actors.append(actor)
+            self._stl_actor = actor
+            self._obj_actors = [actor]
+            self._stl_polydata = None  # trimesh模式下不需要VTK polydata
 
-        actor = self._vtkActor()
-        actor.SetMapper(mapper)
-        prop = actor.GetProperty()
-        if mtl_kd is not None:
-            prop.SetColor(mtl_kd)
-            self._stl_colors = True
-            print(f"[OBJ] Material Kd: ({mtl_kd[0]:.2f}, {mtl_kd[1]:.2f}, {mtl_kd[2]:.2f})")
         else:
-            prop.SetColor(color)
-            self._stl_colors = False
-        prop.SetOpacity(opacity)
-        prop.SetAmbient(0.4)
-        prop.SetDiffuse(0.8)
-        prop.SetSpecular(0.2)
-        prop.SetSpecularPower(20)
-        prop.SetInterpolationToPhong()
-        prop.SetLighting(True)
-        prop.BackfaceCullingOff()  # 不剔除背面，内部墙也显示颜色
+            # 回退到vtkOBJReader
+            reader = vtk.vtkOBJReader()
+            reader.SetFileName(path)
+            reader.Update()
+            polydata = reader.GetOutput()
+            n_pts = polydata.GetNumberOfPoints()
+            if n_pts == 0:
+                print(f"[OBJ] Empty mesh: {path}")
+                return False
+            n_tri = polydata.GetNumberOfCells()
+            print(f"[OBJ] Geometry (vtkOBJReader): {n_pts} vertices, {n_tri} triangles")
 
-        self.renderer.AddActor(actor)
-        self._actors.append(actor)
-        self._stl_actor = actor
-        self._obj_actors = [actor]
-
-        # 先存raw polydata，后续延迟处理会替换
-        self._stl_polydata = polydata
+            mapper = self._vtkPolyDataMapper()
+            mapper.SetInputData(polydata)
+            mapper.ScalarVisibilityOff()
+            actor = self._vtkActor()
+            actor.SetMapper(mapper)
+            prop = actor.GetProperty()
+            if mtl_kd is not None:
+                prop.SetColor(mtl_kd)
+                self._stl_colors = True
+            else:
+                prop.SetColor(color)
+                self._stl_colors = False
+            prop.SetOpacity(opacity)
+            prop.SetAmbient(0.4)
+            prop.SetDiffuse(0.8)
+            prop.SetSpecular(0.2)
+            prop.SetSpecularPower(20)
+            prop.SetInterpolationToPhong()
+            prop.SetLighting(True)
+            prop.BackfaceCullingOff()
+            self.renderer.AddActor(actor)
+            self._actors.append(actor)
+            self._stl_actor = actor
+            self._obj_actors = [actor]
+            self._stl_polydata = polydata
 
         # ── 解析OBJ面→材质映射（多材质纹理支持） ──
         face_mtl_map = self._parse_obj_usemtl(path)
@@ -1595,7 +1675,7 @@ class VTKViewer(QWidget):
         # ── 延迟执行重操作（法线、KDTree、CellLocator、纹理） ──
         self._obj_deferred = {
             'path': path,
-            'polydata': polydata,
+            'polydata': polydata if not use_trimesh else None,
             'mtl_kd': mtl_kd,
             'mtl_map_kd': mtl_map_kd,
             'obj_dir': obj_dir,
@@ -1604,6 +1684,9 @@ class VTKViewer(QWidget):
             'face_mtl_map': face_mtl_map,
             'has_multi_materials': has_multi_materials,
             'opacity': opacity,
+            'use_trimesh': use_trimesh,
+            'trimesh_scene': trimesh_scene if use_trimesh else None,
+            'combined_verts': combined_verts if use_trimesh else None,
         }
         from PyQt5.QtCore import QTimer
         QTimer.singleShot(100, self._deferred_obj_finish)
@@ -1612,21 +1695,51 @@ class VTKViewer(QWidget):
 
     def _apply_single_texture(self, actor, tex_path, polydata):
         """为单个actor加载并应用纹理"""
+        import os, numpy as np
         vtk = self._vtk
         try:
-            reader = self._vtkPNGReader()
-            reader.SetFileName(tex_path)
-            reader.Update()
-            tex = self._vtkTexture()
-            tex.SetInputConnection(reader.GetOutputPort())
-            tex.InterpolateOn()
-            actor.SetTexture(tex)
-            print(f"[OBJ] Single texture applied: {os.path.basename(tex_path)}")
+            from PIL import Image
+            img_pil = Image.open(tex_path)
+            if img_pil.mode != 'RGB':
+                img_pil = img_pil.convert('RGB')
+            # 缩小大纹理到2048以内（避免GPU内存问题）
+            max_dim = max(img_pil.size)
+            if max_dim > 2048:
+                scale = 2048 / max_dim
+                new_size = (int(img_pil.size[0] * scale), int(img_pil.size[1] * scale))
+                img_pil = img_pil.resize(new_size, Image.LANCZOS)
+                print(f"[OBJ] Texture resized: {tex_path} -> {new_size}")
+
+            arr = np.flipud(np.array(img_pil, dtype=np.uint8))
+            h, w = arr.shape[:2]
+
+            # 检查纹理坐标
+            tc = polydata.GetPointData().GetTCoords()
+            if tc and tc.GetNumberOfTuples() > 0:
+                tc_np = np.array([tc.GetTuple(i) for i in range(min(10, tc.GetNumberOfTuples()))])
+                print(f"[OBJ] UV sample (first 10): min={tc_np.min(axis=0)}, max={tc_np.max(axis=0)}")
+                print(f"[OBJ] Texture: {os.path.basename(tex_path)}, img={w}x{h}, UVs={tc.GetNumberOfTuples()}")
+
+            # PIL→VTK
+            vtk_img = vtk.vtkImageData()
+            vtk_img.SetDimensions(w, h, 1)
+            vtk_arr = self._numpy_to_vtk(arr.reshape(-1, 3), deep=True)
+            vtk_arr.SetNumberOfComponents(3)
+            vtk_img.GetPointData().SetScalars(vtk_arr)
+
+            texture = vtk.vtkTexture()
+            texture.SetInputData(vtk_img)
+            texture.InterpolateOn()
+            texture.RepeatOff()
+            actor.SetTexture(texture)
+            print(f"[OBJ] Texture applied: {os.path.basename(tex_path)} ({w}x{h})")
         except Exception as e:
             print(f"[OBJ] Texture load failed: {tex_path}: {e}")
+            import traceback; traceback.print_exc()
 
     def _apply_multi_textures(self, polydata, info):
         """多材质纹理：按材质分组创建独立actor，各自加载纹理"""
+        import os
         vtk = self._vtk
         materials = info['materials']
         face_mtl_map = info['face_mtl_map']
@@ -1668,29 +1781,206 @@ class VTKViewer(QWidget):
 
         print(f"[OBJ] Creating {len(mtl_groups)} material actors...")
 
+        # 检查原始polydata是否有纹理坐标
+        orig_tcoords = polydata.GetPointData().GetTCoords()
+        has_tcoords = orig_tcoords is not None and orig_tcoords.GetNumberOfTuples() > 0
+
         for mtl, face_indices in mtl_groups:
             mtl_name = mtl['name']
             mtl_kd = mtl.get('Kd')
             map_kd = mtl.get('map_Kd')
 
-            # 用vtkIdTypeArray收集属于该材质组的cell
-            id_list = vtk.vtkIdList()
             valid_indices = [i for i in face_indices if i < n_cells]
-            for idx in valid_indices:
-                id_list.InsertNextId(idx)
-
-            if id_list.GetNumberOfIds() == 0:
+            if not valid_indices:
+                print(f"[OBJ]   {mtl_name}: no valid faces, skipping")
                 continue
 
-            # 提取子polydata
-            extractor = vtk.vtkExtractCells()
-            extractor.SetInputData(polydata)
-            extractor.SetCellList(id_list)
-            extractor.Update()
-            sub_pd = extractor.GetOutput()
+            try:
+                # 手动提取子polydata（比vtkExtractCells更可靠）
+                new_points = vtk.vtkPoints()
+                new_cells = vtk.vtkCellArray()
+                point_map = {}  # old_point_id -> new_point_id
+                new_tcoords = vtk.vtkFloatArray() if has_tcoords else None
+                if new_tcoords:
+                    new_tcoords.SetNumberOfComponents(2)
+                    new_tcoords.SetName("TextureCoordinates")
 
-            if sub_pd.GetNumberOfCells() == 0:
+                for face_idx in valid_indices:
+                    cell = polydata.GetCell(face_idx)
+                    if cell is None:
+                        continue
+                    n_pts = cell.GetNumberOfPoints()
+                    new_cells.InsertNextCell(n_pts)
+                    for j in range(n_pts):
+                        old_id = cell.GetPointId(j)
+                        if old_id not in point_map:
+                            point_map[old_id] = new_points.GetNumberOfPoints()
+                            new_points.InsertNextPoint(polydata.GetPoint(old_id))
+                            if new_tcoords:
+                                tc = orig_tcoords.GetTuple(old_id)
+                                new_tcoords.InsertNextTuple2(tc[0], tc[1])
+                        new_cells.InsertCellPoint(point_map[old_id])
+
+                sub_pd = vtk.vtkPolyData()
+                sub_pd.SetPoints(new_points)
+                sub_pd.SetPolys(new_cells)
+                if new_tcoords and new_tcoords.GetNumberOfTuples() > 0:
+                    sub_pd.GetPointData().SetTCoords(new_tcoords)
+
+                if sub_pd.GetNumberOfCells() == 0:
+                    print(f"[OBJ]   {mtl_name}: extracted 0 cells, skipping")
+                    continue
+
+                # 不再对子polydata重新计算法线，直接使用原始polydata的法线数据
+                # 因为 vtkPolyDataNormals 会重置点数据，导致纹理坐标丢失
+                sub_pd_n = sub_pd
+
+                # 创建actor
+                mapper = self._vtkPolyDataMapper()
+                mapper.SetInputData(sub_pd_n)
+                actor = self._vtkActor()
+                actor.SetMapper(mapper)
+
+                prop = actor.GetProperty()
+                prop.SetAmbient(ambient)
+                prop.SetDiffuse(diffuse)
+                prop.SetSpecular(specular)
+                prop.SetSpecularPower(specular_power)
+                prop.SetInterpolationToPhong()
+                prop.SetLighting(True)
+                prop.BackfaceCullingOff()
+                prop.SetOpacity(opacity)
+
+                # 设置颜色
+                if mtl_kd:
+                    prop.SetColor(mtl_kd)
+                else:
+                    prop.SetColor(orig_prop.GetColor())
+
+                # 加载纹理（仅当有纹理坐标时才应用）
+                tcoords = sub_pd_n.GetPointData().GetTCoords()
+                tc_count = tcoords.GetNumberOfTuples() if tcoords else 0
+                tex_applied = False
+                if map_kd and tc_count > 0:
+                    tex_path = os.path.join(obj_dir, map_kd)
+                    if os.path.exists(tex_path):
+                        try:
+                            reader = self._vtkPNGReader()
+                            reader.SetFileName(tex_path)
+                            reader.Update()
+                            img = reader.GetOutput()
+                            if img and img.GetNumberOfPoints() > 0:
+                                tex = self._vtkTexture()
+                                tex.SetInputConnection(reader.GetOutputPort())
+                                tex.InterpolateOn()
+                                tex.RepeatOff()
+                                actor.SetTexture(tex)
+                                tex_applied = True
+                                print(f"[OBJ]   {mtl_name}: texture {map_kd} ({img.GetExtent()[1]+1}x{img.GetExtent()[3]+1}, {len(valid_indices)} faces, {tc_count} UVs)")
+                            else:
+                                print(f"[OBJ]   {mtl_name}: texture image empty, using Kd color")
+                        except Exception as e:
+                            print(f"[OBJ]   {mtl_name}: texture failed: {e}, using Kd color")
+                    else:
+                        print(f"[OBJ]   {mtl_name}: texture not found {tex_path}, using Kd color")
+                if not tex_applied:
+                    print(f"[OBJ]   {mtl_name}: Kd=({mtl_kd[0]:.2f},{mtl_kd[1]:.2f},{mtl_kd[2]:.2f}) {len(valid_indices)} faces, {tc_count} UVs")
+
+                self.renderer.AddActor(actor)
+                self._actors.append(actor)
+                new_actors.append(actor)
+                print(f"[OBJ]   {mtl_name}: actor added, {sub_pd_n.GetNumberOfCells()} cells, {sub_pd_n.GetNumberOfPoints()} points")
+
+            except Exception as e:
+                import traceback
+                print(f"[OBJ]   {mtl_name}: ERROR: {e}")
+                traceback.print_exc()
+
+        self._obj_actors = new_actors
+        self._stl_actor = new_actors[0] if new_actors else None
+        print(f"[OBJ] Multi-texture done: {len(new_actors)} actors")
+        print(f"[OBJ] _obj_actors count: {len(self._obj_actors)}, _actors count: {len(self._actors)}")
+
+    def _deferred_obj_finish(self):
+        """OBJ延迟加载：法线 + KDTree + CellLocator + 纹理"""
+        info = getattr(self, '_obj_deferred', None)
+        if info is None:
+            return
+        self._obj_deferred = None
+
+        vtk = self._vtk
+        import os
+        import numpy as np
+        actor = info['actor']
+
+        # 检查actor是否还在（可能已被clear_stl_mesh清除）
+        if actor not in self._actors:
+            return
+
+        use_trimesh = info.get('use_trimesh', False)
+
+        if use_trimesh:
+            self._deferred_obj_trimesh(info)
+        else:
+            self._deferred_obj_vtkreader(info)
+
+        if hasattr(self, 'vtk_widget') and self.vtk_widget:
+            self.vtk_widget.GetRenderWindow().Render()
+
+        print("[OBJ] Deferred loading complete")
+
+    def _deferred_obj_trimesh(self, info):
+        """trimesh模式：从trimesh Scene创建带纹理的VTK actors"""
+        vtk = self._vtk
+        import os
+        import numpy as np
+        from PIL import Image
+        scene = info['trimesh_scene']
+        combined_verts = info['combined_verts']
+        opacity = info['opacity']
+
+        # 移除初始占位actor
+        orig_actor = info['actor']
+        self.renderer.RemoveActor(orig_actor)
+        if orig_actor in self._actors:
+            self._actors.remove(orig_actor)
+
+        print("[OBJ] trimesh: building actors from scene...")
+
+        new_actors = []
+        for name, geom in scene.geometry.items():
+            if not hasattr(geom, 'vertices') or len(geom.vertices) == 0:
                 continue
+
+            verts = np.array(geom.vertices, dtype=np.float64)
+            faces = np.array(geom.faces, dtype=np.int64)
+            vis = geom.visual
+
+            # 创建VTK Points
+            vtk_points = vtk.vtkPoints()
+            for p in verts:
+                vtk_points.InsertNextPoint(p)
+
+            # 创建VTK Cells
+            vtk_cells = vtk.vtkCellArray()
+            for f in faces:
+                vtk_cells.InsertNextCell(3)
+                for vi in f:
+                    vtk_cells.InsertCellPoint(int(vi))
+
+            # 创建PolyData
+            sub_pd = vtk.vtkPolyData()
+            sub_pd.SetPoints(vtk_points)
+            sub_pd.SetPolys(vtk_cells)
+
+            # 设置纹理坐标
+            if hasattr(vis, 'uv') and vis.uv is not None:
+                uv = np.array(vis.uv, dtype=np.float32)
+                tcoords = self._numpy_to_vtk(uv.reshape(-1, 2), deep=True)
+                tcoords.SetNumberOfComponents(2)
+                tcoords.SetName("TextureCoordinates")
+                sub_pd.GetPointData().SetTCoords(tcoords)
+                print(f"[OBJ]   {name}: {len(verts)} verts, {len(faces)} faces, {len(uv)} UVs")
 
             # 计算法线
             normals_filter = vtk.vtkPolyDataNormals()
@@ -1703,47 +1993,65 @@ class VTKViewer(QWidget):
             normals_filter.Update()
             sub_pd_n = normals_filter.GetOutput()
 
-            # 创建actor
+            # 恢复纹理坐标（normals filter可能丢失）
+            if hasattr(vis, 'uv') and vis.uv is not None:
+                sub_pd_n.GetPointData().SetTCoords(tcoords)
+
+            # 创建Actor
             mapper = self._vtkPolyDataMapper()
             mapper.SetInputData(sub_pd_n)
             actor = self._vtkActor()
             actor.SetMapper(mapper)
 
             prop = actor.GetProperty()
-            prop.SetAmbient(ambient)
-            prop.SetDiffuse(diffuse)
-            prop.SetSpecular(specular)
-            prop.SetSpecularPower(specular_power)
+            prop.SetAmbient(0.4)
+            prop.SetDiffuse(0.8)
+            prop.SetSpecular(0.2)
+            prop.SetSpecularPower(20)
             prop.SetInterpolationToPhong()
             prop.SetLighting(True)
             prop.BackfaceCullingOff()
             prop.SetOpacity(opacity)
 
-            # 设置颜色
-            if mtl_kd:
-                prop.SetColor(mtl_kd)
+            # 设置颜色（从材质获取）
+            mat = vis.material if hasattr(vis, 'material') else None
+            if mat and hasattr(mat, 'main_color'):
+                mc = np.array(mat.main_color, dtype=float)[:3] / 255.0
+                prop.SetColor(mc[0], mc[1], mc[2])
+            elif info.get('mtl_kd'):
+                prop.SetColor(info['mtl_kd'])
             else:
-                prop.SetColor(orig_prop.GetColor())
+                prop.SetColor(1.0, 1.0, 1.0)
 
             # 加载纹理
-            if map_kd:
-                tex_path = os.path.join(obj_dir, map_kd)
-                if os.path.exists(tex_path):
-                    try:
-                        reader = self._vtkPNGReader()
-                        reader.SetFileName(tex_path)
-                        reader.Update()
-                        tex = self._vtkTexture()
-                        tex.SetInputConnection(reader.GetOutputPort())
-                        tex.InterpolateOn()
-                        actor.SetTexture(tex)
-                        print(f"[OBJ]   {mtl_name}: texture {map_kd} ({len(valid_indices)} faces)")
-                    except Exception as e:
-                        print(f"[OBJ]   {mtl_name}: texture failed: {e}")
-                else:
-                    print(f"[OBJ]   {mtl_name}: texture not found {tex_path} ({len(valid_indices)} faces)")
+            if mat and hasattr(mat, 'image') and mat.image is not None:
+                try:
+                    img_pil = mat.image
+                    if img_pil.mode != 'RGB':
+                        img_pil = img_pil.convert('RGB')
+                    # 缩小大纹理
+                    max_dim = max(img_pil.size)
+                    if max_dim > 2048:
+                        scale = 2048 / max_dim
+                        new_size = (int(img_pil.size[0] * scale), int(img_pil.size[1] * scale))
+                        img_pil = img_pil.resize(new_size, Image.LANCZOS)
+                    arr = np.flipud(np.array(img_pil, dtype=np.uint8))
+                    h, w = arr.shape[:2]
+                    vtk_img = vtk.vtkImageData()
+                    vtk_img.SetDimensions(w, h, 1)
+                    vtk_arr = self._numpy_to_vtk(arr.reshape(-1, 3), deep=True)
+                    vtk_arr.SetNumberOfComponents(3)
+                    vtk_img.GetPointData().SetScalars(vtk_arr)
+                    tex = vtk.vtkTexture()
+                    tex.SetInputData(vtk_img)
+                    tex.InterpolateOn()
+                    tex.RepeatOff()
+                    actor.SetTexture(tex)
+                    print(f"[OBJ]   {name}: texture {w}x{h}")
+                except Exception as e:
+                    print(f"[OBJ]   {name}: texture failed: {e}")
             else:
-                print(f"[OBJ]   {mtl_name}: no texture, Kd=({mtl_kd[0]:.2f},{mtl_kd[1]:.2f},{mtl_kd[2]:.2f}) {len(valid_indices)} faces")
+                print(f"[OBJ]   {name}: no texture, using Kd color")
 
             self.renderer.AddActor(actor)
             self._actors.append(actor)
@@ -1751,23 +2059,51 @@ class VTKViewer(QWidget):
 
         self._obj_actors = new_actors
         self._stl_actor = new_actors[0] if new_actors else None
-        print(f"[OBJ] Multi-texture done: {len(new_actors)} actors")
 
-    def _deferred_obj_finish(self):
-        """OBJ延迟加载：法线 + KDTree + CellLocator + 纹理"""
-        info = getattr(self, '_obj_deferred', None)
-        if info is None:
-            return
-        self._obj_deferred = None
+        # KDTree + CellLocator（用合并后的顶点）
+        self._stl_points_np = combined_verts
+        self._stl_normals_np = None
 
+        print("[OBJ] Deferred: building KDTree...")
+        from scipy.spatial import cKDTree
+        self._stl_tree = cKDTree(combined_verts)
+
+        # CellLocator需要一个polydata，合并所有面
+        all_pd = vtk.vtkPolyData()
+        all_pts = vtk.vtkPoints()
+        for p in combined_verts:
+            all_pts.InsertNextPoint(p)
+        all_pd.SetPoints(all_pts)
+
+        # 合并所有面（需要偏移顶点索引）
+        all_cells = vtk.vtkCellArray()
+        offset = 0
+        for geom in scene.geometry.values():
+            if not hasattr(geom, 'faces'):
+                continue
+            for f in np.array(geom.faces, dtype=np.int64):
+                all_cells.InsertNextCell(3)
+                for vi in f:
+                    all_cells.InsertCellPoint(int(vi) + offset)
+            offset += len(geom.vertices)
+        all_pd.SetPolys(all_cells)
+
+        print("[OBJ] Deferred: building CellLocator...")
+        cell_loc = vtk.vtkCellLocator()
+        cell_loc.SetDataSet(all_pd)
+        cell_loc.BuildLocator()
+        self._stl_cell_locator = cell_loc
+        self._stl_polydata = all_pd
+
+        print(f"[OBJ] trimesh done: {len(new_actors)} actors, {len(combined_verts)} verts")
+
+    def _deferred_obj_vtkreader(self, info):
+        """vtkOBJReader模式：原有逻辑"""
         vtk = self._vtk
         import os
+        import numpy as np
         polydata = info['polydata']
         actor = info['actor']
-
-        # 检查actor是否还在（可能已被clear_stl_mesh清除）
-        if actor not in self._actors:
-            return
 
         print("[OBJ] Deferred: computing normals...")
 
@@ -1792,7 +2128,7 @@ class VTKViewer(QWidget):
 
         self._stl_polydata = polydata_with_normals
 
-        # 更新mapper使用带法线的polydata
+        # 更新mapper
         mapper = actor.GetMapper()
         mapper.SetInputData(polydata_with_normals)
 
@@ -1820,21 +2156,12 @@ class VTKViewer(QWidget):
         cell_loc.BuildLocator()
         self._stl_cell_locator = cell_loc
 
-        # 纹理（最后加载，最慢）
-        has_multi = info.get('has_multi_materials', False)
-        if has_multi:
-            self._apply_multi_textures(polydata_with_normals, info)
-        else:
-            mtl_map_kd = info.get('mtl_map_kd')
-            if mtl_map_kd:
-                tex_path = os.path.join(info['obj_dir'], mtl_map_kd)
-                if os.path.exists(tex_path):
-                    self._apply_single_texture(actor, tex_path, polydata_with_normals)
-
-        if hasattr(self, 'vtk_widget') and self.vtk_widget:
-            self.vtk_widget.GetRenderWindow().Render()
-
-        print("[OBJ] Deferred loading complete")
+        # 纹理
+        mtl_map_kd = info.get('mtl_map_kd')
+        if mtl_map_kd:
+            tex_path = os.path.join(info['obj_dir'], mtl_map_kd)
+            if os.path.exists(tex_path):
+                self._apply_single_texture(actor, tex_path, polydata_with_normals)
 
     def get_stl_normal(self, point):
         """获取STL表面法线：找最近三角面，返回朝向观察者的几何法线"""
@@ -2016,6 +2343,7 @@ class VTKViewer(QWidget):
             if a in self._actors:
                 self._actors.remove(a)
         self._obj_actors = []
+        self._use_trimesh = False
         self._stl_polydata = None
         self._stl_locator = None
         self._stl_normals = None
@@ -2036,6 +2364,11 @@ class VTKViewer(QWidget):
             rwi.RemoveObserver(self._fpv_key_release_obs)
         self._fpv_key_press_obs = rwi.AddObserver("KeyPressEvent", self._fpv_on_key_press)
         self._fpv_key_release_obs = rwi.AddObserver("KeyReleaseEvent", self._fpv_on_key_release)
+        # VTK默认将W/S解释为线框/表面渲染，FPV需要这些按键控制移动。
+        char_obs = getattr(self, '_fpv_char_obs', None)
+        if char_obs is not None:
+            rwi.RemoveObserver(char_obs)
+        self._fpv_char_obs = rwi.AddObserver("CharEvent", self._fpv_on_char, 1.0)
         # 鼠标事件
         if hasattr(self, '_fpv_right_press_obs'):
             rwi.RemoveObserver(self._fpv_right_press_obs)
@@ -2084,6 +2417,19 @@ class VTKViewer(QWidget):
         key = obj.GetKeySym().lower()
         self._fpv_keys.discard(key)
 
+
+    def _fpv_on_char(self, obj, event):
+        """阻止VTK默认字符快捷键与FPV控制键冲突"""
+        if not self.fpv_mode:
+            return False
+        key = obj.GetKeySym().lower()
+        if key in {'w', 'a', 's', 'd', 'q', 'e', 'v', 'c', 'space'}:
+            # vtkInteractorStyle.OnChar 根据 KeyCode 分派默认快捷键。
+            # 清空键码后，VTK 不会再将 W 解释为线框渲染。
+            obj.SetKeyCode('\0')
+            return True
+        return False
+        return False
     def _fpv_on_left_down(self, obj, event):
         """FPV左键按下 - 拾取点云点并记录航点"""
         if not self.fpv_mode:
@@ -2241,7 +2587,7 @@ class VTKViewer(QWidget):
             self._fpv_yaw = 0.0
         self._fpv_pitch = 0.0
 
-        cam.SetClippingRange(0.1, 5000.0)
+        cam.SetClippingRange(0.01, 500.0)
 
         # 禁用VTK自动裁剪范围计算（关键！）
         self._orig_reset_clip = self.renderer.ResetCameraClippingRange
@@ -2281,12 +2627,9 @@ class VTKViewer(QWidget):
         cam.SetFocalPoint(focal.tolist())
         cam.SetViewUp(0, 0, 1)
         cam.SetViewAngle(self._fpv_fov)
-        cam.SetClippingRange(0.1, 5000.0)
+        cam.SetClippingRange(0.01, 500.0)
 
-        # 确保STL/OBJ保持表面渲染模式
-        for a in self._get_all_mesh_actors():
-            a.GetProperty().SetRepresentationToSurface()
-            a.GetProperty().EdgeVisibilityOff()
+        self._restore_fpv_surface_representation()
 
         self._update_drone_model()
         if render and self.vtk_widget.GetRenderWindow():
@@ -2312,9 +2655,21 @@ class VTKViewer(QWidget):
         cam.SetViewUp(0, 0, 1)
         cam.SetViewAngle(self._fpv_fov)
 
+        self._restore_fpv_surface_representation()
+
         self._update_drone_model()
         if render and self.vtk_widget.GetRenderWindow():
             self.vtk_widget.GetRenderWindow().Render()
+
+    def _restore_fpv_surface_representation(self):
+        """确保FPV控制键不会把网格和体素切换成线框模式"""
+        actors = self._get_all_mesh_actors()
+        if self._voxel_actor is not None:
+            actors.append(self._voxel_actor)
+        for actor in actors:
+            prop = actor.GetProperty()
+            prop.SetRepresentationToSurface()
+            prop.EdgeVisibilityOff()
 
     def fpv_tick(self):
         """FPV模式下每帧更新（处理持续按键移动）"""
@@ -2350,14 +2705,13 @@ class VTKViewer(QWidget):
             else:
                 continue
             # 碰撞检测：离STL表面太近则回退
-            if self._stl_tree is not None:
+            # OBJ模型跳过碰撞（室内需要自由移动）
+            if self._stl_tree is not None and not self._use_trimesh:
                 dist, _ = self._stl_tree.query(self._fpv_pos)
                 if dist < min_dist:
                     self._fpv_pos = old_pos
-                else:
-                    moved = True
-            else:
-                moved = True
+                    continue
+            moved = True
 
         if moved:
             # 只更新相机参数，最后统一渲染一次
@@ -2366,11 +2720,15 @@ class VTKViewer(QWidget):
             else:
                 self._update_third_person_camera(render=False)
             cam = self.renderer.GetActiveCamera()
-            cam.SetClippingRange(0.1, 5000.0)
+            cam.SetClippingRange(0.01, 500.0)
             if self.vtk_widget.GetRenderWindow():
                 self.vtk_widget.GetRenderWindow().Render()
                 # 渲染后再次强制裁剪范围，防止VTK内部重置
-                cam.SetClippingRange(0.1, 5000.0)
+                cam.SetClippingRange(0.01, 500.0)
+                # 调试：检查裁剪范围是否被VTK重置
+                cr = cam.GetClippingRange()
+                cp = cam.GetPosition()
+                print(f"[FPV] cam=({cp[0]:.2f},{cp[1]:.2f},{cp[2]:.2f}) clip=({cr[0]:.4f},{cr[1]:.1f})")
         return moved
 
     def clear_actors(self):
@@ -2573,6 +2931,117 @@ class VTKViewer(QWidget):
         self._cloud_actor = actor
 
         # FPV模式下不重置相机，或者明确指定不重置
+        if reset_camera and not getattr(self, 'fpv_mode', False):
+            self.renderer.ResetCamera()
+        self._update_view(reset_camera=reset_camera)
+
+    def add_voxel_grid(self, points, voxel_size=0.5, colors=None, reset_camera=True):
+        """将点云渲染为3D体素栅格地图（高程着色）"""
+        if not self._vtk_available or len(points) == 0:
+            return
+        vtk = self._vtk
+        # 过滤NaN/Inf
+        valid = np.isfinite(points).all(axis=1) & (np.abs(points) < 1e10).all(axis=1)
+        points = points[valid]
+        if len(points) == 0:
+            return
+
+        self.clear_actors()
+        self._add_scene_axes()
+        self.points_data = points
+        self._cloud_tree = None
+        self._update_clip_bounds(points)
+
+        # 计算包围盒
+        mn = points.min(axis=0)
+        mx = points.max(axis=0)
+        # 稍微扩展包围盒
+        mn -= voxel_size
+        mx += voxel_size
+
+        # 将点云离散到体素网格
+        voxel_idx = ((points - mn) / voxel_size).astype(np.int64)
+        # 用字典统计每个体素：key=(ix,iy,iz) → count
+        voxel_dict = {}
+        for i in range(len(voxel_idx)):
+            key = (voxel_idx[i, 0], voxel_idx[i, 1], voxel_idx[i, 2])
+            voxel_dict[key] = voxel_dict.get(key, 0) + 1
+
+        n_voxels = len(voxel_dict)
+        print(f"[VoxelGrid] size={voxel_size}m, {n_voxels} voxels from {len(points)} points")
+        print(f"[VoxelGrid] bounds: x=[{mn[0]:.1f},{mx[0]:.1f}] y=[{mn[1]:.1f},{mx[1]:.1f}] z=[{mn[2]:.1f},{mx[2]:.1f}]")
+
+        if n_voxels == 0:
+            return
+
+        z_range = mx[2] - mn[2] if mx[2] > mn[2] else 1.0
+        vtk_pts = self._vtkPoints()
+        vtk_colors = vtk.vtkUnsignedCharArray()
+        vtk_colors.SetNumberOfComponents(3)
+        vtk_colors.SetName('Colors')
+
+        def _height_color(z):
+            t = (z - mn[2]) / z_range
+            if t < 0.25:
+                return 0, int(4*t*255), 255
+            elif t < 0.5:
+                return 0, 255, int((1-4*(t-0.25))*255)
+            elif t < 0.75:
+                return int(4*(t-0.5)*255), 255, 0
+            else:
+                return 255, int((1-4*(t-0.75))*255), 0
+
+        for (ix, iy, iz), count in voxel_dict.items():
+            center = mn + np.array([ix + 0.5, iy + 0.5, iz + 0.5]) * voxel_size
+            vtk_pts.InsertNextPoint(center.tolist())
+            r, g, b = _height_color(center[2])
+            vtk_colors.InsertNextTuple3(r, g, b)
+
+        polydata = self._vtkPolyData()
+        polydata.SetPoints(vtk_pts)
+        polydata.GetPointData().SetScalars(vtk_colors)
+        polydata.GetPointData().SetActiveScalars('Colors')
+        print(f"[VoxelGrid] {n_voxels} voxels (solid cubes)")
+
+        # 用CubeSource + Glyph3D渲染实心立方体
+        cube = vtk.vtkCubeSource()
+        cube.SetXLength(voxel_size)
+        cube.SetYLength(voxel_size)
+        cube.SetZLength(voxel_size)
+
+        glyph = vtk.vtkGlyph3D()
+        glyph.SetInputData(polydata)
+        glyph.SetSourceConnection(cube.GetOutputPort())
+        glyph.SetScaleModeToDataScalingOff()
+        glyph.ScalingOff()
+        glyph.SetColorModeToColorByScalar()
+        glyph.Update()
+
+        mapper = self._vtkPolyDataMapper()
+        mapper.SetInputConnection(glyph.GetOutputPort())
+        mapper.ScalarVisibilityOn()
+        mapper.SetScalarModeToUsePointData()
+        mapper.SetColorModeToDirectScalars()
+
+        actor = self._vtkActor()
+        actor.SetMapper(mapper)
+        prop = actor.GetProperty()
+        prop.SetOpacity(1.0)
+        prop.SetAmbient(0.3)
+        prop.SetDiffuse(0.7)
+        prop.SetSpecular(0.1)
+        prop.SetSpecularPower(10)
+        prop.BackfaceCullingOff()
+        prop.SetInterpolationToFlat()
+
+        self.renderer.AddActor(actor)
+        self._actors.append(actor)
+        self._cloud_actor = actor
+        self._voxel_actor = actor
+        self._voxel_size = voxel_size
+        self._voxel_dict = voxel_dict
+        self._voxel_mn = mn
+
         if reset_camera and not getattr(self, 'fpv_mode', False):
             self.renderer.ResetCamera()
         self._update_view(reset_camera=reset_camera)
@@ -3425,15 +3894,22 @@ class VTKViewer(QWidget):
             if cell_picker.Pick(screen_x, screen_y, 0, self.renderer):
                 pos = np.array(cell_picker.GetPickPosition())
                 cell_id = cell_picker.GetCellId()
-                if cell_id >= 0 and self._stl_normals_np is not None:
+                if cell_id >= 0 and self._stl_polydata is not None:
                     polydata = self._stl_polydata
                     cell = polydata.GetCell(cell_id)
                     if cell and cell.GetNumberOfPoints() >= 3:
                         ids = [cell.GetPointId(j) for j in range(3)]
-                        n0 = self._stl_normals_np[ids[0]]
-                        n1 = self._stl_normals_np[ids[1]]
-                        n2 = self._stl_normals_np[ids[2]]
-                        normal = (n0 + n1 + n2) / 3.0
+                        if self._stl_normals_np is not None:
+                            n0 = self._stl_normals_np[ids[0]]
+                            n1 = self._stl_normals_np[ids[1]]
+                            n2 = self._stl_normals_np[ids[2]]
+                            normal = (n0 + n1 + n2) / 3.0
+                        else:
+                            # trimesh模式：从三角面顶点计算法线
+                            v0 = np.array(polydata.GetPoint(ids[0]))
+                            v1 = np.array(polydata.GetPoint(ids[1]))
+                            v2 = np.array(polydata.GetPoint(ids[2]))
+                            normal = np.cross(v1 - v0, v2 - v0)
                         norm = np.linalg.norm(normal)
                         if norm > 1e-10:
                             normal /= norm
@@ -4056,7 +4532,7 @@ class VTKViewer(QWidget):
         elif self._stl_polydata is not None:
             b = self._stl_polydata.GetBounds()
             data_size = max(b[1]-b[0], b[3]-b[2], b[5]-b[4])
-        arrow_len = max(1.0, data_size * 0.05)
+        arrow_len = max(1.0, data_size * 0.02)
         axes_config = [
             # (color, rotate_func) - 箭头默认沿X轴
             ((1, 0, 0), None),                    # X轴：无需旋转
@@ -4065,8 +4541,8 @@ class VTKViewer(QWidget):
         ]
         for color, rot in axes_config:
             arrow = self._vtkArrowSource()
-            arrow.SetShaftRadius(0.015)
-            arrow.SetTipRadius(0.04)
+            arrow.SetShaftRadius(arrow_len * 0.005)
+            arrow.SetTipRadius(arrow_len * 0.015)
             arrow.SetTipLength(0.25)
             arrow.Update()
 

@@ -37,7 +37,7 @@ class MainWindow(QMainWindow):
             "act_load_route": "加载ROS航线", "act_copy_route": "复制ROS航线到剪贴板",
             "act_export_maicro": "导出maicro航线文件",
             "act_copy_maicro": "复制maicro航线到剪贴板",
-            "act_clip": "裁剪框", "menu_render": "点云渲染模式", "menu_size": "点云大小",
+            "act_clip": "裁剪框", "menu_render": "点云渲染模式", "menu_size": "点云大小", "menu_voxel": "体素大小",
             "menu_upsample": "点云渲染增密",
             "menu_color": "点云颜色方案",
             "color_original": "原色", "color_height": "高度着色",
@@ -99,7 +99,7 @@ class MainWindow(QMainWindow):
             "act_load_route": "Load ROS Route", "act_copy_route": "Copy ROS Route to Clipboard",
             "act_export_maicro": "Export Maicro Route",
             "act_copy_maicro": "Copy Maicro Route to Clipboard",
-            "act_clip": "Clip Box", "menu_render": "Render Mode", "menu_size": "Point Size",
+            "act_clip": "Clip Box", "menu_render": "Render Mode", "menu_size": "Point Size", "menu_voxel": "Voxel Size",
             "menu_upsample": "Display Upsample",
             "menu_color": "Color Scheme",
             "color_original": "Original", "color_height": "Height",
@@ -278,7 +278,7 @@ class MainWindow(QMainWindow):
         self._render_menu = self._view_menu.addMenu("点云渲染模式")
         self._render_mode_group = QActionGroup(self)
         self._render_mode_acts = {}
-        for name in ["自动", "球体", "立方体", "像素", "圆片"]:
+        for name in ["自动", "球体", "立方体", "像素", "圆片", "体素栅格"]:
             act = QAction(name, self)
             act.setCheckable(True)
             act.setActionGroup(self._render_mode_group)
@@ -302,6 +302,20 @@ class MainWindow(QMainWindow):
             act.triggered.connect(lambda checked, v=val: self._on_menu_point_size(v))
             self._size_menu.addAction(act)
             self._size_acts[val] = act
+
+        # 体素大小菜单
+        self._voxel_menu = self._view_menu.addMenu("体素大小")
+        self._voxel_group = QActionGroup(self)
+        self._voxel_size = 0.5  # 默认0.5m
+        for val in [0.3, 0.5, 1.0, 2.0]:
+            label = f"{val:.1f}m"
+            act = QAction(label, self)
+            act.setCheckable(True)
+            act.setActionGroup(self._voxel_group)
+            if val == 0.5:
+                act.setChecked(True)
+            act.triggered.connect(lambda checked, v=val: self._on_voxel_size_changed(v))
+            self._voxel_menu.addAction(act)
 
         self._view_menu.addSeparator()
         self._upsample_menu = self._view_menu.addMenu("点云渲染增密")
@@ -485,7 +499,7 @@ class MainWindow(QMainWindow):
 
         # 点云渲染模式 + 大小（隐藏，通过展示菜单控制）
         self.cmb_render_mode = QComboBox()
-        self.cmb_render_mode.addItems(["自动", "球体", "立方体", "像素"])
+        self.cmb_render_mode.addItems(["自动", "球体", "立方体", "像素", "圆片", "体素栅格"])
         self.cmb_render_mode.setVisible(False)
         self.sld_point_size = NoWheelSlider(Qt.Horizontal)
         self.sld_point_size.setRange(1, 20)
@@ -1074,7 +1088,10 @@ class MainWindow(QMainWindow):
 
             n = len(self.points)
             colors = self._apply_color_scheme(self.points, self._point_colors)
-            self.viewer.add_point_cloud(self.points, self._get_render_mode(), self._get_point_size(), colors=colors, use_lighting=(self._color_scheme == "original"))
+            if self._get_render_mode() == 'voxel':
+                self.viewer.add_voxel_grid(self.points, self._voxel_size, colors=colors)
+            else:
+                self.viewer.add_point_cloud(self.points, self._get_render_mode(), self._get_point_size(), colors=colors, use_lighting=(self._color_scheme == "original"))
             self._update_height_legend()
             self.progress_bar.setValue(80)
             QApplication.processEvents()
@@ -1198,7 +1215,7 @@ class MainWindow(QMainWindow):
     def _get_render_mode(self):
         """获取当前渲染模式: 'auto'/'sphere'/'cube'/'pixel'/'splat'"""
         text = self.cmb_render_mode.currentText()
-        return {"自动": "auto", "球体": "sphere", "立方体": "cube", "像素": "pixel", "圆片": "splat"}.get(text, "auto")
+        return {"自动": "auto", "球体": "sphere", "立方体": "cube", "像素": "pixel", "圆片": "splat", "体素栅格": "voxel"}.get(text, "auto")
 
     def _get_point_size(self):
         return self.sld_point_size.value() * 0.01
@@ -1333,22 +1350,33 @@ class MainWindow(QMainWindow):
             filtered_colors = display_colors[mask] if display_colors is not None else None
             filtered_normals = display_normals[mask] if display_normals is not None else None
             if len(filtered) > 0:
-                self.viewer.add_point_cloud(filtered, self._get_render_mode(), self._get_point_size(), colors=filtered_colors, normals=filtered_normals, reset_camera=False, use_lighting=(self._color_scheme == "original"))
+                if self._get_render_mode() == 'voxel':
+                    self.viewer.add_voxel_grid(filtered, self._voxel_size, colors=filtered_colors, reset_camera=False)
+                else:
+                    self.viewer.add_point_cloud(filtered, self._get_render_mode(), self._get_point_size(), colors=filtered_colors, normals=filtered_normals, reset_camera=False, use_lighting=(self._color_scheme == "original"))
                 self._update_height_legend()
         else:
-            self.viewer.add_point_cloud(display_points, self._get_render_mode(), self._get_point_size(), colors=display_colors, normals=display_normals, reset_camera=False, use_lighting=(self._color_scheme == "original"))
+            if self._get_render_mode() == 'voxel':
+                self.viewer.add_voxel_grid(display_points, self._voxel_size, colors=display_colors, reset_camera=False)
+            else:
+                self.viewer.add_point_cloud(display_points, self._get_render_mode(), self._get_point_size(), colors=display_colors, normals=display_normals, reset_camera=False, use_lighting=(self._color_scheme == "original"))
             self._update_height_legend()
 
     def _refresh_point_cloud(self):
         if any(self._clip_enabled.values()):
             self._apply_clip()
         elif self.points is not None:
-            # 圆片模式需要法线
-            if self._get_render_mode() == 'splat':
-                self._ensure_normals()
-            colors = self._apply_color_scheme(self.points, self._point_colors)
-            self.viewer.add_point_cloud(self.points, self._get_render_mode(), self._get_point_size(), colors=colors, normals=self._point_normals, reset_camera=False, use_lighting=(self._color_scheme == "original"))
-            self._update_height_legend()
+            mode = self._get_render_mode()
+            if mode == 'voxel':
+                colors = self._apply_color_scheme(self.points, self._point_colors)
+                self.viewer.add_voxel_grid(self.points, self._voxel_size, colors=colors, reset_camera=False)
+            else:
+                # 圆片模式需要法线
+                if mode == 'splat':
+                    self._ensure_normals()
+                colors = self._apply_color_scheme(self.points, self._point_colors)
+                self.viewer.add_point_cloud(self.points, mode, self._get_point_size(), colors=colors, normals=self._point_normals, reset_camera=False, use_lighting=(self._color_scheme == "original"))
+                self._update_height_legend()
 
     def _on_menu_render_mode(self, name):
         """菜单栏渲染模式切换"""
@@ -1357,6 +1385,12 @@ class MainWindow(QMainWindow):
     def _on_menu_point_size(self, val):
         """菜单栏点云大小切换"""
         self.sld_point_size.setValue(val)
+
+    def _on_voxel_size_changed(self, val):
+        """体素大小切换"""
+        self._voxel_size = val
+        if self._get_render_mode() == 'voxel':
+            self._refresh_point_cloud()
 
     def _toggle_fpv_mode(self):
         """切换FPV无人机视角模式"""
@@ -1869,7 +1903,7 @@ class MainWindow(QMainWindow):
         "终点(x,y,z):": "End(x,y,z):",
         "巡检点列表:": "Inspect Points:",
         "m": "m",
-        "自动": "Auto", "球体": "Sphere", "立方体": "Cube", "像素": "Pixel",
+        "自动": "Auto", "球体": "Sphere", "立方体": "Cube", "像素": "Pixel", "圆片": "Splat", "体素栅格": "Voxel Grid",
         "启用": "Enable",
         "X:": "X:", "Y:": "Y:", "Z:": "Z:",
         "渲染:": "Render:",
@@ -2027,7 +2061,10 @@ class MainWindow(QMainWindow):
         if len(filtered) == 0:
             QMessageBox.information(self, "提示", "裁剪后无点云数据")
             return
-        self.viewer.add_point_cloud(filtered, self._get_render_mode(), self._get_point_size(), colors=filtered_colors, normals=filtered_normals, reset_camera=False, use_lighting=(self._color_scheme == "original"))
+        if self._get_render_mode() == 'voxel':
+            self.viewer.add_voxel_grid(filtered, self._voxel_size, colors=filtered_colors, reset_camera=False)
+        else:
+            self.viewer.add_point_cloud(filtered, self._get_render_mode(), self._get_point_size(), colors=filtered_colors, normals=filtered_normals, reset_camera=False, use_lighting=(self._color_scheme == "original"))
         self._update_height_legend()
         n_total = len(self.points)
         n_show = len(filtered)
@@ -3389,7 +3426,18 @@ class MainWindow(QMainWindow):
             # ── C6 搜索：从 inspect_dist 开始，优先最近 ──
             best_pos = None
 
-            if is_bottom_surface:
+            # FPV模式：航点直接放在 相机 与 目标表面 之间
+            if self.viewer.fpv_mode:
+                d_norm = np.linalg.norm(normal)
+                if d_norm > 1e-6:
+                    best_pos = target + normal / d_norm * inspect_dist
+                else:
+                    best_pos = target + up * inspect_dist
+                print(f"[Inspect] P{i+1} FPV室内: target=({target[0]:.2f},{target[1]:.2f},{target[2]:.2f}) "
+                      f"normal=({normal[0]:.3f},{normal[1]:.3f},{normal[2]:.3f}) "
+                      f"→ pos=({best_pos[0]:.2f},{best_pos[1]:.2f},{best_pos[2]:.2f})")
+
+            if best_pos is None and is_bottom_surface:
                 # ── 底面专用搜索 ──
                 # C5 要求 LOS 在 Fwd-Up 平面内 → 只能沿 heading 方向偏移
                 # 无人机在目标下方+前方（-heading 方向），总距离 = offset
@@ -3946,7 +3994,7 @@ class MainWindow(QMainWindow):
         self._on_anim_started()
 
     def _on_anim_started(self):
-        """动画开始：禁用其他操作，STL模型半透明"""
+        """动画开始：禁用其他操作，STL模型移除，OBJ模型半透明"""
         self._act_anim_play.setText("停止动画")
         self._file_menu.setEnabled(False)
         self._view_menu.setEnabled(False)
@@ -3956,19 +4004,16 @@ class MainWindow(QMainWindow):
                 w.setEnabled(False)
         for w in self.findChildren(QComboBox):
             w.setEnabled(False)
-        # 动画时从渲染器移除桥梁模型
-        stl_removed = False
-        if self.viewer._stl_actor is not None:
+        if self.viewer._obj_actors:
+            # OBJ模型：半透明（不移除，保持可见）
+            for a in self.viewer._obj_actors:
+                a.GetProperty().SetOpacity(0.3)
+        elif self.viewer._stl_actor is not None:
+            # STL模型：移除（原有行为）
             self.viewer.renderer.RemoveActor(self.viewer._stl_actor)
-            stl_removed = True
-        obj_removed = 0
-        for a in self.viewer._obj_actors:
-            self.viewer.renderer.RemoveActor(a)
-            obj_removed += 1
-        print(f"[Anim] Bridge removed: stl={stl_removed}, obj_actors={obj_removed}")
 
     def _on_anim_stopped(self):
-        """动画结束：恢复操作，STL模型恢复不透明"""
+        """动画结束：恢复操作"""
         self._act_anim_play.setText("航线动画播放")
         self._file_menu.setEnabled(True)
         self._view_menu.setEnabled(True)
@@ -3977,11 +4022,13 @@ class MainWindow(QMainWindow):
             w.setEnabled(True)
         for w in self.findChildren(QComboBox):
             w.setEnabled(True)
-        # 动画结束，把桥梁模型加回渲染器
-        if self.viewer._stl_actor is not None:
+        if self.viewer._obj_actors:
+            # OBJ模型：恢复不透明
+            for a in self.viewer._obj_actors:
+                a.GetProperty().SetOpacity(1.0)
+        elif self.viewer._stl_actor is not None:
+            # STL模型：加回渲染器（原有行为）
             self.viewer.renderer.AddActor(self.viewer._stl_actor)
-        for a in self.viewer._obj_actors:
-            self.viewer.renderer.AddActor(a)
 
     def _toggle_coverage(self, on):
         """切换重叠率覆盖显示"""
@@ -4483,11 +4530,12 @@ class MainWindow(QMainWindow):
         drone = self.viewer._fpv_drone_actor
         stl = self.viewer._stl_actor
 
-        # 批量收集非点云、非无人机、非STL actor，一次性移除
-        to_remove = [a for a in self.viewer._actors if a != cloud and a != drone and a != stl]
+        # 批量收集非点云、非无人机、非STL/OBJ actor，一次性移除
+        mesh_actors = set(self.viewer._get_all_mesh_actors())
+        to_remove = [a for a in self.viewer._actors if a != cloud and a != drone and a not in mesh_actors]
         for a in to_remove:
             ren.RemoveActor(a)
-        self.viewer._actors = [a for a in self.viewer._actors if a == cloud or a == drone or a == stl]
+        self.viewer._actors = [a for a in self.viewer._actors if a == cloud or a == drone or a in mesh_actors]
         self.viewer._waypoint_actors = []
         self.viewer._waypoints_ref = None
 
