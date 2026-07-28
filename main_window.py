@@ -5,14 +5,15 @@ import os
 import numpy as np
 
 from PyQt5.QtWidgets import (
+    QGraphicsOpacityEffect,
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QLabel, QLineEdit, QPushButton, QComboBox,
     QFileDialog, QMessageBox, QButtonGroup, QSlider,
     QProgressBar, QCheckBox, QGridLayout, QScrollArea, QTabWidget,
     QListWidget, QListWidgetItem, QAction, QActionGroup, QStackedWidget
 )
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QFont
+from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation
+from PyQt5.QtGui import QFont, QPainter, QColor, QPen, QPixmap
 
 from pcd_parser import parse_pcd, parse_ply
 from quaternion_utils import look_at_quaternion, quat_map_to_odom
@@ -23,6 +24,49 @@ class NoWheelSlider(QSlider):
     """禁用滚轮事件的 QSlider，避免滚动鼠标时意外改变值"""
     def wheelEvent(self, event):
         event.accept()  # 接受但不处理，阻止事件继续传播
+
+
+class WelcomePage(QWidget):
+    """应用启动欢迎页，显示点云到航线的流程。"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._background = QPixmap(os.path.join(os.path.dirname(__file__), "background.png"))
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), QColor("#161a1d"))
+        w, h = self.width(), self.height()
+        if not self._background.isNull():
+            background = self._background.scaled(self.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+            p.drawPixmap((w - background.width()) // 2, (h - background.height()) // 2, background)
+        p.setPen(QColor("#f4f6f7")); p.setFont(QFont("Microsoft YaHei", 28, QFont.Bold))
+        p.drawText(0, int(h * .16), w, 44, Qt.AlignCenter, "欢迎使用航线设计 App")
+        p.setPen(QColor("#9ba9b2")); p.setFont(QFont("Microsoft YaHei", 12))
+        p.drawText(0, int(h * .22), w, 26, Qt.AlignCenter, "从现场数据到可执行巡检航线")
+        steps = [("点云数据", "PCD / PLY"), ("三维模型", "STL / OBJ"),
+                 ("航线设计", "安全距离与覆盖"), ("任务导出", "ROS / Maicro")]
+        colors = [QColor("#37b7c3"), QColor("#5fba7d"), QColor("#f0a529"), QColor("#e9755b")]
+        node_gap = max(100, w // 6); start = (w - node_gap * 3) // 2; y = int(h * .43)
+        for i, (title, detail) in enumerate(steps):
+            cx = start + i * node_gap
+            if i:
+                left, right = cx - node_gap + 38, cx - 38
+                p.setPen(QPen(QColor("#d9e0e4"), 1)); p.drawLine(left, y + 28, right, y + 28)
+                p.drawLine(right, y + 28, right - 7, y + 23); p.drawLine(right, y + 28, right - 7, y + 33)
+            p.setPen(QPen(colors[i], 3)); p.setBrush(Qt.NoBrush)
+            if i == 0:
+                for dx, dy in [(-16, 4), (-5, -12), (7, 8), (18, -2), (1, 20), (-15, 22)]: p.drawEllipse(cx + dx - 3, y + dy - 3, 6, 6)
+                p.drawLine(cx - 18, y + 4, cx + 18, y - 2)
+            elif i == 1:
+                p.drawLine(cx - 20, y + 5, cx, y - 8); p.drawLine(cx, y - 8, cx + 20, y + 5); p.drawLine(cx - 20, y + 5, cx - 20, y + 28); p.drawLine(cx + 20, y + 5, cx + 20, y + 28); p.drawLine(cx - 20, y + 28, cx, y + 40); p.drawLine(cx, y + 40, cx + 20, y + 28); p.drawLine(cx, y - 8, cx, y + 18)
+            elif i == 2:
+                p.drawEllipse(cx - 23, y + 21, 6, 6); p.drawLine(cx - 17, y + 24, cx - 4, y + 8); p.drawLine(cx - 4, y + 8, cx + 9, y + 28); p.drawLine(cx + 9, y + 28, cx + 21, y + 10); p.drawEllipse(cx + 18, y + 7, 7, 7)
+            else:
+                p.drawRect(cx - 20, y - 2, 40, 29); p.drawLine(cx, y - 17, cx, y + 16); p.drawLine(cx, y + 16, cx - 8, y + 8); p.drawLine(cx, y + 16, cx + 8, y + 8)
+            p.setPen(QColor("#f4f6f7")); p.setFont(QFont("Microsoft YaHei", 14, QFont.Bold)); p.drawText(cx - 85, y + 58, 170, 24, Qt.AlignCenter, title)
+            p.setPen(QColor("#d2d9dd")); p.setFont(QFont("Microsoft YaHei", 10)); p.drawText(cx - 85, y + 82, 170, 18, Qt.AlignCenter, detail)
+        p.setPen(QColor("#e3e8ea")); p.setFont(QFont("Microsoft YaHei", 11)); p.drawText(0, int(h * .69), w, 22, Qt.AlignCenter, "加载数据，规划航线，检查覆盖范围，然后导出任务")
 
 
 class MainWindow(QMainWindow):
@@ -226,6 +270,8 @@ class MainWindow(QMainWindow):
         self._init_ui()
         self._apply_style()
         self.viewer.setup_scene()
+        self.menuBar().setVisible(False)
+        QTimer.singleShot(2000, self._fade_into_workspace)
 
     def _init_menu_bar(self):
         """初始化菜单栏"""
@@ -463,9 +509,28 @@ class MainWindow(QMainWindow):
             "<p><b>技术栈：</b>Python + PyQt5 + VTK</p>"
         )
 
+    def _fade_into_workspace(self):
+        effect = QGraphicsOpacityEffect(self._welcome_page)
+        self._welcome_page.setGraphicsEffect(effect)
+        self._welcome_fade = QPropertyAnimation(effect, b"opacity", self)
+        self._welcome_fade.setDuration(350)
+        self._welcome_fade.setStartValue(1.0)
+        self._welcome_fade.setEndValue(0.0)
+        self._welcome_fade.finished.connect(self._enter_workspace)
+        self._welcome_fade.start()
+
+    def _enter_workspace(self):
+        self._page_stack.setCurrentWidget(self._workspace)
+        self.menuBar().setVisible(True)
+
     def _init_ui(self):
-        central = QWidget()
-        self.setCentralWidget(central)
+        self._page_stack = QStackedWidget()
+        self._welcome_page = WelcomePage()
+        self._workspace = QWidget()
+        self._page_stack.addWidget(self._welcome_page)
+        self._page_stack.addWidget(self._workspace)
+        self.setCentralWidget(self._page_stack)
+        central = self._workspace
         main_layout = QHBoxLayout(central)
         main_layout.setContentsMargins(4, 4, 4, 4)
 
@@ -889,6 +954,12 @@ class MainWindow(QMainWindow):
         self.lbl_route_time = QLabel("")
         self.lbl_route_time.setStyleSheet("color: #888; font-size: 11px;")
         rl.addWidget(self.lbl_route_time)
+        self.chk_show_distances = QCheckBox("显示距离")
+        self.chk_show_indices = QCheckBox("显示序号")
+        self.chk_show_distances.setChecked(False)
+        self.chk_show_indices.setChecked(False)
+        rl.addWidget(self.chk_show_distances)
+        rl.addWidget(self.chk_show_indices)
 
         ctrl_layout.addWidget(grp_route)
         self._route_widgets.append(grp_route)
@@ -913,6 +984,8 @@ class MainWindow(QMainWindow):
         self.cmb_render_mode.currentTextChanged.connect(self._on_render_mode_changed)
         self.sld_point_size.valueChanged.connect(self._on_point_size_changed)
         self.btn_clear.clicked.connect(self.clear_route)
+        self.chk_show_distances.toggled.connect(self._display_route)
+        self.chk_show_indices.toggled.connect(self._display_route)
 
         # 立方体区域参数变化时重新计算
         self.edt_cx.textChanged.connect(lambda: self._on_cube_area_changed())
@@ -2151,6 +2224,8 @@ class MainWindow(QMainWindow):
                 "自动算间距": "Auto Calc",
                 "显示机头方向": "Show Heading",
                 "显示云台方向": "Show Gimbal",
+                "显示距离": "Show Distances",
+                "显示序号": "Show Indices",
                 "航线动画播放": "Route Animation",
                 "暂停动画": "Pause Animation",
                 "停止动画": "Stop Animation",
@@ -4429,7 +4504,8 @@ class MainWindow(QMainWindow):
         self.viewer.add_route(
             self.waypoints,
             reset_camera=False,
-            show_segment_distances=self.cmb_route_type.currentIndex() == 4,
+            show_segment_distances=self.chk_show_distances.isChecked(),
+            show_waypoint_indices=self.chk_show_indices.isChecked(),
         )
         n = len(self.waypoints)
         info = f"航点: {n}"
