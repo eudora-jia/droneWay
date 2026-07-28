@@ -1,5 +1,17 @@
 # 桥梁巡检无人机航线规划工具
 
+## 目录结构
+
+```text
+assets/models/       内置无人机与示例三维模型
+docs/                技术指南与约束文档
+examples/pointclouds/ 示例点云
+examples/routes/     示例航线 JSON
+scripts/             数据转换、建模和辅助下载工具
+```
+
+运行所需的 `background.png`、`icon.png`、`icon.ico` 与 `lena.png` 保留在根目录，便于运行和 PyInstaller 打包。
+
 ## 安装依赖
 
 ```bash

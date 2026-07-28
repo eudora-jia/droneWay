@@ -1,18 +1,20 @@
 """桥梁巡检航线规划工具 - 主窗口"""
 
 import json
+import heapq
 import os
 import numpy as np
 
 from PyQt5.QtWidgets import (
+    QGraphicsOpacityEffect,
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QLabel, QLineEdit, QPushButton, QComboBox,
     QFileDialog, QMessageBox, QButtonGroup, QSlider,
     QProgressBar, QCheckBox, QGridLayout, QScrollArea, QTabWidget,
     QListWidget, QListWidgetItem, QAction, QActionGroup, QStackedWidget
 )
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QFont
+from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation
+from PyQt5.QtGui import QFont, QPainter, QColor, QPen, QPixmap
 
 from pcd_parser import parse_pcd, parse_ply
 from quaternion_utils import look_at_quaternion, quat_map_to_odom
@@ -23,6 +25,94 @@ class NoWheelSlider(QSlider):
     """禁用滚轮事件的 QSlider，避免滚动鼠标时意外改变值"""
     def wheelEvent(self, event):
         event.accept()  # 接受但不处理，阻止事件继续传播
+
+
+class WelcomePage(QWidget):
+    """应用启动欢迎页，显示点云到航线的流程。"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._background = QPixmap(os.path.join(os.path.dirname(__file__), "background.png"))
+        self._font_family = "Consolas"
+
+
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), QColor("#161a1d"))
+        w, h = self.width(), self.height()
+        if not self._background.isNull():
+            background = self._background.scaled(
+                self.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation
+            )
+            p.drawPixmap((w - background.width()) // 2, (h - background.height()) // 2, background)
+
+        p.setPen(QColor("#f4f6f7"))
+        p.setFont(QFont(self._font_family, 40, QFont.Bold))
+        p.drawText(0, int(h * .14), w, 52, Qt.AlignCenter, "欢迎使用航线设计 App")
+        p.setPen(QColor("#9ba9b2"))
+        p.setFont(QFont(self._font_family, 17))
+        p.drawText(0, int(h * .21), w, 30, Qt.AlignCenter, "从现场数据到可执行巡检航线")
+
+        band_top = int(h * .33)
+        band_bottom = int(h * .64)
+        p.fillRect(0, band_top, w, band_bottom - band_top, QColor(7, 15, 20, 178))
+        p.setPen(QPen(QColor(55, 183, 195, 110), 1))
+        p.drawLine(0, band_top, w, band_top)
+        p.drawLine(0, band_bottom, w, band_bottom)
+
+        steps = [
+            ("点云数据", "PCD / PLY"), ("三维模型", "STL / OBJ"),
+            ("航线设计", "安全距离与覆盖"), ("航线导出", "ROS / Maicro"),
+        ]
+        colors = [QColor("#37b7c3"), QColor("#5fba7d"), QColor("#f0a529"), QColor("#e9755b")]
+        node_gap = max(125, w // 5)
+        start = (w - node_gap * 3) // 2
+        y = int(h * .40)
+        for i, (title, detail) in enumerate(steps):
+            cx = start + i * node_gap
+            if i:
+                left, right = cx - node_gap + 38, cx - 38
+                p.setPen(QPen(QColor("#d9e0e4"), 1))
+                p.drawLine(left, y + 28, right, y + 28)
+                p.drawLine(right, y + 28, right - 7, y + 23)
+                p.drawLine(right, y + 28, right - 7, y + 33)
+            p.setPen(QPen(colors[i], 3))
+            p.setBrush(Qt.NoBrush)
+            p.save()
+            p.translate(cx, y + 14)
+            p.scale(1.3, 1.3)
+            p.translate(-cx, -(y + 14))
+            if i == 0:
+                for dx, dy in [(-16, 4), (-5, -12), (7, 8), (18, -2), (1, 20), (-15, 22)]:
+                    p.drawEllipse(cx + dx - 3, y + dy - 3, 6, 6)
+                p.drawLine(cx - 18, y + 4, cx + 18, y - 2)
+            elif i == 1:
+                p.drawLine(cx - 20, y + 5, cx, y - 8)
+                p.drawLine(cx, y - 8, cx + 20, y + 5)
+                p.drawLine(cx - 20, y + 5, cx - 20, y + 28)
+                p.drawLine(cx + 20, y + 5, cx + 20, y + 28)
+                p.drawLine(cx - 20, y + 28, cx, y + 40)
+                p.drawLine(cx, y + 40, cx + 20, y + 28)
+                p.drawLine(cx, y - 8, cx, y + 18)
+            elif i == 2:
+                p.drawEllipse(cx - 23, y + 21, 6, 6)
+                p.drawLine(cx - 17, y + 24, cx - 4, y + 8)
+                p.drawLine(cx - 4, y + 8, cx + 9, y + 28)
+                p.drawLine(cx + 9, y + 28, cx + 21, y + 10)
+                p.drawEllipse(cx + 18, y + 7, 7, 7)
+            else:
+                p.drawRect(cx - 20, y - 2, 40, 29)
+                p.drawLine(cx, y - 17, cx, y + 16)
+                p.drawLine(cx, y + 16, cx - 8, y + 8)
+                p.drawLine(cx, y + 16, cx + 8, y + 8)
+            p.restore()
+            p.setPen(QColor("#f4f6f7"))
+            p.setFont(QFont(self._font_family, 20, QFont.Bold))
+            p.drawText(cx - 100, y + 72, 200, 28, Qt.AlignCenter, title)
+            p.setPen(QColor("#d2d9dd"))
+            p.setFont(QFont(self._font_family, 14))
+            p.drawText(cx - 100, y + 100, 200, 22, Qt.AlignCenter, detail)
 
 
 class MainWindow(QMainWindow):
@@ -222,10 +312,14 @@ class MainWindow(QMainWindow):
         self._kdtree_points_id = None
         self._density_stats = None
         self._route_planning_controls = []
+        self._transition_path = []  # 自动安全过渡点，包含当前机位，不含首个业务航点
+        self._transition_goal = None
 
         self._init_ui()
         self._apply_style()
         self.viewer.setup_scene()
+        self.menuBar().setVisible(False)
+        QTimer.singleShot(2000, self._fade_into_workspace)
 
     def _init_menu_bar(self):
         """初始化菜单栏"""
@@ -463,9 +557,28 @@ class MainWindow(QMainWindow):
             "<p><b>技术栈：</b>Python + PyQt5 + VTK</p>"
         )
 
+    def _fade_into_workspace(self):
+        effect = QGraphicsOpacityEffect(self._welcome_page)
+        self._welcome_page.setGraphicsEffect(effect)
+        self._welcome_fade = QPropertyAnimation(effect, b"opacity", self)
+        self._welcome_fade.setDuration(350)
+        self._welcome_fade.setStartValue(1.0)
+        self._welcome_fade.setEndValue(0.0)
+        self._welcome_fade.finished.connect(self._enter_workspace)
+        self._welcome_fade.start()
+
+    def _enter_workspace(self):
+        self._page_stack.setCurrentWidget(self._workspace)
+        self.menuBar().setVisible(True)
+
     def _init_ui(self):
-        central = QWidget()
-        self.setCentralWidget(central)
+        self._page_stack = QStackedWidget()
+        self._welcome_page = WelcomePage()
+        self._workspace = QWidget()
+        self._page_stack.addWidget(self._welcome_page)
+        self._page_stack.addWidget(self._workspace)
+        self.setCentralWidget(self._page_stack)
+        central = self._workspace
         main_layout = QHBoxLayout(central)
         main_layout.setContentsMargins(4, 4, 4, 4)
 
@@ -575,6 +688,28 @@ class MainWindow(QMainWindow):
         safe_row.addWidget(self.edt_safe_z)
         safe_row.addStretch()
         pk.addLayout(safe_row)
+
+        current_row = QHBoxLayout()
+        current_row.addWidget(QLabel("当前位置(x,y,z):"))
+        self.edt_current_x = QLineEdit("0"); self.edt_current_x.setMaximumWidth(50)
+        self.edt_current_y = QLineEdit("0"); self.edt_current_y.setMaximumWidth(50)
+        self.edt_current_z = QLineEdit("1.2"); self.edt_current_z.setMaximumWidth(50)
+        current_row.addWidget(self.edt_current_x)
+        current_row.addWidget(self.edt_current_y)
+        current_row.addWidget(self.edt_current_z)
+        current_row.addStretch()
+        pk.addLayout(current_row)
+
+        transition_row = QHBoxLayout()
+        self.btn_plan_transition = QPushButton("规划安全过渡")
+        self.btn_plan_transition.setStyleSheet(self._BTN_ACCENT)
+        self.btn_plan_transition.clicked.connect(self.plan_safe_transition)
+        self.lbl_transition_status = QLabel("过渡路径: 未规划")
+        self.lbl_transition_status.setStyleSheet("color: #6f8590; font-size: 11px;")
+        transition_row.addWidget(self.btn_plan_transition)
+        transition_row.addWidget(self.lbl_transition_status)
+        transition_row.addStretch()
+        pk.addLayout(transition_row)
 
         minz_row = QHBoxLayout()
         minz_row.addWidget(QLabel("最低飞行Z值(m):"))
@@ -889,6 +1024,12 @@ class MainWindow(QMainWindow):
         self.lbl_route_time = QLabel("")
         self.lbl_route_time.setStyleSheet("color: #888; font-size: 11px;")
         rl.addWidget(self.lbl_route_time)
+        self.chk_show_distances = QCheckBox("显示距离")
+        self.chk_show_indices = QCheckBox("显示序号")
+        self.chk_show_distances.setChecked(False)
+        self.chk_show_indices.setChecked(False)
+        rl.addWidget(self.chk_show_distances)
+        rl.addWidget(self.chk_show_indices)
 
         ctrl_layout.addWidget(grp_route)
         self._route_widgets.append(grp_route)
@@ -913,6 +1054,8 @@ class MainWindow(QMainWindow):
         self.cmb_render_mode.currentTextChanged.connect(self._on_render_mode_changed)
         self.sld_point_size.valueChanged.connect(self._on_point_size_changed)
         self.btn_clear.clicked.connect(self.clear_route)
+        self.chk_show_distances.toggled.connect(self._display_route)
+        self.chk_show_indices.toggled.connect(self._display_route)
 
         # 立方体区域参数变化时重新计算
         self.edt_cx.textChanged.connect(lambda: self._on_cube_area_changed())
@@ -2151,6 +2294,8 @@ class MainWindow(QMainWindow):
                 "自动算间距": "Auto Calc",
                 "显示机头方向": "Show Heading",
                 "显示云台方向": "Show Gimbal",
+                "显示距离": "Show Distances",
+                "显示序号": "Show Indices",
                 "航线动画播放": "Route Animation",
                 "暂停动画": "Pause Animation",
                 "停止动画": "Stop Animation",
@@ -4412,7 +4557,95 @@ class MainWindow(QMainWindow):
         """圆柱体区域参数变化时重新计算cz和h"""
         self._update_cyl_cz_and_h()
 
+    def _transition_line_is_safe(self, start, end, tree, clearance, step):
+        length = float(np.linalg.norm(end - start))
+        samples = np.linspace(start, end, max(2, int(length / step) + 1))
+        return bool(np.all(tree.query(samples)[0] >= clearance))
+
+    def _simplify_transition_path(self, path, tree, clearance, step):
+        result, index = [path[0]], 0
+        while index < len(path) - 1:
+            candidate = len(path) - 1
+            while candidate > index + 1 and not self._transition_line_is_safe(path[index], path[candidate], tree, clearance, step):
+                candidate -= 1
+            result.append(path[candidate])
+            index = candidate
+        return result
+
+    def plan_safe_transition(self):
+        """用点云体素自由空间 A* 规划当前位置到首航点的安全过渡路径。"""
+        if self.points is None or len(self.points) == 0:
+            QMessageBox.warning(self, "无法规划", "请先加载点云。"); return
+        if not self.waypoints:
+            QMessageBox.warning(self, "无法规划", "请先生成业务航线，再规划安全过渡路径。"); return
+        try:
+            start = np.array([float(self.edt_current_x.text()), float(self.edt_current_y.text()), float(self.edt_current_z.text())])
+        except ValueError:
+            QMessageBox.warning(self, "输入错误", "当前位置必须是有效的 X、Y、Z 数值。"); return
+        goal = np.asarray(self.waypoints[0]["pos"], dtype=float)
+        tree = self._get_kdtree()
+        clearance = max(float(self.viewer._safe_distance), 0.1)
+        voxel = max(float(self._voxel_size), clearance * 0.5)
+        margin = max(clearance * 3.0, voxel * 4.0)
+        lower = np.minimum(np.minimum(start, goal) - margin, self.points.min(axis=0) - clearance)
+        upper = np.maximum(np.maximum(start, goal) + margin, self.points.max(axis=0) + clearance)
+        dims = np.ceil((upper - lower) / voxel).astype(int) + 1
+        if int(np.prod(dims)) > 1500000:
+            QMessageBox.warning(self, "规划范围过大", "体素搜索空间过大。请增大体素大小或缩小规划范围。"); return
+        def to_index(pos): return tuple(np.clip(np.rint((pos - lower) / voxel).astype(int), 0, dims - 1))
+        def to_world(index): return lower + np.asarray(index, dtype=float) * voxel
+        start_idx, goal_idx = to_index(start), to_index(goal)
+        occupancy = {}
+        def free(index):
+            if any(value < 0 or value >= dims[axis] for axis, value in enumerate(index)): return False
+            if index not in occupancy: occupancy[index] = float(tree.query(to_world(index))[0]) >= clearance
+            return occupancy[index]
+        if not free(start_idx) or not free(goal_idx):
+            QMessageBox.warning(self, "无法规划", "当前位置或首航点位于障碍物安全距离内。"); return
+        if self._transition_line_is_safe(start, goal, tree, clearance, voxel * 0.5):
+            self._transition_path = [start]
+            self._transition_goal = goal.copy()
+            self.viewer._transition_path = self._transition_path
+            self.lbl_transition_status.setText("过渡路径: 直达 (0 个中继点)")
+            self.lbl_transition_status.setStyleSheet("color: #36d399; font-size: 11px;")
+            self._display_route(); return
+        offsets = [(dx, dy, dz) for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1) if (dx or dy or dz)]
+        frontier, costs, parents = [(0.0, 0.0, start_idx)], {start_idx: 0.0}, {}
+        found, visited = False, 0
+        while frontier and visited < 250000:
+            _, current_cost, current = heapq.heappop(frontier)
+            if current_cost != costs.get(current): continue
+            if current == goal_idx: found = True; break
+            visited += 1
+            for offset in offsets:
+                neighbor = tuple(current[i] + offset[i] for i in range(3))
+                if not free(neighbor): continue
+                next_cost = current_cost + float(np.linalg.norm(offset))
+                if next_cost >= costs.get(neighbor, float("inf")): continue
+                costs[neighbor], parents[neighbor] = next_cost, current
+                priority = next_cost + float(np.linalg.norm(np.subtract(goal_idx, neighbor)))
+                heapq.heappush(frontier, (priority, next_cost, neighbor))
+        if not found:
+            QMessageBox.warning(self, "未找到安全路径", "当前体素分辨率和安全距离下不存在连通的自由空间。"); return
+        indices = [goal_idx]
+        while not indices[-1] == start_idx: indices.append(parents[indices[-1]])
+        raw = [start] + [to_world(index) for index in reversed(indices[1:-1])] + [goal]
+        path = self._simplify_transition_path(raw, tree, clearance, voxel * 0.5)
+        self._transition_path = [np.asarray(point, dtype=float) for point in path[:-1]]
+        self._transition_goal = goal.copy()
+        self.viewer._transition_path = self._transition_path
+        count = max(0, len(self._transition_path) - 1)
+        self.lbl_transition_status.setText(f"过渡路径: {count} 个中继点 | {visited} 节点")
+        self.lbl_transition_status.setStyleSheet("color: #36d399; font-size: 11px;")
+        self._display_route()
+
     def _display_route(self):
+        if self._transition_path and (not self.waypoints or self._transition_goal is None or not np.allclose(self._transition_goal, self.waypoints[0]["pos"])):
+            self._transition_path = []
+            self._transition_goal = None
+            self.viewer._transition_path = []
+            self.lbl_transition_status.setText("过渡路径: 首航点已更新，请重新规划")
+            self.lbl_transition_status.setStyleSheet("color: #f0a529; font-size: 11px;")
         takeoff_z, takeoff_yaw = self._get_takeoff_params()
         self.viewer._takeoff_z = takeoff_z
         self.viewer._takeoff_yaw = takeoff_yaw
@@ -4429,7 +4662,8 @@ class MainWindow(QMainWindow):
         self.viewer.add_route(
             self.waypoints,
             reset_camera=False,
-            show_segment_distances=self.cmb_route_type.currentIndex() == 4,
+            show_segment_distances=self.chk_show_distances.isChecked(),
+            show_waypoint_indices=self.chk_show_indices.isChecked(),
         )
         n = len(self.waypoints)
         info = f"航点: {n}"
@@ -4567,7 +4801,7 @@ class MainWindow(QMainWindow):
         return self._kdtree
 
     def _check_safety_distance(self):
-        if len(self.waypoints) < 2:
+        if not self.waypoints:
             return
         safe_dist = self.viewer._safe_distance
         violations, collisions, low_z = self._collect_collision_warnings()
@@ -4609,6 +4843,11 @@ class MainWindow(QMainWindow):
             self.lbl_route_time.setText("")
             return
         total_time = 0.0
+        transition = getattr(self, "_transition_path", [])
+        if transition:
+            transition_points = [np.asarray(p, dtype=float) for p in transition] + [self.waypoints[0]["pos"]]
+            for i in range(1, len(transition_points)):
+                total_time += np.linalg.norm(transition_points[i] - transition_points[i - 1]) / max(self.waypoints[0].get("speed", 1.0), 0.1)
         for i in range(1, len(self.waypoints)):
             p0 = np.array(self.waypoints[i - 1]['pos'])
             p1 = np.array(self.waypoints[i]['pos'])
@@ -4657,7 +4896,8 @@ class MainWindow(QMainWindow):
         except ValueError:
             sx, sy, sz = 0.0, 0.0, 5.0
         safe_pos = np.array([sx, sy, sz])
-        all_positions = [safe_pos] + [wp['pos'] for wp in self.waypoints]
+        transition_positions = getattr(self, "_transition_path", [])
+        all_positions = ([np.asarray(p, dtype=float) for p in transition_positions] if transition_positions else [safe_pos]) + [wp['pos'] for wp in self.waypoints]
 
         # ── 线段采样碰撞检测（STL 版 / 点云版）──
         collisions = []
@@ -4715,6 +4955,12 @@ class MainWindow(QMainWindow):
     # ─── 清除航线 ───
     def clear_route(self):
         self.waypoints = []
+        self._transition_path = []
+        self._transition_goal = None
+        self.viewer._transition_path = []
+        if hasattr(self, "lbl_transition_status"):
+            self.lbl_transition_status.setText("过渡路径: 未规划")
+            self.lbl_transition_status.setStyleSheet("color: #6f8590; font-size: 11px;")
         self.viewer._clear_polygon()
         self.viewer._clear_place_preview()
         self.viewer._clear_line_points()
@@ -4848,38 +5094,20 @@ class MainWindow(QMainWindow):
             }
         })
 
-        # Pose 1: safety point
-        try:
-            sx = float(self.edt_safe_x.text())
-            sy = float(self.edt_safe_y.text())
-            sz = float(self.edt_safe_z.text())
-        except ValueError:
-            sx, sy, sz = 0.0, 0.0, 5.0
-        safe_pos = np.array([sx, sy, sz])
-        # 安全点朝向第一个航点
-        first_wp_pos = self.waypoints[0]['pos']
-        safe_heading = first_wp_pos - safe_pos
-        safe_heading[2] = 0
-        if np.linalg.norm(safe_heading) > 1e-10:
-            safe_target = safe_pos + safe_heading
-            safe_quat = look_at_quaternion(safe_target, safe_pos)
+        transition_positions = getattr(self, "_transition_path", [])
+        if transition_positions:
+            export_points = [np.asarray(point, dtype=float) for point in transition_positions]
         else:
-            safe_quat = takeoff_quat
-        safe_quat_odom = quat_map_to_odom(safe_quat)
-        poses.append({
-            "header": {"stamp": {"sec": 0, "nsec": 0}, "frame_id": "camera_init"},
-            "pose": {
-                "position": {
-                    "x": round(sx, 4), "y": round(sy, 4), "z": round(sz, 4)
-                },
-                "orientation": {
-                    "x": round(float(safe_quat_odom[1]), 6),
-                    "y": round(float(safe_quat_odom[2]), 6),
-                    "z": round(float(safe_quat_odom[3]), 6),
-                    "w": round(float(safe_quat_odom[0]), 6)
-                }
-            }
-        })
+            try:
+                export_points = [np.array([float(self.edt_safe_x.text()), float(self.edt_safe_y.text()), float(self.edt_safe_z.text())])]
+            except ValueError:
+                export_points = [np.array([0.0, 0.0, 5.0])]
+        targets = export_points[1:] + [self.waypoints[0]["pos"]]
+        for point, target in zip(export_points, targets):
+            heading = np.asarray(target, dtype=float) - point
+            heading[2] = 0
+            orientation = look_at_quaternion(point + heading, point) if np.linalg.norm(heading) > 1e-10 else takeoff_quat
+            poses.append(_wp_to_pose({"pos": point, "quat": orientation}))
 
         for wp in self.waypoints:
             poses.append(_wp_to_pose(wp))

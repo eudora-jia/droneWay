@@ -322,7 +322,7 @@ class VTKViewer(QWidget):
                 vtkFollower, vtkVectorText, vtkBillboardTextActor3D,
                 vtkTextActor
             )
-            from vtkmodules.vtkFiltersSources import vtkSphereSource, vtkCubeSource, vtkLineSource, vtkArrowSource
+            from vtkmodules.vtkFiltersSources import vtkSphereSource, vtkCubeSource, vtkLineSource, vtkArrowSource, vtkConeSource
             from vtkmodules.vtkFiltersGeneral import vtkTransformPolyDataFilter
             from vtkmodules.vtkCommonTransforms import vtkTransform
             from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyLine, vtkPolygon
@@ -340,7 +340,7 @@ class VTKViewer(QWidget):
                 from vtk import (
                     vtkActor, vtkPolyDataMapper, vtkRenderer,
                     vtkPoints, vtkPolyData, vtkVertexGlyphFilter,
-                    vtkSphereSource, vtkCubeSource, vtkLineSource, vtkArrowSource, vtkCellArray,
+                    vtkSphereSource, vtkCubeSource, vtkLineSource, vtkArrowSource, vtkConeSource, vtkCellArray,
                     vtkPolyLine, vtkPolygon, vtkFollower, vtkVectorText,
                     vtkBillboardTextActor3D, vtkTextActor,
                     vtkTransformPolyDataFilter, vtkTransform,
@@ -367,6 +367,7 @@ class VTKViewer(QWidget):
         self._vtkPolyData = vtkPolyData
         self._vtkVertexGlyphFilter = vtkVertexGlyphFilter
         self._vtkSphereSource = vtkSphereSource
+        self._vtkConeSource = vtkConeSource
         self._vtkCubeSource = vtkCubeSource
         self._vtkLineSource = vtkLineSource
         self._vtkArrowSource = vtkArrowSource
@@ -495,6 +496,9 @@ class VTKViewer(QWidget):
         self._takeoff_z = 1.0
         self._takeoff_yaw = 0.0
         self._safe_point = (0.0, 0.0, 5.0)
+        self._transition_path = []
+        self.show_segment_distances = False
+        self.show_waypoint_indices = False
         self.show_heading = True
         self.show_gimbal_dir = False
 
@@ -763,7 +767,9 @@ class VTKViewer(QWidget):
 
         stl_path = None
         for d in search_dirs:
-            candidate = os.path.join(d, 'M4T_v2_simple.stl')
+            candidate = os.path.join(d, 'assets', 'models', 'M4T_v2_simple.stl')
+            if not os.path.exists(candidate):
+                candidate = os.path.join(d, 'M4T_v2_simple.stl')
             if os.path.exists(candidate):
                 stl_path = candidate
                 break
@@ -982,7 +988,9 @@ class VTKViewer(QWidget):
 
         stl_path = None
         for d in search_dirs:
-            candidate = os.path.join(d, 'M4T_v2_simple.stl')
+            candidate = os.path.join(d, 'assets', 'models', 'M4T_v2_simple.stl')
+            if not os.path.exists(candidate):
+                candidate = os.path.join(d, 'M4T_v2_simple.stl')
             if os.path.exists(candidate):
                 stl_path = candidate
                 break
@@ -3523,10 +3531,15 @@ class VTKViewer(QWidget):
             return False
         cos_angle = np.dot(d1, d2) / (n1 * n2)
         return cos_angle < np.cos(np.radians(30))
-    def add_route(self, waypoints, reset_camera=True, show_segment_distances=False):
+    def add_route(self, waypoints, reset_camera=True, show_segment_distances=None,
+                  show_waypoint_indices=None):
         """显示航线和航点"""
         if not self._vtk_available or len(waypoints) == 0:
             return
+        if show_segment_distances is not None:
+            self.show_segment_distances = show_segment_distances
+        if show_waypoint_indices is not None:
+            self.show_waypoint_indices = show_waypoint_indices
         self._clear_coord_labels()
 
         # 清除多边形平面残留
@@ -3581,7 +3594,14 @@ class VTKViewer(QWidget):
         safe_pt = list(self._safe_point)
         first_wp = waypoints[0]['pos'].tolist()
 
-        path_points = [origin, takeoff_pt, safe_pt, first_wp]
+        transition_path = getattr(self, "_transition_path", [])
+        if transition_path:
+            path_points = [np.asarray(p, dtype=float).tolist() for p in transition_path] + [first_wp]
+            origin = path_points[0]
+            takeoff_pt = origin
+            safe_pt = path_points[-2] if len(path_points) > 1 else origin
+        else:
+            path_points = [origin, takeoff_pt, safe_pt, first_wp]
         for k in range(len(path_points) - 1):
             line = self._vtkLineSource()
             line.SetPoint1(path_points[k])
@@ -3590,7 +3610,7 @@ class VTKViewer(QWidget):
             mapper.SetInputConnection(line.GetOutputPort())
             actor = self._vtkActor()
             actor.SetMapper(mapper)
-            actor.GetProperty().SetColor(0.2, 0.5, 1.0)
+            actor.GetProperty().SetColor(0.0, 0.9, 1.0) if transition_path else actor.GetProperty().SetColor(0.2, 0.5, 1.0)
             actor.GetProperty().SetLineWidth(3)
             actor.GetProperty().SetOpacity(0.6)
             self.renderer.AddActor(actor)
@@ -3646,7 +3666,7 @@ class VTKViewer(QWidget):
             label_offset = avg_d * 0.08
         else:
             label_offset = 0.2
-        if show_segment_distances and n <= 100:
+        if self.show_segment_distances and n <= 100:
             for i in range(n - 1):
                 p1 = np.asarray(waypoints[i]['pos'], dtype=float)
                 p2 = np.asarray(waypoints[i + 1]['pos'], dtype=float)
@@ -3656,17 +3676,19 @@ class VTKViewer(QWidget):
                 self._add_route_overlay_label(text, mid, font_size=11)
 
         if n > BATCH_THRESHOLD:
-            # ── 批量模式：用 vtkGlyph3D 一次性渲染所有球体 ──
+            # ── 批量模式：用 vtkGlyph3D 一次性渲染所有图钉 ──
             glyph_pts = self._vtkPoints()
             for wp in waypoints:
                 glyph_pts.InsertNextPoint(wp['pos'].tolist())
             glyph_poly = self._vtkPolyData()
             glyph_poly.SetPoints(glyph_pts)
 
-            glyph_src = self._vtkSphereSource()
-            glyph_src.SetRadius(0.08)
-            glyph_src.SetThetaResolution(8)
-            glyph_src.SetPhiResolution(8)
+            glyph_src = self._vtkConeSource()
+            glyph_src.SetRadius(0.13)
+            glyph_src.SetHeight(0.34)
+            glyph_src.SetDirection(0.0, 0.0, -1.0)
+            glyph_src.SetCenter(0.0, 0.0, 0.17)
+            glyph_src.SetResolution(12)
 
             glyph = self._vtkGlyph3D()
             glyph.SetInputData(glyph_poly)
@@ -3684,30 +3706,48 @@ class VTKViewer(QWidget):
             self._actors.append(sa)
             self._waypoint_actors = [sa] * n
         else:
-            # ── 少量航点：逐个创建（支持单独拖拽编辑）──
+            # ── 少量航点：圆头加锥尖的地图图钉，支持单独拖拽编辑 ──
             for wp in waypoints:
-                sphere = self._vtkSphereSource()
-                sphere.SetCenter(wp['pos'].tolist())
-                sphere.SetRadius(0.08)
-                sphere.Update()
-                m = self._vtkPolyDataMapper()
-                m.SetInputConnection(sphere.GetOutputPort())
-                a = self._vtkActor()
-                a.SetMapper(m)
-                a.GetProperty().SetColor(1.0, 0.2, 0.2)
-                a.GetProperty().SetOpacity(0.9)
-                self.renderer.AddActor(a)
-                self._actors.append(a)
-                self._waypoint_actors.append(a)
+                pos = wp['pos']
+                cone = self._vtkConeSource()
+                cone.SetCenter(pos[0], pos[1], pos[2] + 0.17)
+                cone.SetRadius(0.13)
+                cone.SetHeight(0.34)
+                cone.SetDirection(0.0, 0.0, -1.0)
+                cone.SetResolution(16)
+                cone.Update()
+                cone_mapper = self._vtkPolyDataMapper()
+                cone_mapper.SetInputConnection(cone.GetOutputPort())
+                cone_actor = self._vtkActor()
+                cone_actor.SetMapper(cone_mapper)
+
+                head = self._vtkSphereSource()
+                head.SetCenter(pos[0], pos[1], pos[2] + 0.29)
+                head.SetRadius(0.14)
+                head.SetThetaResolution(16)
+                head.SetPhiResolution(12)
+                head.Update()
+                head_mapper = self._vtkPolyDataMapper()
+                head_mapper.SetInputConnection(head.GetOutputPort())
+                head_actor = self._vtkActor()
+                head_actor.SetMapper(head_mapper)
+
+                for actor in (cone_actor, head_actor):
+                    actor.GetProperty().SetColor(1.0, 0.2, 0.2)
+                    actor.GetProperty().SetOpacity(0.95)
+                    self.renderer.AddActor(actor)
+                    self._actors.append(actor)
+                self._waypoint_actors.append((cone_actor, head_actor))
 
             # 标签只在少量航点时显示
-            for i, wp in enumerate(waypoints):
-                lbl_pos = [
-                    wp['pos'][0],
-                    wp['pos'][1],
-                    wp['pos'][2] + label_offset * 2,
-                ]
-                self._add_route_overlay_label(str(i + 1), lbl_pos, font_size=11)
+            if self.show_waypoint_indices:
+                for i, wp in enumerate(waypoints):
+                    lbl_pos = [
+                        wp['pos'][0],
+                        wp['pos'][1],
+                        wp['pos'][2] + label_offset * 2,
+                    ]
+                    self._add_route_overlay_label(str(i + 1), lbl_pos, font_size=11)
 
         # ── 首尾航点坐标标签 ──
         for idx, tag in [(0, "首"), (n - 1, "末")] if n >= 2 else [(0, "首")]:
@@ -4426,7 +4466,9 @@ class VTKViewer(QWidget):
             self._wp_edit_offset = np.zeros(2)
 
         if idx < len(self._waypoint_actors):
-            self._waypoint_actors[idx].GetProperty().SetColor(1.0, 1.0, 0.0)
+            marker = self._waypoint_actors[idx]
+            for actor in marker if isinstance(marker, tuple) else (marker,):
+                actor.GetProperty().SetColor(1.0, 1.0, 0.0)
 
     def _update_wp_edit(self, screen_x, screen_y):
         if not self._wp_editing:
@@ -4441,9 +4483,10 @@ class VTKViewer(QWidget):
         wp['pos'][1] = new_pos[1]
 
         if self._wp_edit_idx < len(self._waypoint_actors):
-            actor = self._waypoint_actors[self._wp_edit_idx]
-            actor.SetPosition(new_pos[0] - actor.GetCenter()[0],
-                              new_pos[1] - actor.GetCenter()[1], 0)
+            marker = self._waypoint_actors[self._wp_edit_idx]
+            for actor in marker if isinstance(marker, tuple) else (marker,):
+                actor.SetPosition(new_pos[0] - actor.GetCenter()[0],
+                                  new_pos[1] - actor.GetCenter()[1], 0)
 
         self.vtk_widget.GetRenderWindow().Render()
 
@@ -4455,7 +4498,9 @@ class VTKViewer(QWidget):
         new_pos = wp['pos'].copy()
 
         if idx < len(self._waypoint_actors):
-            self._waypoint_actors[idx].GetProperty().SetColor(1.0, 0.2, 0.2)
+            marker = self._waypoint_actors[idx]
+            for actor in marker if isinstance(marker, tuple) else (marker,):
+                actor.GetProperty().SetColor(1.0, 0.2, 0.2)
 
         self._wp_editing = False
         self._wp_edit_idx = -1

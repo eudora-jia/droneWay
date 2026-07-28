@@ -35,3 +35,4 @@ Thumbs.db
 output/
 *.json
 !package.json
+assets/*

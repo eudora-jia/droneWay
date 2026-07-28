@@ -8,7 +8,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=vtk_binaries,
-    datas=[('M4T_v2_simple.stl', '.'), ('lena.png', '.'), ('icon.png', '.'), ('icon.ico', '.')] + vtk_datas,
+    datas=[('assets/models/M4T_v2_simple.stl', '.'), ('background.png', '.'), ('lena.png', '.'), ('icon.png', '.'), ('icon.ico', '.')] + vtk_datas,
     hiddenimports=vtk_hiddenimports + ['PIL.Image', 'trimesh'],
     hookspath=[],
     hooksconfig={},
