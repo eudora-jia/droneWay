@@ -1,12 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_all
+
+vtk_datas, vtk_binaries, vtk_hiddenimports = collect_all('vtkmodules')
 
 
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[],
-    datas=[('M4T_v2_simple.stl', '.'), ('lena.png', '.'), ('icon.png', '.'), ('icon.ico', '.')],
-    hiddenimports=[],
+    binaries=vtk_binaries,
+    datas=[('M4T_v2_simple.stl', '.'), ('lena.png', '.'), ('icon.png', '.'), ('icon.ico', '.')] + vtk_datas,
+    hiddenimports=vtk_hiddenimports + ['PIL.Image', 'trimesh'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

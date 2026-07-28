@@ -110,7 +110,8 @@ class FoxgloveInteractorStyle(object):
                 p = v._pick_3d(pos[0], pos[1])
                 if p is not None:
                     # 吸附到最近点云点（仅点云模式，STL/OBJ射线已精确）
-                    if not v._get_all_mesh_actors() and v.points_data is not None and len(v.points_data) > 0:
+                    if (not v._get_all_mesh_actors() and v._voxel_actor is None
+                            and v.points_data is not None and len(v.points_data) > 0):
                         if v._cloud_tree is None:
                             from scipy.spatial import cKDTree
                             v._cloud_tree = cKDTree(v.points_data)
@@ -135,7 +136,8 @@ class FoxgloveInteractorStyle(object):
                 p = v._pick_3d(pos[0], pos[1])
                 if p is not None:
                     # 吸附到最近点云点（仅点云模式，STL/OBJ射线已精确）
-                    if not v._get_all_mesh_actors() and v.points_data is not None and len(v.points_data) > 0:
+                    if (not v._get_all_mesh_actors() and v._voxel_actor is None
+                            and v.points_data is not None and len(v.points_data) > 0):
                         if v._cloud_tree is None:
                             from scipy.spatial import cKDTree
                             v._cloud_tree = cKDTree(v.points_data)
@@ -209,12 +211,16 @@ class FoxgloveInteractorStyle(object):
         if self._vtk_viewer and self._vtk_viewer.fpv_mode:
             return
         self._dolly(1.1)
+        if self._vtk_viewer:
+            self._vtk_viewer._update_origin_axes_scale()
         self._rwi.Render()
 
     def _on_wheel_bwd(self, obj, event):
         if self._vtk_viewer and self._vtk_viewer.fpv_mode:
             return
         self._dolly(0.9)
+        if self._vtk_viewer:
+            self._vtk_viewer._update_origin_axes_scale()
         self._rwi.Render()
 
     def _dolly(self, factor):
@@ -284,6 +290,8 @@ class FoxgloveInteractorStyle(object):
             if factor > 0.01:
                 self._dolly(factor)
 
+        if v:
+            v._update_origin_axes_scale()
         ren.ResetCameraClippingRange()
         rwi.Render()
 
@@ -299,6 +307,7 @@ class VTKViewer(QWidget):
     line_points_confirmed = pyqtSignal(list)  # 直线起终点确认 [start, end]
     line_point_picked = pyqtSignal(int, object)  # 直线选点实时通知 (index, point)
     anim_finished = pyqtSignal()  # 航线动画播放结束
+    mesh_geometry_ready = pyqtSignal()  # OBJ延迟几何和碰撞结构已就绪
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -319,6 +328,8 @@ class VTKViewer(QWidget):
             from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyLine, vtkPolygon
             from vtkmodules.vtkFiltersCore import vtkGlyph3D
             from vtkmodules.vtkInteractionStyle import vtkInteractorStyleUser
+            from vtkmodules.vtkRenderingAnnotation import vtkAxesActor
+            from vtkmodules.vtkInteractionWidgets import vtkOrientationMarkerWidget
             vtk.vtkOutputWindow.SetGlobalWarningDisplay(0)
             self._vtk_available = True
         except ImportError:
@@ -333,6 +344,7 @@ class VTKViewer(QWidget):
                     vtkPolyLine, vtkPolygon, vtkFollower, vtkVectorText,
                     vtkBillboardTextActor3D, vtkTextActor,
                     vtkTransformPolyDataFilter, vtkTransform,
+                    vtkAxesActor, vtkOrientationMarkerWidget,
                     vtkGlyph3D, vtkInteractorStyleUser,
                     vtkFloatArray, vtkTexture, vtkPNGReader, vtkOBJReader, vtkOBJImporter,
                 )
@@ -367,7 +379,10 @@ class VTKViewer(QWidget):
         self._vtkBillboardTextActor3D = vtkBillboardTextActor3D
         self._vtkTransformPolyDataFilter = vtkTransformPolyDataFilter
         self._vtkTransform = vtkTransform
+        self._vtkAxesActor = vtkAxesActor
+        self._vtkOrientationMarkerWidget = vtkOrientationMarkerWidget
         self._vtkGlyph3D = vtkGlyph3D
+        self._vtkGlyph3DMapper = getattr(vtk, 'vtkGlyph3DMapper', None)
         self._vtkInteractorStyleUser = vtkInteractorStyleUser
         self._vtkTextActor = vtkTextActor
 
@@ -385,7 +400,7 @@ class VTKViewer(QWidget):
         # ─── 视角切换按钮（浮动在 VTK 上方）───
         from PyQt5.QtWidgets import QFrame, QHBoxLayout, QLabel, QButtonGroup
         from PyQt5.QtCore import Qt as QtCore
-        self._view_frame = QFrame(self)
+        self._view_frame = QFrame(self.vtk_widget)
         self._view_frame.setStyleSheet("QFrame { background: transparent; border: none; }")
         self._view_frame.setFixedSize(250, 28)
         view_layout = QHBoxLayout(self._view_frame)
@@ -418,7 +433,7 @@ class VTKViewer(QWidget):
             "font-size: 10px; font-family: Consolas, monospace; font-weight: bold; }"
         )
         self._view_frame.raise_()
-        QTimer.singleShot(100, lambda: self._view_frame.move(self.width() - 260, 8))
+        QTimer.singleShot(100, self._position_view_buttons)
 
         self.renderer.SetBackground(243/255, 243/255, 244/255)  # #F3F3F4
         self.renderer.TwoSidedLightingOn()  # 双面光照，防止背面全黑
@@ -440,6 +455,10 @@ class VTKViewer(QWidget):
         self._voxel_size = 0.5
         self._voxel_dict = {}
         self._voxel_mn = None
+        self._voxel_indices = None
+        self._voxel_centers = None
+        self._voxel_surface_faces = None
+        self._voxel_coverage_actor = None
 
         # ─── STL 网格模型 ───
         self._stl_polydata = None
@@ -463,10 +482,14 @@ class VTKViewer(QWidget):
         self._wp_editing = False
         self._wp_edit_idx = -1
         self._wp_edit_z = 0.0
+        self._fpv_orientation_marker = None
         self._wp_edit_offset = None
         self._wp_edit_actor = None
         self._waypoint_actors = []
+        self._coord_label_actors = []  # (QLabel, world_position)
         self._axes_actors = []  # 坐标轴和网格actor
+        self._origin_axes_actors = []
+        self._origin_axes_base_length = 1.0
         self._waypoints_ref = None
         self._safe_distance = 2.0
         self._takeoff_z = 1.0
@@ -495,6 +518,7 @@ class VTKViewer(QWidget):
         self.line_mode = False
         self._line_points = []
         self._line_markers = []
+        self._pick_marker_actors = []  # (actor, sphere base radius)
 
         # ─── 裁剪平面 ───
         self._clip_plane_actors = {}  # {'x': actor, 'y': actor, 'z': actor}
@@ -527,6 +551,9 @@ class VTKViewer(QWidget):
         self._anim_cone_actor = None
         self._anim_timer = None
         self._anim_speed = 1.0
+        self._anim_saved_camera = None
+        self._anim_cloud_state = None
+        self._anim_voxel_coverage_visibility = None
         self._camera_hfov = 80.0  # 水平FOV（度），由外部设置
         self._camera_vfov = 60.0  # 垂直FOV（度），由外部设置
 
@@ -671,23 +698,21 @@ class VTKViewer(QWidget):
             self._create_drone_model()
             self._setup_fpv_keyboard()
             self._enter_fpv_camera()
-            # FPV模式隐藏坐标轴和网格
-            for a in self._axes_actors:
-                a.SetVisibility(False)
+            for actor in self._axes_actors:
+                actor.SetVisibility(False)
+            self._show_fpv_orientation_marker(True)
         else:
-            # 恢复坐标轴和网格
-            for a in self._axes_actors:
-                a.SetVisibility(True)
-            # 先清空按键状态，防止残留
+            self._show_fpv_orientation_marker(False)
+            for actor in self._axes_actors:
+                actor.SetVisibility(True)
             self._fpv_keys.clear()
             self._fpv_mouse_active = False
-            # 移除FPV键盘和鼠标observer
             rwi = self.vtk_widget.GetRenderWindow().GetInteractor()
             if rwi is not None:
                 for attr in ['_fpv_key_press_obs', '_fpv_key_release_obs',
-                             '_fpv_char_obs',
-                             '_fpv_right_press_obs', '_fpv_right_release_obs',
-                             '_fpv_move_obs', '_fpv_left_press_obs']:
+                             '_fpv_char_obs', '_fpv_right_press_obs',
+                             '_fpv_right_release_obs', '_fpv_move_obs',
+                             '_fpv_left_press_obs']:
                     obs_id = getattr(self, attr, None)
                     if obs_id is not None:
                         try:
@@ -699,6 +724,23 @@ class VTKViewer(QWidget):
             self._exit_fpv_camera()
 
         if self.vtk_widget.GetRenderWindow():
+            self.vtk_widget.GetRenderWindow().Render()
+
+    def _show_fpv_orientation_marker(self, visible):
+        """FPV使用固定屏幕尺寸的方向坐标轴，避免世界坐标轴随镜头放大。"""
+        if self._fpv_orientation_marker is None:
+            axes = self._vtkAxesActor()
+            axes.SetTotalLength(1.0, 1.0, 1.0)
+            marker = self._vtkOrientationMarkerWidget()
+            marker.SetOrientationMarker(axes)
+            marker.SetInteractor(self.interactor)
+            marker.SetCurrentRenderer(self.renderer)
+            marker.SetViewport(0.0, 0.0, 0.16, 0.16)
+            marker.InteractiveOff()
+            self._fpv_orientation_marker = marker
+
+        self._fpv_orientation_marker.SetEnabled(1 if visible else 0)
+        if visible and self.vtk_widget.GetRenderWindow():
             self.vtk_widget.GetRenderWindow().Render()
 
     def _create_drone_model(self):
@@ -838,36 +880,88 @@ class VTKViewer(QWidget):
         """开始航线动画播放（第三人称跟随视角）"""
         if not waypoints:
             return
-        self.stop_route_animation()
+        if self._anim_playing:
+            self.stop_route_animation()
+        else:
+            self._cleanup_anim()
+        self._save_anim_scene_state()
+        if self._voxel_coverage_actor is not None:
+            self._anim_voxel_coverage_visibility = self._voxel_coverage_actor.GetVisibility()
+            self._voxel_coverage_actor.SetVisibility(False)
         self._anim_waypoints = waypoints
         self._anim_speed = speed
         self._anim_camera_fov = camera_fov if camera_fov else self._fpv_fov
         self._anim_wp_idx = 0
         self._anim_playing = True
-        # 创建动画用无人机模型
         self._create_anim_drone()
-        # 初始化相机到第一个航点
         wp0 = waypoints[0]
         pos = np.array(wp0['pos'])
+        self._update_anim_drone(pos, wp0['quat'])
         self._update_anim_camera(pos, wp0['quat'])
-        # 启动动画定时器
         self._anim_timer = QTimer(self)
         self._anim_timer.timeout.connect(self._anim_tick)
         interval = max(20, int(100 / speed))
         self._anim_timer.start(interval)
+        if self.vtk_widget.GetRenderWindow():
+            self.vtk_widget.GetRenderWindow().Render()
 
     def stop_route_animation(self):
-        """停止动画"""
+        """停止动画并恢复播放前的场景状态。"""
+        was_active = self._anim_playing or self._anim_saved_camera is not None
         self._anim_playing = False
         if self._anim_timer:
             self._anim_timer.stop()
             self._anim_timer = None
         self._cleanup_anim()
-        # 恢复默认视角
-        self.renderer.ResetCamera()
+        self._restore_anim_scene_state()
+        if was_active:
+            self.anim_finished.emit()
         if self.vtk_widget.GetRenderWindow():
             self.vtk_widget.GetRenderWindow().Render()
-        self.anim_finished.emit()
+
+    def _save_anim_scene_state(self):
+        cam = self.renderer.GetActiveCamera()
+        self._anim_saved_camera = {
+            'position': cam.GetPosition(),
+            'focal_point': cam.GetFocalPoint(),
+            'view_up': cam.GetViewUp(),
+            'view_angle': cam.GetViewAngle(),
+            'parallel_projection': cam.GetParallelProjection(),
+            'parallel_scale': cam.GetParallelScale(),
+            'clipping_range': cam.GetClippingRange(),
+        }
+        self._anim_cloud_state = None
+        if self._cloud_actor is not None:
+            prop = self._cloud_actor.GetProperty()
+            self._anim_cloud_state = (
+                self._cloud_actor,
+                self._cloud_actor.GetVisibility(),
+                prop.GetOpacity(),
+            )
+            self._cloud_actor.SetVisibility(True)
+            prop.SetOpacity(0.12)
+
+    def _restore_anim_scene_state(self):
+        if self._anim_voxel_coverage_visibility is not None and self._voxel_coverage_actor is not None:
+            self._voxel_coverage_actor.SetVisibility(self._anim_voxel_coverage_visibility)
+        self._anim_voxel_coverage_visibility = None
+        if self._anim_cloud_state is not None:
+            actor, visibility, opacity = self._anim_cloud_state
+            actor.SetVisibility(visibility)
+            actor.GetProperty().SetOpacity(opacity)
+            self._anim_cloud_state = None
+        if self._anim_saved_camera is not None:
+            state = self._anim_saved_camera
+            cam = self.renderer.GetActiveCamera()
+            cam.SetPosition(state['position'])
+            cam.SetFocalPoint(state['focal_point'])
+            cam.SetViewUp(state['view_up'])
+            cam.SetViewAngle(state['view_angle'])
+            cam.SetParallelProjection(state['parallel_projection'])
+            cam.SetParallelScale(state['parallel_scale'])
+            cam.SetClippingRange(state['clipping_range'])
+            self._anim_saved_camera = None
+            self._update_origin_axes_scale()
 
     def _create_anim_drone(self):
         """创建动画用无人机模型（加载STL无人机模型）"""
@@ -998,6 +1092,7 @@ class VTKViewer(QWidget):
         cam.SetViewUp(0, 0, 1)
         cam.SetViewAngle(getattr(self, '_anim_camera_fov', self._fpv_fov))
         cam.SetClippingRange(0.1, 5000.0)
+        self._update_coord_labels()
 
     def _update_gimbal_coverage(self, wp):
         """计算云台FOV覆盖的STL三角面，创建高亮actor"""
@@ -1009,6 +1104,9 @@ class VTKViewer(QWidget):
             self.renderer.RemoveActor(self._anim_cone_actor)
             self._anim_cone_actor = None
 
+        if self._voxel_actor is not None:
+            self._update_voxel_animation_coverage(wp)
+            return
         if self._stl_polydata is None:
             return
         pos = np.array(wp['pos'])
@@ -1199,6 +1297,12 @@ class VTKViewer(QWidget):
                 self.renderer.RemoveActor(a)
         self._anim_proj_actors = []
         # 检查投影开关
+        if wp.get('surface_coverage', False):
+            # 圆柱曲面不能用四角面片近似，避免投影跨越网格曲面。
+            return
+        if self._voxel_actor is not None:
+            # 体素模式使用外表面可见性高亮，不能再拼接四角面片。
+            return
         if not getattr(self, '_anim_proj_enabled', True):
             return
         if 'target_pos' not in wp:
@@ -1350,6 +1454,7 @@ class VTKViewer(QWidget):
             print(f"[STL] Empty mesh: {path}")
             return False
 
+        self.clear_point_cloud()
         # 先清除STL文件中存储的旧法线，避免干扰
         polydata.GetPointData().SetNormals(None)
         polydata.GetCellData().SetNormals(None)
@@ -1456,6 +1561,8 @@ class VTKViewer(QWidget):
 
         # 显示点云边框（可选）
         actor.GetProperty().SetEdgeVisibility(False)
+        self._add_scene_axes()
+        self._update_view()
 
         n_triangles = polydata_with_normals.GetNumberOfCells()
         print(f"[STL] Loaded: {path} ({n_triangles} triangles)")
@@ -1467,22 +1574,30 @@ class VTKViewer(QWidget):
             import trimesh
             scene = trimesh.load(path)
             if isinstance(scene, trimesh.Scene):
-                # 检查是否有纹理
-                has_textures = False
-                for geom in scene.geometry.values():
-                    if hasattr(geom, 'visual') and hasattr(geom.visual, 'uv'):
-                        if geom.visual.uv is not None and len(geom.visual.uv) > 0:
-                            has_textures = True
-                            break
-                if has_textures:
-                    return scene
-                # 无纹理时合并为单个mesh
-                return scene.dump(concatenate=True)
+                # 不能直接遍历 scene.geometry：那会忽略节点实例变换。
+                return scene
             else:
                 return scene
         except Exception as e:
             print(f"[OBJ] trimesh load failed: {e}")
             return None
+
+    @staticmethod
+    def _trimesh_world_instances(scene):
+        """展开 Scene 图节点并应用各实例变换，保证显示与碰撞坐标一致。"""
+        import trimesh
+        if not isinstance(scene, trimesh.Scene):
+            return [("mesh", scene.copy())]
+        instances = []
+        for node_name in scene.graph.nodes_geometry:
+            transform, geometry_name = scene.graph.get(node_name)
+            geometry = scene.geometry.get(geometry_name)
+            if geometry is None:
+                continue
+            mesh = geometry.copy()
+            mesh.apply_transform(transform)
+            instances.append((str(node_name), mesh))
+        return instances
 
     def _parse_obj_usemtl(self, obj_path):
         """解析OBJ文件中的 usemtl 指令，返回 {材质名: 面数} 字典
@@ -1520,6 +1635,7 @@ class VTKViewer(QWidget):
             return False
 
         self.clear_stl_mesh()
+        self.clear_point_cloud()
 
         obj_dir = os.path.dirname(os.path.abspath(path))
 
@@ -1577,12 +1693,13 @@ class VTKViewer(QWidget):
         self._use_trimesh = use_trimesh
 
         if use_trimesh:
+            trimesh_instances = self._trimesh_world_instances(trimesh_scene)
             import numpy as np
             # trimesh加载成功，合并所有顶点用于KDTree
             all_verts = []
             if hasattr(trimesh_scene, 'geometry'):
                 # Scene: 多个材质mesh
-                for geom in trimesh_scene.geometry.values():
+                for _, geom in trimesh_instances:
                     if hasattr(geom, 'vertices'):
                         all_verts.append(np.array(geom.vertices))
                 print(f"[OBJ] trimesh: {len(trimesh_scene.geometry)} materials")
@@ -1593,11 +1710,11 @@ class VTKViewer(QWidget):
 
             combined_verts = np.vstack(all_verts) if all_verts else np.zeros((0, 3))
             n_pts = len(combined_verts)
-            n_tri = sum(g.faces.shape[0] for g in trimesh_scene.geometry.values()) if hasattr(trimesh_scene, 'geometry') else trimesh_scene.faces.shape[0]
+            n_tri = sum(len(g.faces) for _, g in trimesh_instances)
             print(f"[OBJ] Geometry: {n_pts} vertices, {n_tri} triangles")
 
             # 创建一个临时actor用于快速显示（用第一个材质的颜色）
-            first_geom = list(trimesh_scene.geometry.values())[0] if hasattr(trimesh_scene, 'geometry') else trimesh_scene
+            first_geom = trimesh_instances[0][1]
             tmp_pts = vtk.vtkPoints()
             for p in first_geom.vertices[:min(100, len(first_geom.vertices))]:
                 tmp_pts.InsertNextPoint(p)
@@ -1668,9 +1785,9 @@ class VTKViewer(QWidget):
         if has_multi_materials:
             print(f"[OBJ] Multi-material: {len(materials)} materials, {len(face_mtl_map)} face groups")
 
-        # 刷新UI让模型先显示出来
-        if hasattr(self, 'vtk_widget') and self.vtk_widget:
-            self.vtk_widget.GetRenderWindow().Render()
+        # 在世界原点创建坐标轴，并适配初始相机视角。
+        self._add_scene_axes()
+        self._update_view()
 
         # ── 延迟执行重操作（法线、KDTree、CellLocator、纹理） ──
         self._obj_deferred = {
@@ -1686,6 +1803,7 @@ class VTKViewer(QWidget):
             'opacity': opacity,
             'use_trimesh': use_trimesh,
             'trimesh_scene': trimesh_scene if use_trimesh else None,
+            'trimesh_instances': trimesh_instances if use_trimesh else None,
             'combined_verts': combined_verts if use_trimesh else None,
         }
         from PyQt5.QtCore import QTimer
@@ -1927,6 +2045,7 @@ class VTKViewer(QWidget):
         if hasattr(self, 'vtk_widget') and self.vtk_widget:
             self.vtk_widget.GetRenderWindow().Render()
 
+        self.mesh_geometry_ready.emit()
         print("[OBJ] Deferred loading complete")
 
     def _deferred_obj_trimesh(self, info):
@@ -1936,6 +2055,7 @@ class VTKViewer(QWidget):
         import numpy as np
         from PIL import Image
         scene = info['trimesh_scene']
+        instances = info['trimesh_instances']
         combined_verts = info['combined_verts']
         opacity = info['opacity']
 
@@ -1948,7 +2068,7 @@ class VTKViewer(QWidget):
         print("[OBJ] trimesh: building actors from scene...")
 
         new_actors = []
-        for name, geom in scene.geometry.items():
+        for name, geom in instances:
             if not hasattr(geom, 'vertices') or len(geom.vertices) == 0:
                 continue
 
@@ -2078,7 +2198,7 @@ class VTKViewer(QWidget):
         # 合并所有面（需要偏移顶点索引）
         all_cells = vtk.vtkCellArray()
         offset = 0
-        for geom in scene.geometry.values():
+        for _, geom in instances:
             if not hasattr(geom, 'faces'):
                 continue
             for f in np.array(geom.faces, dtype=np.int64):
@@ -2353,6 +2473,31 @@ class VTKViewer(QWidget):
         self._stl_tree = None
         self._stl_cell_locator = None
 
+    def clear_point_cloud(self):
+        """释放点云或体素的渲染对象及其查询缓存。"""
+        self._remove_legend()
+        self._clear_voxel_coverage()
+        actors = [self._cloud_actor]
+        if self._voxel_actor is not None and self._voxel_actor is not self._cloud_actor:
+            actors.append(self._voxel_actor)
+        for actor in actors:
+            if actor is None:
+                continue
+            self.renderer.RemoveActor(actor)
+            while actor in self._actors:
+                self._actors.remove(actor)
+        self._cloud_actor = None
+        self._voxel_actor = None
+        self.points_data = None
+        self._cloud_tree = None
+        self._voxel_dict = {}
+        self._voxel_mn = None
+        self._voxel_indices = None
+        self._voxel_centers = None
+        self._voxel_surface_faces = None
+        self._clip_bounds = None
+        self.clear_clip_planes()
+
     def _setup_fpv_keyboard(self):
         """设置FPV键盘事件"""
         rwi = self.interactor
@@ -2552,39 +2697,9 @@ class VTKViewer(QWidget):
     def _enter_fpv_camera(self):
         """进入FPV相机模式"""
         cam = self.renderer.GetActiveCamera()
-        # 获取数据源边界（点云或STL）
-        data_min = data_max = None
-        if self.points_data is not None and len(self.points_data) > 0:
-            data_min = self.points_data.min(axis=0)
-            data_max = self.points_data.max(axis=0)
-        elif self._stl_polydata is not None:
-            bounds = self._stl_polydata.GetBounds()  # (xmin,xmax,ymin,ymax,zmin,zmax)
-            data_min = np.array([bounds[0], bounds[2], bounds[4]])
-            data_max = np.array([bounds[1], bounds[3], bounds[5]])
-
-        # 使用用户设置的起始位置，或根据数据边界自动计算
-        if not hasattr(self, '_fpv_start_pos') or self._fpv_start_pos is None:
-            if data_min is not None:
-                center = (data_min + data_max) / 2
-                size = np.linalg.norm(data_max - data_min)
-                # 从侧前方稍高处看向中心
-                self._fpv_pos = center + np.array([-size * 0.4, -size * 0.4, size * 0.3])
-            else:
-                self._fpv_pos = np.array([0.0, 0.0, 0.0])
-        else:
-            self._fpv_pos = np.array(self._fpv_start_pos, dtype=float)
-
-        # 计算朝向数据几何中心的偏航角
-        if data_min is not None:
-            center = (data_min + data_max) / 2
-            dx = center[0] - self._fpv_pos[0]
-            dy = center[1] - self._fpv_pos[1]
-            if abs(dx) > 1e-6 or abs(dy) > 1e-6:
-                self._fpv_yaw = np.degrees(np.arctan2(dy, dx))
-            else:
-                self._fpv_yaw = 0.0
-        else:
-            self._fpv_yaw = 0.0
+        # FPV始终从世界坐标原点出发，初始朝向为+X轴。
+        self._fpv_pos = np.zeros(3, dtype=float)
+        self._fpv_yaw = 0.0
         self._fpv_pitch = 0.0
 
         cam.SetClippingRange(0.01, 500.0)
@@ -2630,6 +2745,7 @@ class VTKViewer(QWidget):
         cam.SetClippingRange(0.01, 500.0)
 
         self._restore_fpv_surface_representation()
+        self._update_pick_marker_scale()
 
         self._update_drone_model()
         if render and self.vtk_widget.GetRenderWindow():
@@ -2656,6 +2772,7 @@ class VTKViewer(QWidget):
         cam.SetViewAngle(self._fpv_fov)
 
         self._restore_fpv_surface_representation()
+        self._update_pick_marker_scale()
 
         self._update_drone_model()
         if render and self.vtk_widget.GetRenderWindow():
@@ -2723,15 +2840,11 @@ class VTKViewer(QWidget):
             cam.SetClippingRange(0.01, 500.0)
             if self.vtk_widget.GetRenderWindow():
                 self.vtk_widget.GetRenderWindow().Render()
-                # 渲染后再次强制裁剪范围，防止VTK内部重置
-                cam.SetClippingRange(0.01, 500.0)
-                # 调试：检查裁剪范围是否被VTK重置
-                cr = cam.GetClippingRange()
-                cp = cam.GetPosition()
-                print(f"[FPV] cam=({cp[0]:.2f},{cp[1]:.2f},{cp[2]:.2f}) clip=({cr[0]:.4f},{cr[1]:.1f})")
         return moved
 
     def clear_actors(self):
+        self._clear_voxel_coverage()
+        self._clear_coord_labels()
         self._remove_legend()
         for actor in self._actors:
             self.renderer.RemoveActor(actor)
@@ -2747,11 +2860,11 @@ class VTKViewer(QWidget):
             self._actors.append(a)
 
     def add_point_cloud(self, points, render_mode='auto', point_size=0.05, colors=None, normals=None, reset_camera=True, use_lighting=True):
-        """显示点云（支持球体/立方体/像素/圆片渲染模式）
+        """显示点云（支持球体、立方体和像素渲染模式）。
         colors: (N, 3) uint8 外部传入的RGB颜色，为None时按高度着色
-        normals: (N, 3) 法线数组，render_mode='splat'时用于圆片朝向
+        normals: 可选点云法线
         reset_camera: 是否重置相机视角
-        use_lighting: 是否启用光照（高度着色等方案应关闭，避免不同视角颜色不一致）
+        use_lighting: 是否启用光照
         """
         if not self._vtk_available or len(points) == 0:
             return
@@ -2765,6 +2878,7 @@ class VTKViewer(QWidget):
                 normals = normals[valid]
         if len(points) == 0:
             return
+        self.clear_stl_mesh()
         self.clear_actors()
         self._add_scene_axes()
         self.points_data = points
@@ -2846,33 +2960,8 @@ class VTKViewer(QWidget):
         SPHERE_THRESHOLD = 200_000
         # 高程着色时不用 glyph（避免球面插值冲淡颜色），用 GL_POINTS 区分大小
         use_glyph = use_lighting and ((render_mode in ('sphere', 'cube')) or (render_mode == 'auto' and len(render_points) <= SPHERE_THRESHOLD))
-        use_splat = (render_mode == 'splat')
 
-        if use_splat and normals is not None:
-            # 圆片渲染模式：每个点显示为朝法线方向的圆片
-            vtk_normals = self._numpy_to_vtk(normals.astype(np.float32), deep=True, array_type=self._vtk.VTK_FLOAT)
-            vtk_normals.SetName('Normals')
-            polydata.GetPointData().SetNormals(vtk_normals)
-
-            src = self._vtk.vtkRegularPolygonSource()
-            src.SetRadius(point_size)
-            src.SetNumberOfSides(12)
-            src.SetNormal(0, 0, 1)  # 默认法线，会被glyph旋转
-            src.Update()
-
-            glyph = self._vtkGlyph3D()
-            glyph.SetInputData(polydata)
-            glyph.SetSourceConnection(src.GetOutputPort())
-            glyph.SetVectorModeToUseNormal()
-            glyph.OrientOn()
-            glyph.SetScaleModeToDataScalingOff()
-            glyph.Update()
-            mapper = self._vtkPolyDataMapper()
-            mapper.SetInputConnection(glyph.GetOutputPort())
-            mapper.ScalarVisibilityOn()
-            mapper.SetScalarModeToUsePointData()
-            mapper.SetColorModeToDirectScalars()
-        elif use_glyph:
+        if use_glyph:
             if render_mode == 'cube':
                 src = self._vtkCubeSource()
                 src.SetXLength(point_size * 2)
@@ -2883,13 +2972,20 @@ class VTKViewer(QWidget):
                 src.SetRadius(point_size)
                 src.SetThetaResolution(6)
                 src.SetPhiResolution(6)
-            glyph = self._vtkGlyph3D()
-            glyph.SetInputData(polydata)
-            glyph.SetSourceConnection(src.GetOutputPort())
-            glyph.ScalingOff()
-            glyph.Update()
-            mapper = self._vtkPolyDataMapper()
-            mapper.SetInputConnection(glyph.GetOutputPort())
+
+            if self._vtkGlyph3DMapper is not None:
+                mapper = self._vtkGlyph3DMapper()
+                mapper.SetInputData(polydata)
+                mapper.SetSourceConnection(src.GetOutputPort())
+                mapper.ScalingOff()
+            else:
+                glyph = self._vtkGlyph3D()
+                glyph.SetInputData(polydata)
+                glyph.SetSourceConnection(src.GetOutputPort())
+                glyph.ScalingOff()
+                glyph.Update()
+                mapper = self._vtkPolyDataMapper()
+                mapper.SetInputConnection(glyph.GetOutputPort())
             mapper.ScalarVisibilityOn()
             mapper.SetScalarModeToUsePointData()
             mapper.SetColorModeToDirectScalars()
@@ -2907,7 +3003,7 @@ class VTKViewer(QWidget):
         actor.SetMapper(mapper)
         if not use_glyph:
             # 按渲染模式区分点大小：球体>立方体>自动>像素
-            size_multiplier = {'sphere': 80, 'cube': 60, 'auto': 40, 'pixel': 40, 'splat': 40}.get(render_mode, 40)
+            size_multiplier = {'sphere': 80, 'cube': 60, 'auto': 40, 'pixel': 40}.get(render_mode, 40)
             actor.GetProperty().SetPointSize(max(1, int(point_size * size_multiplier)))
 
         # 增强光照：提高棱角辨识度
@@ -2919,12 +3015,6 @@ class VTKViewer(QWidget):
             prop.SetSpecularPower(20)
         else:
             prop.LightingOff()
-            # 圆片模式保留少量环境光，让法线朝向差异可见
-            if use_splat:
-                prop.LightingOn()
-                prop.SetAmbient(0.8)
-                prop.SetDiffuse(0.2)
-                prop.SetSpecular(0.0)
 
         self.renderer.AddActor(actor)
         self._actors.append(actor)
@@ -2946,6 +3036,7 @@ class VTKViewer(QWidget):
         if len(points) == 0:
             return
 
+        self.clear_stl_mesh()
         self.clear_actors()
         self._add_scene_axes()
         self.points_data = points
@@ -2959,43 +3050,32 @@ class VTKViewer(QWidget):
         mn -= voxel_size
         mx += voxel_size
 
-        # 将点云离散到体素网格
+        # 使用NumPy一次完成体素去重和统计，避免逐点Python字典循环。
         voxel_idx = ((points - mn) / voxel_size).astype(np.int64)
-        # 用字典统计每个体素：key=(ix,iy,iz) → count
-        voxel_dict = {}
-        for i in range(len(voxel_idx)):
-            key = (voxel_idx[i, 0], voxel_idx[i, 1], voxel_idx[i, 2])
-            voxel_dict[key] = voxel_dict.get(key, 0) + 1
-
-        n_voxels = len(voxel_dict)
+        unique_idx, counts = np.unique(voxel_idx, axis=0, return_counts=True)
+        n_voxels = len(unique_idx)
         print(f"[VoxelGrid] size={voxel_size}m, {n_voxels} voxels from {len(points)} points")
         print(f"[VoxelGrid] bounds: x=[{mn[0]:.1f},{mx[0]:.1f}] y=[{mn[1]:.1f},{mx[1]:.1f}] z=[{mn[2]:.1f},{mx[2]:.1f}]")
 
         if n_voxels == 0:
             return
 
+        centers = mn + (unique_idx.astype(np.float64) + 0.5) * voxel_size
+        voxel_dict = {tuple(index): int(count) for index, count in zip(unique_idx, counts)}
         z_range = mx[2] - mn[2] if mx[2] > mn[2] else 1.0
+        heights = np.clip((centers[:, 2] - mn[2]) / z_range, 0.0, 1.0)
+        color_np = np.empty((n_voxels, 3), dtype=np.uint8)
+        color_np[:, 0] = np.interp(heights, [0.0, 0.5, 0.75, 1.0], [0, 0, 255, 255]).astype(np.uint8)
+        color_np[:, 1] = np.interp(heights, [0.0, 0.25, 0.5, 0.75, 1.0], [0, 255, 255, 0, 0]).astype(np.uint8)
+        color_np[:, 2] = np.interp(heights, [0.0, 0.25, 0.5, 1.0], [255, 255, 0, 0]).astype(np.uint8)
+
         vtk_pts = self._vtkPoints()
-        vtk_colors = vtk.vtkUnsignedCharArray()
+        vtk_pts.SetData(self._numpy_to_vtk(centers, deep=True))
+        vtk_colors = self._numpy_to_vtk(
+            np.ascontiguousarray(color_np), deep=True, array_type=vtk.VTK_UNSIGNED_CHAR
+        )
         vtk_colors.SetNumberOfComponents(3)
         vtk_colors.SetName('Colors')
-
-        def _height_color(z):
-            t = (z - mn[2]) / z_range
-            if t < 0.25:
-                return 0, int(4*t*255), 255
-            elif t < 0.5:
-                return 0, 255, int((1-4*(t-0.25))*255)
-            elif t < 0.75:
-                return int(4*(t-0.5)*255), 255, 0
-            else:
-                return 255, int((1-4*(t-0.75))*255), 0
-
-        for (ix, iy, iz), count in voxel_dict.items():
-            center = mn + np.array([ix + 0.5, iy + 0.5, iz + 0.5]) * voxel_size
-            vtk_pts.InsertNextPoint(center.tolist())
-            r, g, b = _height_color(center[2])
-            vtk_colors.InsertNextTuple3(r, g, b)
 
         polydata = self._vtkPolyData()
         polydata.SetPoints(vtk_pts)
@@ -3041,82 +3121,225 @@ class VTKViewer(QWidget):
         self._voxel_size = voxel_size
         self._voxel_dict = voxel_dict
         self._voxel_mn = mn
+        self._voxel_indices = unique_idx
+        self._voxel_centers = centers
+        self._voxel_surface_faces = None
 
         if reset_camera and not getattr(self, 'fpv_mode', False):
             self.renderer.ResetCamera()
         self._update_view(reset_camera=reset_camera)
+
+    def _clear_voxel_coverage(self):
+        """移除体素航线覆盖叠加层。"""
+        if self._voxel_coverage_actor is not None:
+            self.renderer.RemoveActor(self._voxel_coverage_actor)
+            self._voxel_coverage_actor = None
+
+    def _build_voxel_surface_faces(self):
+        """缓存可用于覆盖统计的体素外表面，限制采样量保证交互速度。"""
+        if self._voxel_surface_faces is not None:
+            return self._voxel_surface_faces
+        if self._voxel_indices is None or self._voxel_centers is None or not self._voxel_dict:
+            return None
+
+        total = len(self._voxel_indices)
+        max_voxels = 40000
+        if total > max_voxels:
+            sample_ids = np.random.default_rng(42).choice(total, max_voxels, replace=False)
+        else:
+            sample_ids = np.arange(total)
+        directions = np.array([
+            [1, 0, 0], [-1, 0, 0], [0, 1, 0],
+            [0, -1, 0], [0, 0, 1], [0, 0, -1],
+        ], dtype=np.int64)
+        centers = []
+        normals = []
+        for sample_id in sample_ids:
+            index = self._voxel_indices[sample_id]
+            center = self._voxel_centers[sample_id]
+            for direction in directions:
+                if tuple(index + direction) not in self._voxel_dict:
+                    centers.append(center + direction * (self._voxel_size * 0.5))
+                    normals.append(direction)
+        if not centers:
+            return None
+        self._voxel_surface_faces = {
+            'centers': np.asarray(centers, dtype=np.float64),
+            'normals': np.asarray(normals, dtype=np.float64),
+        }
+        print(f"[Coverage] cached {len(centers)} voxel surface faces from {len(sample_ids)} voxels")
+        return self._voxel_surface_faces
+
+    def _voxel_visible_face_ids(self, pos, target):
+        """按云台视锥和深度分桶近似遮挡，返回当前实际可见的体素面。"""
+        faces = self._build_voxel_surface_faces()
+        if faces is None:
+            return np.empty(0, dtype=np.int64)
+        pos = np.asarray(pos, dtype=np.float64)
+        forward = np.asarray(target, dtype=np.float64) - pos
+        length = np.linalg.norm(forward)
+        if length < 1e-6:
+            return np.empty(0, dtype=np.int64)
+        forward /= length
+        right = np.cross(forward, np.array([0.0, 0.0, 1.0]))
+        if np.linalg.norm(right) < 1e-6:
+            right = np.array([1.0, 0.0, 0.0])
+        else:
+            right /= np.linalg.norm(right)
+        up = np.cross(right, forward)
+        centers = faces['centers']
+        relative = centers - pos
+        depth = relative @ forward
+        horizontal = relative @ right
+        vertical = relative @ up
+        distance = np.linalg.norm(relative, axis=1)
+        hfov_limit = math.tan(math.radians(self._camera_hfov * 0.5))
+        vfov_limit = math.tan(math.radians(self._camera_vfov * 0.5))
+        facing = np.einsum('ij,ij->i', faces['normals'], -relative) > distance * 0.03
+        valid = ((depth > max(0.05, self._voxel_size * 0.25)) & facing &
+                 (np.abs(horizontal) <= depth * hfov_limit) &
+                 (np.abs(vertical) <= depth * vfov_limit))
+        ids = np.flatnonzero(valid)
+        if not len(ids):
+            return ids
+        # 低分辨率深度缓冲：每个投影格仅保留最近体素面，避免显示被遮挡的背面。
+        grid_w, grid_h = 120, 90
+        u = np.clip(((horizontal[ids] / depth[ids] / hfov_limit) + 1.0) * 0.5, 0.0, 0.999999)
+        v = np.clip(((vertical[ids] / depth[ids] / vfov_limit) + 1.0) * 0.5, 0.0, 0.999999)
+        bins = (v * grid_h).astype(np.int32) * grid_w + (u * grid_w).astype(np.int32)
+        nearest = np.full(grid_w * grid_h, np.inf)
+        np.minimum.at(nearest, bins, depth[ids])
+        tolerance = max(self._voxel_size * 1.75, 0.05)
+        return ids[depth[ids] <= nearest[bins] + tolerance]
+
+    def _create_voxel_coverage_actor(self, face_ids, counts, opacity, max_faces):
+        faces = self._build_voxel_surface_faces()
+        if faces is None or len(face_ids) == 0:
+            return None
+        if len(face_ids) > max_faces:
+            face_ids = face_ids[np.linspace(0, len(face_ids) - 1, max_faces, dtype=np.int64)]
+        centers = faces['centers'][face_ids]
+        normals = faces['normals'][face_ids]
+        half = self._voxel_size * 0.501
+        u = np.zeros_like(normals)
+        v = np.zeros_like(normals)
+        x_faces = np.abs(normals[:, 0]) > 0.5
+        y_faces = np.abs(normals[:, 1]) > 0.5
+        u[x_faces] = (0.0, 1.0, 0.0); v[x_faces] = (0.0, 0.0, 1.0)
+        u[y_faces] = (1.0, 0.0, 0.0); v[y_faces] = (0.0, 0.0, 1.0)
+        z_faces = ~(x_faces | y_faces)
+        u[z_faces] = (1.0, 0.0, 0.0); v[z_faces] = (0.0, 1.0, 0.0)
+        corners = np.stack([
+            centers - u * half - v * half, centers + u * half - v * half,
+            centers + u * half + v * half, centers - u * half + v * half,
+        ], axis=1)
+        color = np.zeros((len(face_ids), 3), dtype=np.uint8)
+        level = counts[face_ids]
+        color[level == 1] = (0, 220, 255)
+        color[level == 2] = (255, 205, 0)
+        color[level >= 3] = (255, 70, 60)
+        vtk_points = self._vtkPoints()
+        vtk_points.SetData(self._numpy_to_vtk(corners.reshape(-1, 3), deep=True))
+        cells = self._vtkCellArray()
+        for i in range(len(face_ids)):
+            cells.InsertNextCell(4)
+            base = i * 4
+            for point_id in range(base, base + 4):
+                cells.InsertCellPoint(point_id)
+        polydata = self._vtkPolyData()
+        polydata.SetPoints(vtk_points)
+        polydata.SetPolys(cells)
+        rgba = np.column_stack([np.repeat(color, 4, axis=0), np.full(len(face_ids) * 4, int(opacity * 255), dtype=np.uint8)])
+        scalars = self._numpy_to_vtk(rgba, deep=True, array_type=self._vtk.VTK_UNSIGNED_CHAR)
+        scalars.SetNumberOfComponents(4)
+        polydata.GetPointData().SetScalars(scalars)
+        mapper = self._vtkPolyDataMapper()
+        mapper.SetInputData(polydata)
+        mapper.SetColorModeToDirectScalars()
+        actor = self._vtkActor()
+        actor.SetMapper(mapper)
+        actor.GetProperty().SetLighting(False)
+        actor.GetProperty().BackfaceCullingOff()
+        return actor
+
+    def _update_voxel_route_coverage(self, waypoints):
+        """生成累计覆盖层：青=一次，黄=两次，红=三次及以上。"""
+        self._clear_voxel_coverage()
+        faces = self._build_voxel_surface_faces()
+        if faces is None:
+            return
+        counts = np.zeros(len(faces['centers']), dtype=np.uint16)
+        for wp in waypoints:
+            if 'target_pos' not in wp:
+                continue
+            visible = self._voxel_visible_face_ids(wp['pos'], wp['target_pos'])
+            counts[visible] += 1
+        covered = np.flatnonzero(counts)
+        actor = self._create_voxel_coverage_actor(covered, counts, opacity=0.58, max_faces=70000)
+        if actor is not None:
+            self.renderer.AddActor(actor)
+            self._voxel_coverage_actor = actor
+            print(f"[Coverage] {len(covered)} visible voxel faces covered by route")
+
+    def _update_voxel_animation_coverage(self, wp):
+        """动画期间仅高亮当前云台可见体素面。"""
+        if 'target_pos' not in wp:
+            return
+        visible = self._voxel_visible_face_ids(wp['pos'], wp['target_pos'])
+        if not len(visible):
+            return
+        counts = np.ones(len(self._build_voxel_surface_faces()['centers']), dtype=np.uint8)
+        actor = self._create_voxel_coverage_actor(visible, counts, opacity=0.72, max_faces=18000)
+        if actor is not None:
+            self.renderer.AddActor(actor)
+            self._anim_coverage_actor = actor
 
     def _remove_legend(self):
         """移除已有的图例"""
         if hasattr(self, '_legend_actors'):
             for a in self._legend_actors:
                 self.renderer.RemoveActor(a)
+                self.renderer.RemoveActor2D(a)
             self._legend_actors.clear()
-
     def show_height_legend(self, z_min, z_max):
-        """显示高程颜色图例（彩色标注 + 最小/最大高度）"""
+        """显示连续彩虹高程柱与数值刻度。"""
         if not self._vtk_available:
             return
         self._remove_legend()
         self._legend_actors = []
 
-        font_size = 13
-        # 颜色条标注：高→低，红→黄→绿→青→蓝
-        # 对应 height 着色方案的 5 个区间
-        color_labels = [
-            ("%.1fm" % z_max, (1.0, 0.0, 0.0), 0.92),   # 红 (最高)
-            ("", (1.0, 1.0, 0.0), 0.82),                  # 黄
-            ("", (0.0, 1.0, 0.0), 0.72),                  # 绿
-            ("", (0.0, 1.0, 1.0), 0.62),                  # 青
-            ("%.1fm" % z_min, (0.0, 0.0, 1.0), 0.52),    # 蓝 (最低)
-        ]
+        vtk = self._vtk
+        lut = vtk.vtkLookupTable()
+        lut.SetNumberOfTableValues(256)
+        lut.SetRange(z_min, z_max if z_max > z_min else z_min + 1.0)
+        for i in range(256):
+            t = i / 255.0
+            if t < 0.25:
+                color = (0.0, t * 4.0, 1.0)
+            elif t < 0.5:
+                color = (0.0, 1.0, (0.5 - t) * 4.0)
+            elif t < 0.75:
+                color = ((t - 0.5) * 4.0, 1.0, 0.0)
+            else:
+                color = (1.0, (1.0 - t) * 4.0, 0.0)
+            lut.SetTableValue(i, color[0], color[1], color[2], 1.0)
+        lut.Build()
 
-        # 标题
-        title = self._vtkTextActor()
-        title.SetInput("高程")
-        tp = title.GetTextProperty()
-        tp.SetFontSize(font_size + 2)
-        tp.SetColor(1.0, 1.0, 1.0)
-        tp.SetBold(True)
-        tp.SetShadow(True)
-        coord = title.GetPositionCoordinate()
-        coord.SetCoordinateSystemToNormalizedViewport()
-        coord.SetValue(0.88, 0.95)
-        self.renderer.AddActor(title)
-        self._legend_actors.append(title)
-
-        # 颜色块 + 标注
-        for label, color, y_pos in color_labels:
-            # 彩色方块用 ■ 字符表示
-            block = self._vtkTextActor()
-            block.SetInput("■")
-            tp = block.GetTextProperty()
-            tp.SetFontSize(font_size + 4)
-            tp.SetColor(*color)
-            tp.SetBold(True)
-            tp.SetShadow(False)
-            coord = block.GetPositionCoordinate()
-            coord.SetCoordinateSystemToNormalizedViewport()
-            coord.SetValue(0.88, y_pos)
-            self.renderer.AddActor(block)
-            self._legend_actors.append(block)
-
-            # 高度标签
-            if label:
-                ta = self._vtkTextActor()
-                ta.SetInput(label)
-                tp = ta.GetTextProperty()
-                tp.SetFontSize(font_size)
-                tp.SetColor(1.0, 1.0, 1.0)
-                tp.SetBold(True)
-                tp.SetShadow(True)
-                coord = ta.GetPositionCoordinate()
-                coord.SetCoordinateSystemToNormalizedViewport()
-                coord.SetValue(0.92, y_pos)
-                self.renderer.AddActor(ta)
-                self._legend_actors.append(ta)
-        self._legend_actors.append(title)
-
+        bar = vtk.vtkScalarBarActor()
+        bar.SetLookupTable(lut)
+        bar.SetTitle("高程 (m)")
+        bar.SetNumberOfLabels(3)
+        bar.SetPosition(0.87, 0.20)
+        bar.SetWidth(0.10)
+        bar.SetHeight(0.55)
+        bar.SetMaximumWidthInPixels(42)
+        bar.SetMaximumHeightInPixels(260)
+        bar.GetTitleTextProperty().SetColor(1.0, 1.0, 1.0)
+        bar.GetTitleTextProperty().SetBold(True)
+        bar.GetLabelTextProperty().SetColor(1.0, 1.0, 1.0)
+        bar.GetLabelTextProperty().SetFontSize(13)
+        self.renderer.AddActor2D(bar)
+        self._legend_actors.append(bar)
         self._update_view(reset_camera=False)
 
     @staticmethod
@@ -3182,10 +3405,11 @@ class VTKViewer(QWidget):
         normals[neg_mask] *= -1
         # Z分量接近0的，用Y方向统一
         zero_z = np.abs(normals[:, 2]) < 0.1
-        if zero_z.any():
-            neg_y = normals[zero_z, 1] < 0
-            normals[zero_z][neg_y] *= -1
-
+        # Z分量接近0的，用Y方向统一。
+        zero_z_indices = np.flatnonzero(np.abs(normals[:, 2]) < 0.1)
+        if len(zero_z_indices) > 0:
+            neg_y = normals[zero_z_indices, 1] < 0
+            normals[zero_z_indices[neg_y]] *= -1
         return normals
 
     @staticmethod
@@ -3299,11 +3523,11 @@ class VTKViewer(QWidget):
             return False
         cos_angle = np.dot(d1, d2) / (n1 * n2)
         return cos_angle < np.cos(np.radians(30))
-
-    def add_route(self, waypoints, reset_camera=True):
+    def add_route(self, waypoints, reset_camera=True, show_segment_distances=False):
         """显示航线和航点"""
         if not self._vtk_available or len(waypoints) == 0:
             return
+        self._clear_coord_labels()
 
         # 清除多边形平面残留
         if self._poly_surface_actor:
@@ -3422,6 +3646,14 @@ class VTKViewer(QWidget):
             label_offset = avg_d * 0.08
         else:
             label_offset = 0.2
+        if show_segment_distances and n <= 100:
+            for i in range(n - 1):
+                p1 = np.asarray(waypoints[i]['pos'], dtype=float)
+                p2 = np.asarray(waypoints[i + 1]['pos'], dtype=float)
+                mid = (p1 + p2) / 2.0
+                mid[2] += label_offset * 1.4
+                text = f"{np.linalg.norm(p2 - p1):.2f}m"
+                self._add_route_overlay_label(text, mid, font_size=11)
 
         if n > BATCH_THRESHOLD:
             # ── 批量模式：用 vtkGlyph3D 一次性渲染所有球体 ──
@@ -3470,61 +3702,27 @@ class VTKViewer(QWidget):
 
             # 标签只在少量航点时显示
             for i, wp in enumerate(waypoints):
-                lbl_pos = [wp['pos'][0], wp['pos'][1], wp['pos'][2] + label_offset * 2]
-                lbl_scale = label_offset * 0.5
-
-                # 背景标签（黑色，稍偏移形成阴影）
-                bg = self._vtkBillboardTextActor3D()
-                bg.SetInput(str(i + 1))
-                bg.SetPosition(lbl_pos[0] + lbl_scale * 0.05, lbl_pos[1] + lbl_scale * 0.05, lbl_pos[2] - lbl_scale * 0.05)
-                bg.SetScale(lbl_scale, lbl_scale, lbl_scale)
-                bg.GetTextProperty().SetColor(0.0, 0.0, 0.0)
-                bg.GetTextProperty().SetFontSize(18)
-                bg.GetTextProperty().SetBold(True)
-                self.renderer.AddActor(bg)
-                self._actors.append(bg)
-
-                # 前景标签（亮黄色）
-                fg = self._vtkBillboardTextActor3D()
-                fg.SetInput(str(i + 1))
-                fg.SetPosition(lbl_pos[0], lbl_pos[1], lbl_pos[2])
-                fg.SetScale(lbl_scale, lbl_scale, lbl_scale)
-                fg.GetTextProperty().SetColor(1.0, 1.0, 0.0)
-                fg.GetTextProperty().SetFontSize(18)
-                fg.GetTextProperty().SetBold(True)
-                self.renderer.AddActor(fg)
-                self._actors.append(fg)
+                lbl_pos = [
+                    wp['pos'][0],
+                    wp['pos'][1],
+                    wp['pos'][2] + label_offset * 2,
+                ]
+                self._add_route_overlay_label(str(i + 1), lbl_pos, font_size=11)
 
         # ── 首尾航点坐标标签 ──
-        coord_scale = label_offset * 0.6
         for idx, tag in [(0, "首"), (n - 1, "末")] if n >= 2 else [(0, "首")]:
-            wp = waypoints[idx]
-            p = wp['pos']
+            p = waypoints[idx]['pos']
             coord_text = f"{tag}点({p[0]:.1f},{p[1]:.1f},{p[2]:.1f})"
-            # 背景（黑色阴影）
-            bg = self._vtkBillboardTextActor3D()
-            bg.SetInput(coord_text)
-            bg.SetPosition(p[0] + coord_scale * 0.04, p[1] + coord_scale * 0.04, p[2] + label_offset * 3 + coord_scale * 0.04)
-            bg.SetScale(coord_scale, coord_scale, coord_scale)
-            bg.GetTextProperty().SetColor(0.0, 0.0, 0.0)
-            bg.GetTextProperty().SetFontSize(16)
-            bg.GetTextProperty().SetBold(True)
-            self.renderer.AddActor(bg)
-            self._actors.append(bg)
-            # 前景（青色）
-            fg = self._vtkBillboardTextActor3D()
-            fg.SetInput(coord_text)
-            fg.SetPosition(p[0], p[1], p[2] + label_offset * 3)
-            fg.SetScale(coord_scale, coord_scale, coord_scale)
-            fg.GetTextProperty().SetColor(0.0, 1.0, 1.0)
-            fg.GetTextProperty().SetFontSize(16)
-            fg.GetTextProperty().SetBold(True)
-            self.renderer.AddActor(fg)
-            self._actors.append(fg)
+            world_pos = np.array([p[0], p[1], p[2] + label_offset * 3], dtype=float)
+            self._add_route_overlay_label(coord_text, world_pos, font_size=12)
+        self._update_coord_labels()
+        if hasattr(self, '_view_frame'):
+            self._view_frame.raise_()
 
         # ── 相机覆盖区域投影（显示重叠率）──
         has_target = any('target_pos' in wp for wp in waypoints)
-        if has_target and getattr(self, '_coverage_enabled', True):
+        has_surface_coverage = any(wp.get('surface_coverage', False) for wp in waypoints)
+        if has_target and getattr(self, '_coverage_enabled', True) and self._voxel_actor is None and not has_surface_coverage:
             hfov_rad = math.radians(self._camera_hfov)
             vfov_rad = math.radians(self._camera_vfov)
             headings = self._compute_forward_headings(waypoints)
@@ -3621,6 +3819,11 @@ class VTKViewer(QWidget):
                 edge_actor.SetPosition(0, 0, 0.01)
                 self.renderer.AddActor(edge_actor)
                 self._actors.append(edge_actor)
+
+        if has_target and getattr(self, '_coverage_enabled', True) and self._voxel_actor is not None:
+            self._update_voxel_route_coverage(waypoints)
+        elif self._voxel_actor is not None:
+            self._clear_voxel_coverage()
 
         # ── 机头方向箭头 ──
         if self.show_heading:
@@ -3861,7 +4064,102 @@ class VTKViewer(QWidget):
         min_idx = np.argmin(dists)
         if dists[min_idx] < 1.5:  # 射线经过点云附近
             return self.points_data[idxs[min_idx]]
+    def _pick_voxel_surface(self, screen_x, screen_y):
+        """拾取体素立方体的可见表面交点和法线。"""
+        if self._voxel_actor is None:
+            return None
+        picker = self._vtk.vtkCellPicker()
+        picker.PickFromListOn()
+        picker.AddPickList(self._voxel_actor)
+        picker.SetTolerance(0.01)
+        if not picker.Pick(screen_x, screen_y, 0, self.renderer):
+            return None
+
+        pos = np.asarray(picker.GetPickPosition(), dtype=float)
+        normal = np.asarray(picker.GetPickNormal(), dtype=float)
+        normal_len = np.linalg.norm(normal)
+        if normal_len > 1e-10:
+            normal /= normal_len
+            viewer_pos = np.asarray(self.renderer.GetActiveCamera().GetPosition(), dtype=float)
+            if np.dot(normal, viewer_pos - pos) < 0:
+                normal = -normal
+            self._picked_normal = normal
+        else:
+            self._picked_normal = np.array([0.0, 0.0, 1.0])
+        return pos
+
         return None
+
+    def voxel_ray_first_hit(self, start, end):
+        """返回线段进入的第一个实心体素表面点；没有命中时返回 None。"""
+        if not self._voxel_dict or self._voxel_mn is None or self._voxel_size <= 0:
+            return None
+        start = np.asarray(start, dtype=float)
+        end = np.asarray(end, dtype=float)
+        grid_start = (start - self._voxel_mn) / self._voxel_size
+        grid_end = (end - self._voxel_mn) / self._voxel_size
+        direction = grid_end - grid_start
+        if np.linalg.norm(direction) <= 1e-10:
+            return None
+        cell = np.floor(grid_start).astype(np.int64)
+        step = np.sign(direction).astype(np.int64)
+        t_max = np.full(3, np.inf, dtype=float)
+        t_delta = np.full(3, np.inf, dtype=float)
+        for axis in range(3):
+            if direction[axis] > 1e-12:
+                t_max[axis] = (cell[axis] + 1.0 - grid_start[axis]) / direction[axis]
+                t_delta[axis] = 1.0 / direction[axis]
+            elif direction[axis] < -1e-12:
+                t_max[axis] = (grid_start[axis] - cell[axis]) / -direction[axis]
+                t_delta[axis] = -1.0 / direction[axis]
+        t = 0.0
+        while t <= 1.0 + 1e-9:
+            if tuple(cell) in self._voxel_dict:
+                return start + (end - start) * max(0.0, min(1.0, t))
+            axis = int(np.argmin(t_max))
+            t = t_max[axis]
+            cell[axis] += step[axis]
+            t_max[axis] += t_delta[axis]
+        return None
+
+    def voxel_ray_is_occluded(self, start, end):
+        """检测射线是否在到达目标体素前穿过其他实心体素。"""
+        if not self._voxel_dict or self._voxel_mn is None or self._voxel_size <= 0:
+            return False
+
+        start = np.asarray(start, dtype=float)
+        end = np.asarray(end, dtype=float)
+        segment = end - start
+        length = float(np.linalg.norm(segment))
+        if length <= 1e-8:
+            return False
+
+        grid_start = (start - self._voxel_mn) / self._voxel_size
+        grid_end = (end - self._voxel_mn) / self._voxel_size
+        direction = grid_end - grid_start
+        cell = np.floor(grid_start).astype(np.int64)
+        step = np.sign(direction).astype(np.int64)
+
+        t_max = np.full(3, np.inf, dtype=float)
+        t_delta = np.full(3, np.inf, dtype=float)
+        for axis in range(3):
+            if direction[axis] > 1e-12:
+                t_max[axis] = (cell[axis] + 1.0 - grid_start[axis]) / direction[axis]
+                t_delta[axis] = 1.0 / direction[axis]
+            elif direction[axis] < -1e-12:
+                t_max[axis] = (grid_start[axis] - cell[axis]) / -direction[axis]
+                t_delta[axis] = -1.0 / direction[axis]
+
+        t = 0.0
+        while t <= 1.0 + 1e-9:
+            if tuple(cell) in self._voxel_dict:
+                # 只允许最终命中被选中的目标体素，任何更早的体素都是遮挡。
+                return length * (1.0 - t) > self._voxel_size * 1.1
+            axis = int(np.argmin(t_max))
+            t = t_max[axis]
+            cell[axis] += step[axis]
+            t_max[axis] += t_delta[axis]
+        return False
 
     def _pick_3d(self, screen_x, screen_y, z_plane=None):
         """屏幕坐标拾取3D点
@@ -3874,6 +4172,10 @@ class VTKViewer(QWidget):
         # FPV模式下使用相机参数直接计算射线
         if self.fpv_mode:
             return self._fpv_pick(screen_x, screen_y)
+
+        voxel_pos = self._pick_voxel_surface(screen_x, screen_y)
+        if voxel_pos is not None:
+            return voxel_pos
 
         # 0) 优先：STL/OBJ 表面拾取
         mesh_actors = self._get_all_mesh_actors()
@@ -3974,6 +4276,10 @@ class VTKViewer(QWidget):
                 if normal is not None:
                     self._picked_normal = normal
                 return pos
+
+        voxel_pos = self._pick_voxel_surface(screen_x, screen_y)
+        if voxel_pos is not None:
+            return voxel_pos
 
         if self.points_data is None or len(self.points_data) == 0:
             return None
@@ -4204,21 +4510,24 @@ class VTKViewer(QWidget):
         self._place_preview_pos = pos
 
         sphere = self._vtkSphereSource()
-        sphere.SetCenter(pos.tolist())
-        sphere.SetRadius(0.2)
+        sphere.SetCenter(0.0, 0.0, 0.0)
+        sphere.SetRadius(0.1)
         sphere.Update()
         m = self._vtkPolyDataMapper()
         m.SetInputConnection(sphere.GetOutputPort())
         a = self._vtkActor()
         a.SetMapper(m)
+        a.SetPosition(pos.tolist())
         a.GetProperty().SetColor(1.0, 0.8, 0.0)
         a.GetProperty().SetOpacity(0.7)
         self.renderer.AddActor(a)
         self._place_preview_actor = a
+        self._register_pick_marker(a, 0.1)
         self.vtk_widget.GetRenderWindow().Render()
 
     def _clear_place_preview(self):
         if self._place_preview_actor:
+            self._unregister_pick_markers([self._place_preview_actor])
             self.renderer.RemoveActor(self._place_preview_actor)
             self._place_preview_actor = None
 
@@ -4232,17 +4541,19 @@ class VTKViewer(QWidget):
         self._poly_normals.append(normal)
 
         sphere = self._vtkSphereSource()
-        sphere.SetCenter(pos.tolist())
-        sphere.SetRadius(0.2)
+        sphere.SetCenter(0.0, 0.0, 0.0)
+        sphere.SetRadius(0.1)
         sphere.Update()
         m = self._vtkPolyDataMapper()
         m.SetInputConnection(sphere.GetOutputPort())
         a = self._vtkActor()
         a.SetMapper(m)
-        a.GetProperty().SetColor(1.0, 1.0, 0.0)
+        a.SetPosition(pos.tolist())
+        a.GetProperty().SetColor(1.0, 0.8, 0.0)
         a.GetProperty().SetLighting(False)
         self.renderer.AddActor(a)
         self._poly_markers.append(a)
+        self._register_pick_marker(a, 0.1)
 
         self._update_polygon_line()
         self.vtk_widget.GetRenderWindow().Render()
@@ -4316,6 +4627,7 @@ class VTKViewer(QWidget):
             self._poly_surface_actor = surf_actor
 
     def _clear_polygon(self):
+        self._unregister_pick_markers(self._poly_markers)
         for a in self._poly_markers:
             self.renderer.RemoveActor(a)
         self._poly_markers.clear()
@@ -4350,20 +4662,23 @@ class VTKViewer(QWidget):
         self._inspect_points.append((pos.copy(), normal.copy()))
         self._picked_normal = None  # 用完清掉
         sphere = self._vtkSphereSource()
-        sphere.SetCenter(pos.tolist())
-        sphere.SetRadius(0.2)
+        sphere.SetCenter(0.0, 0.0, 0.0)
+        sphere.SetRadius(0.1)
         sphere.Update()
         m = self._vtkPolyDataMapper()
         m.SetInputConnection(sphere.GetOutputPort())
         a = self._vtkActor()
         a.SetMapper(m)
+        a.SetPosition(pos.tolist())
         a.GetProperty().SetColor(1.0, 0.8, 0.0)  # 黄色
         a.GetProperty().SetLighting(False)
         self.renderer.AddActor(a)
         self._inspect_markers.append(a)
+        self._register_pick_marker(a, 0.1)
         self.vtk_widget.GetRenderWindow().Render()
 
     def _clear_inspect_points(self):
+        self._unregister_pick_markers(self._inspect_markers)
         for a in self._inspect_markers:
             self.renderer.RemoveActor(a)
         self._inspect_markers.clear()
@@ -4396,17 +4711,19 @@ class VTKViewer(QWidget):
         self._picked_normal = None
         idx = len(self._line_points) - 1  # 0=起点, 1=终点
         sphere = self._vtkSphereSource()
-        sphere.SetCenter(pos.tolist())
-        sphere.SetRadius(0.2)
+        sphere.SetCenter(0.0, 0.0, 0.0)
+        sphere.SetRadius(0.1)
         sphere.Update()
         m = self._vtkPolyDataMapper()
         m.SetInputConnection(sphere.GetOutputPort())
         a = self._vtkActor()
         a.SetMapper(m)
+        a.SetPosition(pos.tolist())
         a.GetProperty().SetColor(1.0, 0.8, 0.0)  # 与点状航线一致
         a.GetProperty().SetLighting(False)
         self.renderer.AddActor(a)
         self._line_markers.append(a)
+        self._register_pick_marker(a, 0.1)
         self.vtk_widget.GetRenderWindow().Render()
         # 实时通知主窗口更新坐标
         self.line_point_picked.emit(idx, pos.tolist())
@@ -4414,10 +4731,102 @@ class VTKViewer(QWidget):
             print("[Line] 已选起点和终点，右键确认生成航线")
 
     def _clear_line_points(self):
+        self._unregister_pick_markers(self._line_markers)
         for a in self._line_markers:
             self.renderer.RemoveActor(a)
         self._line_markers.clear()
         self._line_points.clear()
+
+    def _register_pick_marker(self, actor, base_radius):
+        self._pick_marker_actors.append((actor, base_radius))
+        self._update_pick_marker_scale()
+
+    def _unregister_pick_markers(self, actors):
+        actor_ids = {id(actor) for actor in actors if actor is not None}
+        if actor_ids:
+            self._pick_marker_actors = [
+                item for item in self._pick_marker_actors
+                if id(item[0]) not in actor_ids
+            ]
+
+    def _update_pick_marker_scale(self):
+        """让航线拾取点保持较小且稳定的屏幕尺寸。"""
+        if not self._pick_marker_actors:
+            return
+        cam = self.renderer.GetActiveCamera()
+        parallel = bool(cam.GetParallelProjection())
+        cam_pos = np.asarray(cam.GetPosition(), dtype=float)
+        half_fov_tan = math.tan(math.radians(cam.GetViewAngle()) / 2.0)
+        for actor, base_radius in self._pick_marker_actors:
+            if parallel:
+                view_height = 2.0 * cam.GetParallelScale()
+            else:
+                center = np.asarray(actor.GetPosition(), dtype=float)
+                distance = max(float(np.linalg.norm(cam_pos - center)), 1e-6)
+                view_height = 2.0 * distance * half_fov_tan
+            desired_radius = max(view_height * 0.005, 1e-6)
+            scale = desired_radius / base_radius
+            actor.SetScale(scale, scale, scale)
+
+    def _add_route_overlay_label(self, text, world_pos, font_size=11):
+        label = QLabel(text, self.vtk_widget)
+        label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        label.setStyleSheet(
+            "QLabel { color: #000000; background-color: #ffffff; "
+            "border: 1px solid #000000; padding: 3px 5px; "
+            f"font-size: {font_size}px; font-weight: bold; }}"
+        )
+        label.adjustSize()
+        label.show()
+        label.raise_()
+        self._coord_label_actors.append(
+            (label, np.asarray(world_pos, dtype=float).copy())
+        )
+
+    def _clear_coord_labels(self):
+        for label, _ in getattr(self, '_coord_label_actors', []):
+            label.hide()
+            label.deleteLater()
+        self._coord_label_actors = []
+
+    def _update_coord_labels(self):
+        if not getattr(self, '_coord_label_actors', None) or not self._vtk_available:
+            return
+        render_window = self.vtk_widget.GetRenderWindow()
+        rw_width, rw_height = render_window.GetSize()
+        if rw_width <= 0 or rw_height <= 0:
+            return
+        scale_x = self.vtk_widget.width() / rw_width
+        scale_y = self.vtk_widget.height() / rw_height
+        for label, world_pos in self._coord_label_actors:
+            self.renderer.SetWorldPoint(*world_pos, 1.0)
+            self.renderer.WorldToDisplay()
+            x, y, depth = self.renderer.GetDisplayPoint()
+            visible = 0.0 <= depth <= 1.0
+            if label.isVisible() != visible:
+                label.setVisible(visible)
+            if visible:
+                qt_x = int(x * scale_x + 8)
+                qt_y = int(self.vtk_widget.height() - y * scale_y - label.height() - 8)
+                if label.x() != qt_x or label.y() != qt_y:
+                    label.move(qt_x, qt_y)
+
+    def _update_origin_axes_scale(self):
+        """让原点坐标轴和拾取点保持稳定的屏幕尺寸。"""
+        self._update_pick_marker_scale()
+        self._update_coord_labels()
+        if not self._origin_axes_actors:
+            return
+        cam = self.renderer.GetActiveCamera()
+        if cam.GetParallelProjection():
+            view_height = 2.0 * cam.GetParallelScale()
+        else:
+            cam_pos = np.asarray(cam.GetPosition(), dtype=float)
+            distance = max(float(np.linalg.norm(cam_pos)), 1e-6)
+            view_height = 2.0 * distance * math.tan(math.radians(cam.GetViewAngle()) / 2.0)
+        scale = max(view_height * 0.10 / self._origin_axes_base_length, 1e-6)
+        for actor in self._origin_axes_actors:
+            actor.SetScale(scale, scale, scale)
 
     def _update_view(self, reset_camera=True):
         if not self._vtk_available:
@@ -4438,6 +4847,7 @@ class VTKViewer(QWidget):
             self.renderer.ResetCamera()
             cam.Elevation(30)
             cam.Azimuth(-45)
+        self._update_origin_axes_scale()
         self.vtk_widget.GetRenderWindow().Render()
 
     def _on_view_label_click(self, name, idx):
@@ -4458,9 +4868,15 @@ class VTKViewer(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if hasattr(self, '_view_frame'):
-            self._view_frame.move(self.width() - 250, 8)
+            self._position_view_buttons()
+        self._update_coord_labels()
 
+    def _position_view_buttons(self):
+        """保持视角按钮位于 VTK 控件最上层。"""
+        self._view_frame.move(max(0, self.vtk_widget.width() - 260), 8)
+        self._view_frame.raise_()
     def _set_view(self, name):
+
         if not self._vtk_available or getattr(self, 'fpv_mode', False):
             return
         cam = self.renderer.GetActiveCamera()
@@ -4494,6 +4910,7 @@ class VTKViewer(QWidget):
             cam.SetViewUp(0, 0, 1)
 
         self.renderer.ResetCameraClippingRange()
+        self._update_origin_axes_scale()
         self.vtk_widget.GetRenderWindow().Render()
 
     def _on_global_key_press(self, obj, event):
@@ -4524,6 +4941,7 @@ class VTKViewer(QWidget):
                 self._actors.remove(a)
             self.renderer.RemoveActor(a)
         self._axes_actors = []
+        self._origin_axes_actors = []
 
         # 根据数据范围自动缩放坐标轴大小
         data_size = 10.0
@@ -4533,6 +4951,7 @@ class VTKViewer(QWidget):
             b = self._stl_polydata.GetBounds()
             data_size = max(b[1]-b[0], b[3]-b[2], b[5]-b[4])
         arrow_len = max(1.0, data_size * 0.02)
+        self._origin_axes_base_length = arrow_len
         axes_config = [
             # (color, rotate_func) - 箭头默认沿X轴
             ((1, 0, 0), None),                    # X轴：无需旋转
@@ -4541,9 +4960,9 @@ class VTKViewer(QWidget):
         ]
         for color, rot in axes_config:
             arrow = self._vtkArrowSource()
-            arrow.SetShaftRadius(arrow_len * 0.005)
-            arrow.SetTipRadius(arrow_len * 0.015)
-            arrow.SetTipLength(0.25)
+            arrow.SetShaftRadius(0.003)
+            arrow.SetTipRadius(0.010)
+            arrow.SetTipLength(0.22)
             arrow.Update()
 
             transform = self._vtkTransform()
@@ -4565,6 +4984,7 @@ class VTKViewer(QWidget):
             self.renderer.AddActor(a)
             self._actors.append(a)
             self._axes_actors.append(a)
+            self._origin_axes_actors.append(a)
 
         grid_pts = self._vtkPoints()
         grid_cells = self._vtkCellArray()
@@ -4578,6 +4998,7 @@ class VTKViewer(QWidget):
             line.GetPointIds().SetId(1, idx + 1)
             grid_cells.InsertNextCell(line)
             idx += 2
+
             grid_pts.InsertNextPoint(-20, i, 0)
             grid_pts.InsertNextPoint(20, i, 0)
             line = self._vtkPolyLine()
@@ -4600,6 +5021,10 @@ class VTKViewer(QWidget):
         self.renderer.AddActor(a)
         self._actors.append(a)
         self._axes_actors.append(a)
+        self._update_origin_axes_scale()
+        if self.fpv_mode:
+            for actor in self._axes_actors:
+                actor.SetVisibility(False)
 
     def setup_scene(self):
         """初始化场景（坐标轴 + 网格）"""

@@ -220,6 +220,8 @@ class MainWindow(QMainWindow):
         self.waypoints = []
         self._kdtree = None
         self._kdtree_points_id = None
+        self._density_stats = None
+        self._route_planning_controls = []
 
         self._init_ui()
         self._apply_style()
@@ -278,7 +280,7 @@ class MainWindow(QMainWindow):
         self._render_menu = self._view_menu.addMenu("点云渲染模式")
         self._render_mode_group = QActionGroup(self)
         self._render_mode_acts = {}
-        for name in ["自动", "球体", "立方体", "像素", "圆片", "体素栅格"]:
+        for name in ["自动", "球体", "立方体", "像素", "体素栅格"]:
             act = QAction(name, self)
             act.setCheckable(True)
             act.setActionGroup(self._render_mode_group)
@@ -448,7 +450,7 @@ class MainWindow(QMainWindow):
             "<p>桥梁巡检无人机航线规划工具</p>"
             "<p>Bridge Inspection Drone Waypoint Planner</p>"
             "<hr>"
-            "<p><b>版本：</b>1.0.0</p>"
+            "<p><b>版本：</b>1.1.0</p>"
             "<p><b>功能：</b></p>"
             "<ul>"
             "<li>STL/OBJ 三维桥梁模型加载与可视化</li>"
@@ -474,6 +476,7 @@ class MainWindow(QMainWindow):
         self.viewer.polygon_finished.connect(self._on_polygon_finished)
         self.viewer.place_picked.connect(self._on_place_picked)
         self.viewer.anim_finished.connect(self._on_anim_stopped)
+        self.viewer.mesh_geometry_ready.connect(self._precompute_stl_triangles)
         self._place_target = None  # "cube" or "cylinder"
         self._polygon_vertices = None
 
@@ -490,6 +493,14 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         ctrl_layout.addWidget(self.progress_bar)
 
+        self.lbl_density_status = QLabel("点云质量: 未评估")
+        self.lbl_density_detail = QLabel("加载点云后计算规划密度")
+        self.lbl_density_status.setStyleSheet("color: #888; font-weight: bold; padding: 4px 0;")
+        self.lbl_density_detail.setStyleSheet("color: #666; font-size: 10px; padding-bottom: 4px;")
+        self.lbl_density_detail.setWordWrap(True)
+        ctrl_layout.addWidget(self.lbl_density_status)
+        ctrl_layout.addWidget(self.lbl_density_detail)
+
         # 状态栏
         self.statusBar().showMessage("未加载点云")
 
@@ -499,7 +510,7 @@ class MainWindow(QMainWindow):
 
         # 点云渲染模式 + 大小（隐藏，通过展示菜单控制）
         self.cmb_render_mode = QComboBox()
-        self.cmb_render_mode.addItems(["自动", "球体", "立方体", "像素", "圆片", "体素栅格"])
+        self.cmb_render_mode.addItems(["自动", "球体", "立方体", "像素", "体素栅格"])
         self.cmb_render_mode.setVisible(False)
         self.sld_point_size = NoWheelSlider(Qt.Horizontal)
         self.sld_point_size.setRange(1, 20)
@@ -799,7 +810,10 @@ class MainWindow(QMainWindow):
         ll.addWidget(QLabel("航点间距:"), 4, 0)
         self.edt_line_spacing = QLineEdit("自动")
         self.edt_line_spacing.setReadOnly(True)
-        self.edt_line_spacing.setStyleSheet("QLineEdit { background: #333; color: #888; border: 1px solid #444; }")
+        self.edt_line_spacing.setEnabled(False)
+        self.edt_line_spacing.setStyleSheet(
+            "QLineEdit:disabled { background: #252525; color: #888; border: 1px solid #444; }"
+        )
         ll.addWidget(self.edt_line_spacing, 4, 1)
 
         btn_apply_line = QPushButton("应用")
@@ -853,6 +867,12 @@ class MainWindow(QMainWindow):
         self.viewer.line_point_picked.connect(self._on_line_point_picked)
 
         self._route_stack.addWidget(tab_inspect)
+
+        self._route_planning_controls = [
+            self.btn_poly_select, btn_apply_flat, btn_apply_cube, self.btn_cube_place,
+            btn_apply_cyl, self.btn_cyl_place, btn_pick_line, btn_apply_line,
+            self.btn_inspect, self.btn_gen_inspect,
+        ]
 
         self.btn_clear = QPushButton("清除")
         self.btn_clear.setStyleSheet(self._BTN_DANGER)
@@ -939,6 +959,9 @@ class MainWindow(QMainWindow):
             }
             QPushButton:hover { border-color: #ffa500; color: #ffa500; }
             QPushButton:pressed { background: #333; border-color: #e69500; }
+            QPushButton:disabled {
+                background: #241b1b; border-color: #793a3a; color: #9a6464;
+            }
             QComboBox {
                 background: #2a2a2a; border: 1px solid #555;
                 padding: 4px 6px; color: #d0d0d0;
@@ -973,6 +996,14 @@ class MainWindow(QMainWindow):
                 border: 1px solid #444;
             }
             QMenu::item:selected { background: #ffa500; color: #1a1a1a; }
+            QMenu::item:disabled {
+                background: #202020; color: #5a5a5a;
+                border-left: 3px solid #3a3a3a;
+                padding-left: 14px;
+            }
+            QMenu::item:disabled:selected {
+                background: #202020; color: #5a5a5a;
+            }
             QToolBar {
                 background: #222; border: none;
                 spacing: 4px; padding: 2px;
@@ -1016,6 +1047,8 @@ class MainWindow(QMainWindow):
 
     # ─── 多边形选择 ──────────────────────────────────────────
     def _start_polygon_select(self):
+        if not self._ensure_route_planning_density():
+            return
         self.viewer.enter_polygon_mode()
 
     def _on_polygon_finished(self, pts):
@@ -1035,6 +1068,8 @@ class MainWindow(QMainWindow):
 
     # ─── 点击放置模式 ──────────────────────────────────────
     def _start_place_mode(self, target):
+        if not self._ensure_route_planning_density():
+            return
         self._place_target = target
         self.viewer.enter_place_mode()
 
@@ -1050,6 +1085,116 @@ class MainWindow(QMainWindow):
             self.edt_cyl_cz.setText(f"{pos[2]:.1f}")
             self.generate_cylinder_route()
         self._place_target = None
+
+    def _set_point_cloud_view_actions_enabled(self, enabled):
+        """切换展示菜单中仅适用于点云的数据处理操作。"""
+        for control in (
+            self._act_clip_toggle,
+            self._render_menu,
+            self._size_menu,
+            self._voxel_menu,
+            self._upsample_menu,
+            self._color_menu,
+        ):
+            control.setEnabled(enabled)
+
+    def _analyze_point_density(self):
+        """计算规划所需的最近邻点间距统计，限制采样量避免阻塞加载。"""
+        if self.points is None or len(self.points) < 2:
+            self._density_stats = None
+            self._update_density_quality()
+            return
+        sample_size = min(len(self.points), 100000)
+        if sample_size == len(self.points):
+            sample = self.points
+        else:
+            rng = np.random.default_rng(42)
+            sample = self.points[rng.choice(len(self.points), sample_size, replace=False)]
+        if self._kdtree is None or self._kdtree_points_id != id(self.points):
+            from scipy.spatial import cKDTree
+            self._kdtree = cKDTree(self.points)
+            self._kdtree_points_id = id(self.points)
+        distances, _ = self._kdtree.query(sample, k=2, workers=-1)
+        spacing = distances[:, 1]
+        spacing = spacing[np.isfinite(spacing)]
+        if len(spacing) == 0:
+            self._density_stats = None
+        else:
+            self._density_stats = {
+                'sample_size': len(spacing),
+                'median': float(np.median(spacing)),
+                'p95': float(np.percentile(spacing, 95)),
+            }
+        self._update_density_quality()
+
+    def _point_cloud_density_sufficient(self):
+        stats = self._density_stats
+        if self.points is None:
+            return True
+        if not stats:
+            return False
+        return stats['median'] <= self._voxel_size * 0.5 and stats['p95'] <= self._voxel_size
+
+    def _update_density_quality(self):
+        if not hasattr(self, 'lbl_density_status'):
+            return
+        if self.points is None:
+            self.lbl_density_status.setText("点云质量: 未评估")
+            self.lbl_density_detail.setText("加载点云后计算规划密度")
+            self.lbl_density_status.setStyleSheet("color: #888; font-weight: bold; padding: 4px 0;")
+            ready = True
+            tooltip = ""
+        elif not self._density_stats:
+            self.lbl_density_status.setText("点云质量: 密度不足")
+            self.lbl_density_detail.setText("无法计算有效的最近邻点间距")
+            self.lbl_density_status.setStyleSheet("color: #ff5a4f; font-weight: bold; padding: 4px 0;")
+            ready = False
+            tooltip = "点云密度不足，无法可靠体素化并规划航线"
+        else:
+            stats = self._density_stats
+            ready = self._point_cloud_density_sufficient()
+            recommended_voxel = max(stats['p95'], stats['median'] * 2.0)
+            if ready:
+                self.lbl_density_status.setText("点云质量: 可用于航线规划")
+                color = "#36d399"
+                tooltip = ""
+            else:
+                self.lbl_density_status.setText("点云质量: 密度不足，已禁止规划")
+                color = "#ff5a4f"
+                tooltip = f"点云密度不足，建议体素大小不小于 {recommended_voxel:.2f}m"
+            self.lbl_density_status.setStyleSheet(
+                f"color: {color}; font-weight: bold; padding: 4px 0;"
+            )
+            detail = (
+                f"体素 {self._voxel_size:.2f}m  |  中位间距 {stats['median']:.3f}m "
+                f"|  P95 {stats['p95']:.3f}m"
+            )
+            if not ready:
+                detail += f"  |  建议体素 >= {recommended_voxel:.2f}m"
+            self.lbl_density_detail.setText(detail)
+        for control in self._route_planning_controls:
+            control.setEnabled(ready)
+            control.setToolTip(tooltip)
+
+    def _ensure_route_planning_density(self):
+        if self.viewer._get_all_mesh_actors() and self.viewer._stl_polydata is None:
+            QMessageBox.information(self, "模型处理中", "OBJ模型的几何与碰撞结构仍在构建，请稍后再规划航线。")
+            return False
+        if self._point_cloud_density_sufficient():
+            return True
+        stats = self._density_stats or {}
+        recommended_voxel = max(
+            stats.get('p95', 0.0), stats.get('median', 0.0) * 2.0
+        )
+        QMessageBox.warning(
+            self, "点云密度不足",
+            "当前体素尺寸下点云过稀，无法可靠规划航线。\n\n"
+            f"体素: {self._voxel_size:.2f}m\n"
+            f"中位间距: {stats.get('median', 0.0):.3f}m\n"
+            f"P95 间距: {stats.get('p95', 0.0):.3f}m\n"
+            f"建议体素 >= {recommended_voxel:.2f}m"
+        )
+        return False
 
     # ─── 加载点云 ───
     def load_point_cloud(self):
@@ -1087,12 +1232,14 @@ class MainWindow(QMainWindow):
                     self._point_normals = self._point_normals[valid]
 
             n = len(self.points)
+            self._analyze_point_density()
             colors = self._apply_color_scheme(self.points, self._point_colors)
             if self._get_render_mode() == 'voxel':
                 self.viewer.add_voxel_grid(self.points, self._voxel_size, colors=colors)
             else:
                 self.viewer.add_point_cloud(self.points, self._get_render_mode(), self._get_point_size(), colors=colors, use_lighting=(self._color_scheme == "original"))
             self._update_height_legend()
+            self._set_point_cloud_view_actions_enabled(True)
             self.progress_bar.setValue(80)
             QApplication.processEvents()
 
@@ -1193,10 +1340,12 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"已加载模型: {os.path.basename(path)}")
             # 预计算三角面顶点数组（用于射线穿模检测）
             self._precompute_stl_triangles()
-            # STL 不需要点云相关菜单
-            self._render_menu.setEnabled(False)
-            self._upsample_menu.setEnabled(False)
-            self._color_menu.setEnabled(False)
+            self.points = None
+            self._point_colors = None
+            self._point_normals = None
+            self._density_stats = None
+            self._update_density_quality()
+            self._set_point_cloud_view_actions_enabled(False)
         else:
             QMessageBox.warning(self, "错误", "加载模型失败")
 
@@ -1213,9 +1362,9 @@ class MainWindow(QMainWindow):
 
     # ─── Z值过滤 ───
     def _get_render_mode(self):
-        """获取当前渲染模式: 'auto'/'sphere'/'cube'/'pixel'/'splat'"""
+        """获取当前渲染模式: 'auto'/'sphere'/'cube'/'pixel'"""
         text = self.cmb_render_mode.currentText()
-        return {"自动": "auto", "球体": "sphere", "立方体": "cube", "像素": "pixel", "圆片": "splat", "体素栅格": "voxel"}.get(text, "auto")
+        return {"自动": "auto", "球体": "sphere", "立方体": "cube", "像素": "pixel", "体素栅格": "voxel"}.get(text, "auto")
 
     def _get_point_size(self):
         return self.sld_point_size.value() * 0.01
@@ -1371,12 +1520,9 @@ class MainWindow(QMainWindow):
                 colors = self._apply_color_scheme(self.points, self._point_colors)
                 self.viewer.add_voxel_grid(self.points, self._voxel_size, colors=colors, reset_camera=False)
             else:
-                # 圆片模式需要法线
-                if mode == 'splat':
-                    self._ensure_normals()
                 colors = self._apply_color_scheme(self.points, self._point_colors)
                 self.viewer.add_point_cloud(self.points, mode, self._get_point_size(), colors=colors, normals=self._point_normals, reset_camera=False, use_lighting=(self._color_scheme == "original"))
-                self._update_height_legend()
+            self._update_height_legend()
 
     def _on_menu_render_mode(self, name):
         """菜单栏渲染模式切换"""
@@ -1389,6 +1535,7 @@ class MainWindow(QMainWindow):
     def _on_voxel_size_changed(self, val):
         """体素大小切换"""
         self._voxel_size = val
+        self._update_density_quality()
         if self._get_render_mode() == 'voxel':
             self._refresh_point_cloud()
 
@@ -1903,7 +2050,7 @@ class MainWindow(QMainWindow):
         "终点(x,y,z):": "End(x,y,z):",
         "巡检点列表:": "Inspect Points:",
         "m": "m",
-        "自动": "Auto", "球体": "Sphere", "立方体": "Cube", "像素": "Pixel", "圆片": "Splat", "体素栅格": "Voxel Grid",
+        "自动": "Auto", "球体": "Sphere", "立方体": "Cube", "像素": "Pixel", "体素栅格": "Voxel Grid",
         "启用": "Enable",
         "X:": "X:", "Y:": "Y:", "Z:": "Z:",
         "渲染:": "Render:",
@@ -1928,7 +2075,7 @@ class MainWindow(QMainWindow):
         self._act_clip_toggle.setText(t["act_clip"])
         self._render_menu.setTitle(t["menu_render"])
         # 更新渲染模式子菜单文本
-        render_map = {"自动": "Auto", "球体": "Sphere", "立方体": "Cube", "像素": "Pixel", "圆片": "Splat"}
+        render_map = {"自动": "Auto", "球体": "Sphere", "立方体": "Cube", "像素": "Pixel"}
         if self._lang == "zh":
             render_map = {v: k for k, v in render_map.items()}
         for old_name, act in self._render_mode_acts.items():
@@ -2200,6 +2347,8 @@ class MainWindow(QMainWindow):
 
     # ─── 生成平面航线（目标点驱动） ───
     def generate_flat_route(self):
+        if not self._ensure_route_planning_density():
+            return
         try:
             inspect_dist = float(self.edt_flat_inspect_dist.text())
             speed = float(self.edt_flat_speed.text())
@@ -2479,10 +2628,9 @@ class MainWindow(QMainWindow):
 
     # ─── 生成圆柱体航线 ───
     def generate_cylinder_route(self):
+        if not self._ensure_route_planning_density():
+            return
         import math
-        # 自动计算步距（如果还是默认的"自动"）
-        if self.edt_cyl_astep.text() == "自动" or self.edt_cyl_vstep.text() == "自动":
-            self._calc_cyl_spacing()
         try:
             cx = float(self.edt_cyl_cx.text())
             cy = float(self.edt_cyl_cy.text())
@@ -2490,185 +2638,167 @@ class MainWindow(QMainWindow):
             diam = float(self.edt_cyl_diam.text())
             h = float(self.edt_cyl_h.text())
             dist = float(self.edt_cyl_dist.text())
-            astep = float(self.edt_cyl_astep.text())
-            vstep = float(self.edt_cyl_vstep.text())
             speed = float(self.edt_cyl_speed.text())
             start_angle = np.radians(self.sld_cyl_start_angle.value())
         except ValueError:
             QMessageBox.warning(self, "输入错误", "请输入有效数字")
             return
-
-        if diam <= 0 or h <= 0 or vstep <= 0:
-            QMessageBox.warning(self, "输入错误", "直径、高度和步距必须为正数")
+        if diam <= 0 or h <= 0 or dist <= 0 or speed <= 0:
+            QMessageBox.warning(self, "输入错误", "直径、高度、巡检距离和速度必须为正数")
             return
 
-        # 高度受限于圆周四点最近点Z - 0.5
-        radius = diam / 2 + dist
+        # 步距是相机参数、重叠率和巡检距离的派生值，每次生成都重新计算。
+        self._calc_cyl_spacing()
+        try:
+            astep = float(self.edt_cyl_astep.text())
+            vstep = float(self.edt_cyl_vstep.text())
+        except ValueError:
+            QMessageBox.warning(self, "输入错误", "无法计算有效的圆柱航线步距")
+            return
+        radius = diam * 0.5 + dist
+        if astep <= 0 or vstep <= 0 or radius <= 0:
+            QMessageBox.warning(self, "输入错误", "圆柱半径和自动步距必须为正数")
+            return
+
         cyl_circle_pts = [
-            (cx + radius, cy),
-            (cx, cy + radius),
-            (cx - radius, cy),
-            (cx, cy - radius),
+            (cx + radius, cy), (cx, cy + radius),
+            (cx - radius, cy), (cx, cy - radius),
         ]
         max_z = self._compute_max_z_for_area(cyl_circle_pts)
         if max_z is not None and (cz + h) > max_z:
-            h = max(1.0, max_z - cz)
+            adjusted_h = max_z - cz
+            if adjusted_h <= 0:
+                QMessageBox.warning(self, "高度错误", "圆柱区域上方没有可用飞行高度")
+                return
+            h = adjusted_h
             self.edt_cyl_h.setText(f"{h:.1f}")
             QMessageBox.information(self, "高度调整", f"圆柱体高度已调整为 {h:.1f}m（受限于区域上方点云）")
 
         route_type = self.cbo_cyl_type.currentText()
-        self.waypoints = []
         tree = self._get_kdtree()
-        safe_dist = self.viewer._safe_distance
-        collision_dist = safe_dist * 1.5
-
-        warnings = []
+        collision_dist = self.viewer._safe_distance * 1.5
         up = np.array([0.0, 0.0, 1.0])
+        warnings = []
+        generated = []
 
-        def _check_cyl_candidate(pos_c, target_c):
-            return self._check_wp_candidate(pos_c, target_c, tree, collision_dist)
+        def _surface_target(pos_c, axis_c, outward_c):
+            if self.viewer._stl_polydata is not None:
+                hit = self.viewer._project_to_stl(
+                    pos_c, axis_c, max_dist=max(50.0, np.linalg.norm(axis_c - pos_c) * 1.5)
+                )
+                if hit is not None:
+                    return np.asarray(hit, dtype=float)
+            if self.viewer._voxel_actor is not None:
+                hit = self.viewer.voxel_ray_first_hit(pos_c, axis_c)
+                if hit is not None:
+                    return np.asarray(hit, dtype=float)
+            return axis_c + outward_c * (diam * 0.5)
 
-        # 检查速度vs拍摄间隔：水平方向（弧长步距）
+        search_dirs = lambda outward_c: [
+            outward_c, up, -up, outward_c + up * 0.5, outward_c - up * 0.5
+        ]
+
+        def _solve_candidate(base_pos, axis_target, outward, label):
+            candidates = [base_pos]
+            for offset in np.arange(0.5, 10.0, 0.5):
+                for direction in search_dirs(outward):
+                    norm = np.linalg.norm(direction)
+                    if norm > 1e-6:
+                        candidates.append(base_pos + direction / norm * offset)
+            last_reason = 'unknown'
+            for candidate in candidates:
+                target = _surface_target(candidate, axis_target, outward)
+                ok, last_reason = self._check_wp_candidate(
+                    candidate, target, tree, collision_dist
+                )
+                if ok:
+                    return candidate, target
+            warnings.append(f"{label} 无法满足约束: {last_reason}")
+            return None, None
+
         hfov = self._camera_fov
-        h_cover = 2.0 * dist * math.tan(math.radians(hfov / 2.0))
+        h_cover = 2.0 * dist * math.tan(math.radians(hfov * 0.5))
         arc_step = h_cover * (1.0 - self._side_overlap / 100.0)
         self._check_speed_overlap(speed, arc_step, np.array([1.0, 0.0, 0.0]), warnings)
 
         if route_type == "螺旋线":
-            num_turns = max(1, int(h / vstep))
-            num_pts_per_turn = max(8, int(360 / max(1, astep)))
+            num_turns = max(1, math.ceil(h / vstep))
+            num_pts_per_turn = max(8, math.ceil(360.0 / astep))
             total_pts = num_turns * num_pts_per_turn
-
             for i in range(total_pts + 1):
                 t = i / total_pts
-                angle = start_angle + t * num_turns * 2 * np.pi
+                angle = start_angle + t * num_turns * 2.0 * np.pi
                 z = cz + t * h
-
-                rx = cx + radius * np.cos(angle)
-                ry = cy + radius * np.sin(angle)
-                pos = np.array([rx, ry, z])
-                cyl_center = np.array([cx, cy, z])
-                outward = np.array([rx - cx, ry - cy, 0.0])
-                out_norm = np.linalg.norm(outward)
-                if out_norm > 1e-10:
-                    outward = outward / out_norm
-                else:
-                    outward = np.array([1.0, 0.0, 0.0])
-
-                # 综合约束检查（STL版/点云版）
-                ok, reason = _check_cyl_candidate(pos, cyl_center)
-                if not ok:
-                    # 搜索安全位置：沿 outward 方向偏移
-                    found = False
-                    for offset in np.arange(0.5, 10.0, 0.5):
-                        for direction in [outward, up, -up, outward + up*0.5, outward - up*0.5]:
-                            d_norm = np.linalg.norm(direction)
-                            if d_norm < 1e-6:
-                                continue
-                            cand = pos + direction / d_norm * offset
-                            ok2, _ = _check_cyl_candidate(cand, cyl_center)
-                            if ok2:
-                                pos = cand
-                                found = True
-                                break
-                        if found:
-                            break
-                    if not found:
-                        warnings.append(f"螺旋点{i+1} 无法满足所有约束")
-
-                # 机头朝向圆柱中心（径向内法线）
-                inward = np.array([cx - pos[0], cy - pos[1], 0.0])
-                inward_norm = np.linalg.norm(inward)
-                if inward_norm > 1e-10:
-                    heading = inward / inward_norm
-                else:
-                    heading = np.array([1.0, 0.0, 0.0])
-                target = pos + heading
-                quat = look_at_quaternion(target, pos)
-                gimbal_pitch = self._calc_gimbal_pitch(pos, cyl_center)
-                gimbal_pitch = np.clip(gimbal_pitch, self._gimbal_pitch_min, self._gimbal_pitch_max)
-                self.waypoints.append({
-                    'pos': pos,
-                    'quat': quat,
-                    'speed': speed,
-                    'action': 'scan',
-                    'gimbal_pitch': gimbal_pitch,
-                    'target_pos': cyl_center.copy()
+                outward = np.array([np.cos(angle), np.sin(angle), 0.0])
+                base_pos = np.array([cx, cy, z]) + outward * radius
+                axis_target = np.array([cx, cy, z])
+                pos, target = _solve_candidate(base_pos, axis_target, outward, f"螺旋点{i + 1}")
+                if pos is None:
+                    continue
+                heading = target - pos
+                heading[2] = 0.0
+                heading_norm = np.linalg.norm(heading)
+                heading = heading / heading_norm if heading_norm > 1e-10 else -outward
+                quat = look_at_quaternion(pos + heading, pos)
+                pitch = np.clip(
+                    self._calc_gimbal_pitch(pos, target, heading),
+                    self._gimbal_pitch_min, self._gimbal_pitch_max
+                )
+                generated.append({
+                    'pos': pos, 'quat': quat, 'speed': speed, 'action': 'scan',
+                    'gimbal_pitch': pitch, 'target_pos': target.copy(), 'surface_coverage': True
                 })
-
         elif route_type == "Z字形":
-            num_cols = max(1, int(360 / max(1, astep)))
-            num_layers = max(1, int(h / vstep))
-
+            num_cols = max(3, math.ceil(360.0 / astep))
+            num_intervals = max(1, math.ceil(h / vstep))
             for col in range(num_cols):
-                angle = start_angle + (col / num_cols) * 2 * np.pi
-                rx = cx + radius * np.cos(angle)
-                ry = cy + radius * np.sin(angle)
-
-                outward = np.array([rx - cx, ry - cy, 0.0])
-                out_norm = np.linalg.norm(outward)
-                if out_norm > 1e-10:
-                    outward = outward / out_norm
-                else:
-                    outward = np.array([1.0, 0.0, 0.0])
-
-                # 机头朝向圆柱中心
-                inward = -outward
-                heading = inward.copy()
-
-                # 偶数列：从下往上；奇数列：从上往下
-                if col % 2 == 0:
-                    layers_range = range(num_layers + 1)
-                else:
-                    layers_range = range(num_layers, -1, -1)
-
-                for layer in layers_range:
-                    z = cz + layer * vstep
-                    pos = np.array([rx, ry, z])
-                    cyl_center = np.array([cx, cy, z])
-
-                    # 综合约束检查（STL版/点云版）
-                    ok, reason = _check_cyl_candidate(pos, cyl_center)
-                    if not ok:
-                        found = False
-                        for offset in np.arange(0.5, 10.0, 0.5):
-                            for direction in [outward, up, -up, outward + up*0.5, outward - up*0.5]:
-                                d_norm = np.linalg.norm(direction)
-                                if d_norm < 1e-6:
-                                    continue
-                                cand = pos + direction / d_norm * offset
-                                ok2, _ = _check_cyl_candidate(cand, cyl_center)
-                                if ok2:
-                                    pos = cand
-                                    found = True
-                                    break
-                            if found:
-                                break
-                        if not found:
-                            warnings.append(f"Z字形点(col{col+1},layer{layer}) 无法满足所有约束")
-
-                    target = pos + heading
-                    quat = look_at_quaternion(target, pos)
-                    gimbal_pitch = self._calc_gimbal_pitch(pos, cyl_center)
-                    gimbal_pitch = np.clip(gimbal_pitch, self._gimbal_pitch_min, self._gimbal_pitch_max)
-                    self.waypoints.append({
-                        'pos': pos,
-                        'quat': quat,
-                        'speed': speed,
-                        'action': 'scan',
-                        'gimbal_pitch': gimbal_pitch,
-                        'target_pos': cyl_center.copy()
+                angle = start_angle + (col / num_cols) * 2.0 * np.pi
+                outward = np.array([np.cos(angle), np.sin(angle), 0.0])
+                layers = range(num_intervals + 1) if col % 2 == 0 else range(num_intervals, -1, -1)
+                for layer in layers:
+                    z = cz + h * (layer / num_intervals)
+                    base_pos = np.array([cx, cy, z]) + outward * radius
+                    axis_target = np.array([cx, cy, z])
+                    label = f"Z字形点(col{col + 1},layer{layer})"
+                    pos, target = _solve_candidate(base_pos, axis_target, outward, label)
+                    if pos is None:
+                        continue
+                    heading = target - pos
+                    heading[2] = 0.0
+                    heading_norm = np.linalg.norm(heading)
+                    heading = heading / heading_norm if heading_norm > 1e-10 else -outward
+                    quat = look_at_quaternion(pos + heading, pos)
+                    pitch = np.clip(
+                        self._calc_gimbal_pitch(pos, target, heading),
+                        self._gimbal_pitch_min, self._gimbal_pitch_max
+                    )
+                    generated.append({
+                        'pos': pos, 'quat': quat, 'speed': speed, 'action': 'scan',
+                        'gimbal_pitch': pitch, 'target_pos': target.copy(), 'surface_coverage': True
                     })
+        else:
+            QMessageBox.warning(self, "路径错误", f"不支持的圆柱路径类型: {route_type}")
+            return
 
+        if warnings and len(generated) != ((total_pts + 1) if route_type == "螺旋线" else num_cols * (num_intervals + 1)):
+            self.clear_route()
+            QMessageBox.warning(
+                self, "圆柱航线生成失败",
+                "存在无法满足碰撞、云台或视线约束的航点，已拒绝生成整条航线。\n\n" +
+                "\n".join(warnings[:10])
+            )
+            return
+
+        self.waypoints = generated
         self._display_route()
         print(f"[Cylinder] Generated {len(self.waypoints)} waypoints ({route_type})")
-
         if warnings:
-            QMessageBox.warning(self, "约束警告",
-                f"生成 {len(self.waypoints)} 个航点\n\n" + "\n".join(warnings[:10]))
+            QMessageBox.warning(self, "约束警告", f"生成 {len(self.waypoints)} 个航点\n\n" + "\n".join(warnings[:10]))
 
     # ─── 生成直线航线 ───
     def generate_line_route(self):
+        if not self._ensure_route_planning_density():
+            return
         import math
         try:
             x1 = float(self.edt_line_x1.text())
@@ -2705,7 +2835,7 @@ class MainWindow(QMainWindow):
         n_pts = max(2, int(length / spacing) + 1)
         tree = self._get_kdtree()
         safe_dist = self.viewer._safe_distance
-        collision_dist = safe_dist * 1.5
+        collision_dist = safe_dist
 
         # 检查速度vs拍摄间隔
         warnings_line = []
@@ -2758,82 +2888,127 @@ class MainWindow(QMainWindow):
         if left_len > 1e-6:
             left = left / left_len
 
-        def _check_candidate(pos_c):
-            return self._check_wp_candidate(pos_c, target, tree, collision_dist, crab_heading, left)
+        def _check_candidate(pos_c, target_c):
+            return self._check_wp_candidate(
+                pos_c, target_c, tree, collision_dist, crab_heading, left
+            )
 
-        # 判断表面类型
+        # 判断表面类型并构建整条航线共用的候选偏移方向。
         normal_up_dot = np.dot(normal, up)
         is_top_surface = normal_up_dot > 0.7
         is_bottom_surface = normal_up_dot < -0.7
-
-        for i in range(n_pts):
-            t = i / (n_pts - 1)
-            target = p1 + t * (p2 - p1)
-
-            # 构建搜索方向（根据表面类型）
-            if is_bottom_surface:
-                # 底面：沿 crab_heading 方向 + 向下偏移
-                pitch_max_rad = np.radians(self._gimbal_pitch_max)
-                base_dirs = []
-                for pitch_deg in [45, 35, 25, 50, 15, 10, 55]:
-                    pitch_rad = np.radians(pitch_deg)
-                    h_dist_factor = np.cos(pitch_rad)
-                    drop_factor = -np.sin(pitch_rad)
-                    base_dirs.append(np.array([crab_heading[0]*h_dist_factor, crab_heading[1]*h_dist_factor, drop_factor]))
-                    base_dirs.append(np.array([-crab_heading[0]*h_dist_factor, -crab_heading[1]*h_dist_factor, drop_factor]))
-                base_dirs.extend([-up, up, crab_heading, -crab_heading])
-                search_directions = [d / np.linalg.norm(d) for d in base_dirs if np.linalg.norm(d) > 1e-6]
-            elif is_top_surface:
-                # 顶面：上方 + 对角线
-                base_dirs = [up]
-                for frac in [0.3, 0.5, 0.7, 1.0, 1.5, 2.0]:
-                    base_dirs.append(up + crab_heading * frac)
-                    base_dirs.append(up - crab_heading * frac)
-                base_dirs.extend([crab_heading, -crab_heading])
-                search_directions = [d / np.linalg.norm(d) for d in base_dirs if np.linalg.norm(d) > 1e-6]
+        if is_bottom_surface:
+            base_dirs = []
+            for pitch_deg in [45, 35, 25, 50, 15, 10, 55]:
+                pitch_rad = np.radians(pitch_deg)
+                h_dist_factor = np.cos(pitch_rad)
+                drop_factor = -np.sin(pitch_rad)
+                base_dirs.append(np.array([
+                    crab_heading[0] * h_dist_factor,
+                    crab_heading[1] * h_dist_factor,
+                    drop_factor,
+                ]))
+                base_dirs.append(np.array([
+                    -crab_heading[0] * h_dist_factor,
+                    -crab_heading[1] * h_dist_factor,
+                    drop_factor,
+                ]))
+            base_dirs.extend([-up, up, crab_heading, -crab_heading])
+        elif is_top_surface:
+            base_dirs = [up]
+            for frac in [0.3, 0.5, 0.7, 1.0, 1.5, 2.0]:
+                base_dirs.append(up + crab_heading * frac)
+                base_dirs.append(up - crab_heading * frac)
+            base_dirs.extend([crab_heading, -crab_heading])
+        else:
+            normal_in_plane = (
+                np.dot(normal, crab_heading) * crab_heading
+                + np.dot(normal, up) * up
+            )
+            if np.linalg.norm(normal_in_plane) > 1e-6:
+                normal_in_plane = normal_in_plane / np.linalg.norm(normal_in_plane)
             else:
-                # 垂直面：沿法线 + 对角线
-                normal_in_plane = np.dot(normal, crab_heading) * crab_heading + np.dot(normal, up) * up
-                if np.linalg.norm(normal_in_plane) > 1e-6:
-                    normal_in_plane = normal_in_plane / np.linalg.norm(normal_in_plane)
-                else:
-                    normal_in_plane = crab_heading.copy()
-                base_dirs = [normal_in_plane]
-                for frac in [0.3, 0.5, 0.7, 1.0, 1.5, 2.0]:
-                    base_dirs.append(normal_in_plane + up * frac)
-                    base_dirs.append(normal_in_plane - up * frac)
-                base_dirs.extend([crab_heading, -crab_heading, up, -up])
-                search_directions = [d / np.linalg.norm(d) for d in base_dirs if np.linalg.norm(d) > 1e-6]
+                normal_in_plane = crab_heading.copy()
+            base_dirs = [normal_in_plane]
+            for frac in [0.3, 0.5, 0.7, 1.0, 1.5, 2.0]:
+                base_dirs.append(normal_in_plane + up * frac)
+                base_dirs.append(normal_in_plane - up * frac)
+            base_dirs.extend([crab_heading, -crab_heading, up, -up])
 
-            # 搜索满足约束的位置
-            drone_pos = None
-            for offset in np.arange(inspect_dist, inspect_dist + 20.0, 0.5):
-                for move_dir in search_directions:
-                    pos_c = target + move_dir * offset
-                    ok, reason = _check_candidate(pos_c)
-                    if ok:
-                        drone_pos = pos_c
-                        break
-                if drone_pos is not None:
+        # 优先尝试拾取到的表面法线及其反向，再尝试通用方向。
+        base_dirs = [normal, -normal] + base_dirs
+        search_directions = [
+            direction / np.linalg.norm(direction)
+            for direction in base_dirs
+            if np.linalg.norm(direction) > 1e-6
+        ]
+        targets = [
+            p1 + (i / (n_pts - 1)) * (p2 - p1)
+            for i in range(n_pts)
+        ]
+
+        probe_indices = sorted({
+            0, n_pts // 4, n_pts // 2, (3 * n_pts) // 4, n_pts - 1
+        })
+        probe_targets = [targets[i] for i in probe_indices]
+        remaining_targets = [
+            target for i, target in enumerate(targets)
+            if i not in probe_indices
+        ]
+
+        # 同一个偏移必须让整条航线全部通过约束，确保无人机航点严格共线。
+        min_inspect_dist = 2.0
+        preferred_offsets = np.arange(inspect_dist, inspect_dist + 20.0, 0.5)
+        reduced_offsets = np.arange(
+            inspect_dist - 0.5, min_inspect_dist - 0.01, -0.5
+        )
+        search_offsets = np.concatenate((
+            preferred_offsets, reduced_offsets[reduced_offsets >= min_inspect_dist]
+        ))
+
+        route_offset = None
+        for offset in search_offsets:
+            for move_dir in search_directions:
+                offset_vector = move_dir * offset
+                if not all(
+                    _check_candidate(target + offset_vector, target)[0]
+                    for target in probe_targets
+                ):
+                    continue
+                if all(
+                    _check_candidate(target + offset_vector, target)[0]
+                    for target in remaining_targets
+                ):
+                    route_offset = offset_vector
                     break
+            if route_offset is not None:
+                break
 
-            warned = False
-            if drone_pos is None:
-                drone_pos = target + normal * inspect_dist
-                warned = True
-                warnings.append(f"航点{i+1} 无法满足所有约束")
+        if route_offset is not None and np.linalg.norm(route_offset) < inspect_dist - 1e-6:
+            warnings.append(
+                f"为满足整条航线约束，巡检距离已从 {inspect_dist:.1f}m "
+                f"降至 {np.linalg.norm(route_offset):.1f}m"
+            )
 
-            # 确保 heading 朝向目标（否则云台需要转180°）
+        if route_offset is None:
+            route_offset = normal * inspect_dist
+            warnings.append("无法找到整条直线均满足约束的公共偏移，已使用统一法线偏移")
+            for i, target in enumerate(targets):
+                ok, reason = _check_candidate(target + route_offset, target)
+                if not ok:
+                    warnings.append(f"航点{i+1} 约束未满足: {reason}")
+
+        for target in targets:
+            drone_pos = target + route_offset
             los_to_target = target - drone_pos
             heading_used = crab_heading.copy()
             if np.dot(heading_used, los_to_target) < 0:
                 heading_used = -heading_used
 
-            # 云台俯仰角
             gimbal_pitch = self._calc_gimbal_pitch(drone_pos, target, heading_used)
-            gimbal_pitch = np.clip(gimbal_pitch, self._gimbal_pitch_min, self._gimbal_pitch_max)
-
-            # 机头方向：螃蟹飞（垂直于航线）
+            gimbal_pitch = np.clip(
+                gimbal_pitch, self._gimbal_pitch_min, self._gimbal_pitch_max
+            )
             quat = look_at_quaternion(drone_pos + heading_used, drone_pos)
             self.waypoints.append({
                 'pos': drone_pos,
@@ -2852,6 +3027,8 @@ class MainWindow(QMainWindow):
 
     # ─── 巡检点功能 ─────────────────────────────────────────
     def _start_inspect_mode(self):
+        if not self._ensure_route_planning_density():
+            return
         self.viewer.enter_inspect_mode()
 
     def _on_inspect_confirmed(self, pts):
@@ -2872,6 +3049,8 @@ class MainWindow(QMainWindow):
         self.viewer.vtk_widget.GetRenderWindow().Render()
 
     def _start_line_mode(self):
+        if not self._ensure_route_planning_density():
+            return
         self.viewer.enter_line_mode()
 
     def _on_line_point_picked(self, idx, pos):
@@ -3081,29 +3260,36 @@ class MainWindow(QMainWindow):
         return np.linalg.norm(p - closest)
 
     def _stl_surface_distance(self, pos):
-        """计算点 pos 到 STL 表面的精确最短距离
-        向量化包围盒过滤 + 精确计算候选三角面距离
-        """
+        """计算点到STL/OBJ表面的精确最短距离。"""
+        locator = getattr(self.viewer, '_stl_cell_locator', None)
+        if locator is not None:
+            try:
+                vtk = self.viewer._vtk
+                closest = [0.0, 0.0, 0.0]
+                cell_id = vtk.reference(0)
+                sub_id = vtk.reference(0)
+                dist_sq = vtk.reference(0.0)
+                locator.FindClosestPoint(np.asarray(pos, dtype=float).tolist(), closest, cell_id, sub_id, dist_sq)
+                return float(np.sqrt(float(dist_sq)))
+            except Exception:
+                pass
+
         if self._stl_triangles_np is None:
             return float('inf')
         pos = np.asarray(pos, dtype=np.float64)
-        tri_verts = self._stl_triangles_np  # (M, 3, 3)
+        tri_verts = self._stl_triangles_np
+        tri_min = tri_verts.min(axis=1)
+        tri_max = tri_verts.max(axis=1)
+        diff_low = np.maximum(tri_min - pos, 0.0)
+        diff_high = np.maximum(pos - tri_max, 0.0)
+        bbox_dist_sq = np.sum((diff_low + diff_high) ** 2, axis=1)
 
-        # 向量化包围盒过滤
-        tri_min = tri_verts.min(axis=1)  # (M, 3)
-        tri_max = tri_verts.max(axis=1)  # (M, 3)
-        # 点到包围盒各轴距离（轴对齐范围内为0）
-        diff_low = np.maximum(tri_min - pos, 0.0)   # (M, 3)
-        diff_high = np.maximum(pos - tri_max, 0.0)   # (M, 3)
-        bbox_dist_sq = np.sum((diff_low + diff_high) ** 2, axis=1)  # (M,)
-
-        # 按包围盒距离排序，优先检查近的三角面
         order = np.argsort(bbox_dist_sq)
         min_dist = float('inf')
         min_dist_sq = min_dist * min_dist
         for idx in order:
             if bbox_dist_sq[idx] >= min_dist_sq:
-                break  # 后续所有三角面包围盒都更远，提前终止
+                break
             dist = self._point_to_triangle_dist(pos, tri_verts[idx, 0], tri_verts[idx, 1], tri_verts[idx, 2])
             if dist < min_dist:
                 min_dist = dist
@@ -3284,6 +3470,8 @@ class MainWindow(QMainWindow):
         return None, True
 
     def generate_inspect_route(self):
+        if not self._ensure_route_planning_density():
+            return
         """从巡检目标点自动生成无人机航线（带碰撞检测）"""
         if not self._inspect_target_points:
             QMessageBox.warning(self, "提示", "请先选择巡检点位")
@@ -3569,6 +3757,8 @@ class MainWindow(QMainWindow):
 
     # ─── 生成立方体航线 ───
     def generate_cube_route(self):
+        if not self._ensure_route_planning_density():
+            return
         # 自动计算步距（如果还是默认的"自动"）
         if self.edt_cstep.text() == "自动" or self.edt_vstep.text() == "自动":
             self._calc_cube_spacing()
@@ -4236,7 +4426,11 @@ class MainWindow(QMainWindow):
             )
         except ValueError:
             self.viewer._safe_point = (0.0, 0.0, 5.0)
-        self.viewer.add_route(self.waypoints, reset_camera=False)
+        self.viewer.add_route(
+            self.waypoints,
+            reset_camera=False,
+            show_segment_distances=self.cmb_route_type.currentIndex() == 4,
+        )
         n = len(self.waypoints)
         info = f"航点: {n}"
         if n >= 1:
@@ -4339,11 +4533,23 @@ class MainWindow(QMainWindow):
                 if self._ray_stl_intersect(pos, target):
                     return False, 'los_stl'
             elif tree is not None:
-                for tt in np.linspace(0.05, 0.95, max(5, int(los_len / 0.5))):
-                    sample = pos + los * tt
-                    d, _ = tree.query(sample)
-                    if d < 0.3:
-                        return False, 'los'
+                if self.viewer.voxel_ray_is_occluded(pos, target):
+                    return False, 'los_voxel'
+                if self.viewer._voxel_actor is not None:
+                    return True, 'ok'
+                target_clearance = max(
+                    0.5, getattr(self.viewer, '_voxel_size', 0.0) * 1.5
+                )
+                checked_length = los_len - target_clearance
+                if checked_length > 0.1:
+                    t_end = min(0.95, checked_length / los_len)
+                    for tt in np.linspace(
+                        0.05, t_end, max(3, int(checked_length / 0.5))
+                    ):
+                        sample = pos + los * tt
+                        d, _ = tree.query(sample)
+                        if d < 0.3:
+                            return False, 'los'
         return True, 'ok'
 
     def _get_kdtree(self):
@@ -4513,8 +4719,10 @@ class MainWindow(QMainWindow):
         self.viewer._clear_place_preview()
         self.viewer._clear_line_points()
         self.viewer._clear_inspect_points()
+        self.viewer._clear_coord_labels()
         self._inspect_target_points.clear()
         self._inspect_target_normals.clear()
+        self.lst_inspect.clear()
         self._line_start_normal = None
         self._line_end_normal = None
         self._polygon_normals.clear()

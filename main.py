@@ -16,7 +16,7 @@ def main():
         try:
             import ctypes
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-                'BridgeRoutePlanner.1.0.0'
+                'BridgeRoutePlanner.1.1.0'
             )
         except Exception:
             pass

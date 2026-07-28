@@ -5,20 +5,26 @@ import struct
 
 
 def parse_pcd(filepath):
-    """解析 PCD 文件，返回 numpy 数组 (N, 3) float64"""
+    """解析 ASCII 或 Binary PCD，返回 (N, 3) float64 坐标数组。"""
     header = {}
-    data_start = 0
 
     with open(filepath, 'rb') as f:
         while True:
-            line = f.readline().decode('ascii', errors='ignore').strip()
-            if line.startswith('DATA'):
-                header['DATA'] = line.split()[1]
+            raw_line = f.readline()
+            if not raw_line:
+                raise ValueError("Invalid PCD file: missing DATA header")
+            line = raw_line.decode('ascii', errors='ignore').strip()
+            if not line or line.startswith('#'):
+                continue
+            parts = line.split()
+            key = parts[0].upper()
+            if key == 'DATA':
+                if len(parts) != 2:
+                    raise ValueError("Invalid PCD DATA header")
+                data_format = parts[1].lower()
                 data_start = f.tell()
                 break
-            if line:
-                parts = line.split()
-                header[parts[0]] = parts[1:]
+            header[key] = parts[1:]
 
     fields = header.get('FIELDS', ['x', 'y', 'z'])
     sizes = header.get('SIZE', ['4'] * len(fields))
@@ -26,52 +32,46 @@ def parse_pcd(filepath):
     width = int(header.get('WIDTH', ['0'])[0])
     height = int(header.get('HEIGHT', ['1'])[0])
     num_points = int(header.get('POINTS', [str(width * height)])[0])
-
     if num_points == 0:
         return np.empty((0, 3), dtype=np.float64)
 
-    xyz_indices = []
-    for i, f in enumerate(fields):
-        if f.lower() in ('x', 'y', 'z'):
-            xyz_indices.append(i)
-
+    xyz_indices = [i for i, field in enumerate(fields) if field.lower() in ('x', 'y', 'z')]
     if len(xyz_indices) != 3:
-        xyz_indices = [0, 1, 2]
+        raise ValueError("PCD file must contain x, y, and z fields")
 
-    if header['DATA'] == 'ascii':
-        with open(filepath, 'rb') as f:
-            f.seek(data_start)
-            raw = f.read().decode('ascii', errors='ignore')
+    if data_format == 'ascii':
         points = []
-        for line in raw.strip().split('\n'):
-            vals = line.strip().split()
-            if len(vals) >= 3:
-                points.append([float(vals[i]) for i in xyz_indices])
-        return np.array(points, dtype=np.float64) if points else np.empty((0, 3))
-
-    elif header['DATA'] == 'binary':
+        max_index = max(xyz_indices)
         with open(filepath, 'rb') as f:
             f.seek(data_start)
-            raw = f.read()
+            for raw_line in f:
+                values = raw_line.decode('ascii', errors='ignore').split()
+                if len(values) > max_index:
+                    points.append([float(values[index]) for index in xyz_indices])
+        return np.asarray(points, dtype=np.float64) if points else np.empty((0, 3), dtype=np.float64)
 
-        dtypes = []
-        for s, t in zip(sizes, types):
-            s = int(s)
-            if t.upper() == 'F':
-                dtypes.append(('f{}'.format(len(dtypes)), np.float32 if s == 4 else np.float64))
-            elif t.upper() == 'U':
-                dtypes.append(('f{}'.format(len(dtypes)), {1: np.uint8, 2: np.uint16, 4: np.uint32, 8: np.uint64}[s]))
-            else:
-                dtypes.append(('f{}'.format(len(dtypes)), {1: np.int8, 2: np.int16, 4: np.int32, 8: np.int64}[s]))
+    if data_format != 'binary':
+        raise ValueError(f"Unsupported PCD DATA mode: {data_format}")
 
-        structured = np.frombuffer(raw, dtype=np.dtype(dtypes), count=num_points)
-        xyz = np.zeros((num_points, 3), dtype=np.float64)
-        with np.errstate(invalid='ignore'):
-            for j, idx in enumerate(xyz_indices):
-                xyz[:, j] = structured['f{}'.format(idx)].astype(np.float64)
-        return xyz
+    dtype_fields = []
+    for index, (size, value_type) in enumerate(zip(sizes, types)):
+        size = int(size)
+        if value_type.upper() == 'F':
+            dtype = {4: np.float32, 8: np.float64}.get(size)
+        elif value_type.upper() == 'U':
+            dtype = {1: np.uint8, 2: np.uint16, 4: np.uint32, 8: np.uint64}.get(size)
+        else:
+            dtype = {1: np.int8, 2: np.int16, 4: np.int32, 8: np.int64}.get(size)
+        if dtype is None:
+            raise ValueError(f"Unsupported PCD field size: {size}")
+        dtype_fields.append((f'f{index}', dtype))
 
-    return np.empty((0, 3), dtype=np.float64)
+    with open(filepath, 'rb') as f:
+        f.seek(data_start)
+        structured = np.frombuffer(f.read(), dtype=np.dtype(dtype_fields), count=num_points)
+    if len(structured) != num_points:
+        raise ValueError("Truncated binary PCD data")
+    return np.column_stack([structured[f'f{index}'] for index in xyz_indices]).astype(np.float64)
 
 
 def parse_ply(filepath):
