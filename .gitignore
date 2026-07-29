@@ -35,4 +35,8 @@ Thumbs.db
 output/
 *.json
 !package.json
-assets/*
+assets/models/*.pcd
+assets/models/*.ply
+assets/models/*/*.png
+assets/models/*/*.obj
+assets/models/*/*.mtl
