@@ -399,11 +399,11 @@ class VTKViewer(QWidget):
         self.interactor = self.vtk_widget.GetRenderWindow().GetInteractor()
 
         # ─── 视角切换按钮（浮动在 VTK 上方）───
-        from PyQt5.QtWidgets import QFrame, QHBoxLayout, QLabel, QButtonGroup
+        from PyQt5.QtWidgets import QFrame, QHBoxLayout, QLabel, QButtonGroup, QToolButton
         from PyQt5.QtCore import Qt as QtCore
         self._view_frame = QFrame(self.vtk_widget)
         self._view_frame.setStyleSheet("QFrame { background: transparent; border: none; }")
-        self._view_frame.setFixedSize(250, 28)
+        self._view_frame.setFixedSize(280, 28)
         view_layout = QHBoxLayout(self._view_frame)
         view_layout.setContentsMargins(0, 0, 0, 0)
         view_layout.setSpacing(1)
@@ -427,6 +427,19 @@ class VTKViewer(QWidget):
             btn.mousePressEvent = lambda e, n=name, idx=i: self._on_view_label_click(n, idx)
             view_layout.addWidget(btn)
             self._view_btns_list.append((btn, name))
+        self._btn_recenter = QToolButton(self._view_frame)
+        self._btn_recenter.setText("⌖")
+        self._btn_recenter.setFixedSize(28, 26)
+        self._btn_recenter.setToolTip("重新聚焦当前数据")
+        self._btn_recenter.setAccessibleName("重新聚焦当前数据")
+        self._btn_recenter.setStyleSheet(
+            "QToolButton { color: #8c8c8c; background: #2a2a2a; "
+            "border: 1px solid #3a3a3a; font-size: 16px; padding: 0; } "
+            "QToolButton:hover { color: #ffa500; border-color: #ffa500; } "
+            "QToolButton:pressed { background: #333; }"
+        )
+        self._btn_recenter.clicked.connect(self.recenter_view)
+        view_layout.addWidget(self._btn_recenter)
         # 默认高亮3D
         self._view_btn_active = 4
         self._view_btns_list[4][0].setStyleSheet(
@@ -3028,10 +3041,14 @@ class VTKViewer(QWidget):
         self._actors.append(actor)
         self._cloud_actor = actor
 
-        # FPV模式下不重置相机，或者明确指定不重置
-        if reset_camera and not getattr(self, 'fpv_mode', False):
-            self.renderer.ResetCamera()
-        self._update_view(reset_camera=reset_camera)
+        self._update_view(
+            reset_camera=reset_camera,
+            camera_bounds=(
+                self._clip_bounds["x_min"], self._clip_bounds["x_max"],
+                self._clip_bounds["y_min"], self._clip_bounds["y_max"],
+                self._clip_bounds["z_min"], self._clip_bounds["z_max"],
+            ) if reset_camera and self._clip_bounds is not None else None,
+        )
 
     def add_voxel_grid(self, points, voxel_size=0.5, colors=None, reset_camera=True):
         """将点云渲染为3D体素栅格地图（高程着色）"""
@@ -3058,9 +3075,17 @@ class VTKViewer(QWidget):
         mn -= voxel_size
         mx += voxel_size
 
-        # 使用NumPy一次完成体素去重和统计，避免逐点Python字典循环。
+        # Pack the 3-D indices into one key. One-dimensional unique is much
+        # faster and uses less temporary memory than unique(axis=0).
         voxel_idx = ((points - mn) / voxel_size).astype(np.int64)
-        unique_idx, counts = np.unique(voxel_idx, axis=0, return_counts=True)
+        dims = voxel_idx.max(axis=0) + 1
+        keys = np.ravel_multi_index(voxel_idx.T, tuple(dims))
+        del voxel_idx
+        unique_keys, counts = np.unique(keys, return_counts=True)
+        del keys
+        unique_idx = np.column_stack(
+            np.unravel_index(unique_keys, tuple(dims))
+        ).astype(np.int64, copy=False)
         n_voxels = len(unique_idx)
         print(f"[VoxelGrid] size={voxel_size}m, {n_voxels} voxels from {len(points)} points")
         print(f"[VoxelGrid] bounds: x=[{mn[0]:.1f},{mx[0]:.1f}] y=[{mn[1]:.1f},{mx[1]:.1f}] z=[{mn[2]:.1f},{mx[2]:.1f}]")
@@ -3133,9 +3158,14 @@ class VTKViewer(QWidget):
         self._voxel_centers = centers
         self._voxel_surface_faces = None
 
-        if reset_camera and not getattr(self, 'fpv_mode', False):
-            self.renderer.ResetCamera()
-        self._update_view(reset_camera=reset_camera)
+        self._update_view(
+            reset_camera=reset_camera,
+            camera_bounds=(
+                self._clip_bounds["x_min"], self._clip_bounds["x_max"],
+                self._clip_bounds["y_min"], self._clip_bounds["y_max"],
+                self._clip_bounds["z_min"], self._clip_bounds["z_max"],
+            ) if reset_camera and self._clip_bounds is not None else None,
+        )
 
     def _clear_voxel_coverage(self):
         """移除体素航线覆盖叠加层。"""
@@ -4873,7 +4903,46 @@ class VTKViewer(QWidget):
         for actor in self._origin_axes_actors:
             actor.SetScale(scale, scale, scale)
 
-    def _update_view(self, reset_camera=True):
+    def _current_data_bounds(self):
+        """Return bounds for loaded data without including the fixed origin grid."""
+        if self._clip_bounds is not None:
+            return (
+                self._clip_bounds["x_min"], self._clip_bounds["x_max"],
+                self._clip_bounds["y_min"], self._clip_bounds["y_max"],
+                self._clip_bounds["z_min"], self._clip_bounds["z_max"],
+            )
+
+        mesh_bounds = []
+        for actor in self._get_all_mesh_actors():
+            bounds = actor.GetBounds()
+            if bounds and np.isfinite(bounds).all() and all(
+                bounds[i] <= bounds[i + 1] for i in (0, 2, 4)
+            ):
+                mesh_bounds.append(bounds)
+        if mesh_bounds:
+            return (
+                min(bounds[0] for bounds in mesh_bounds),
+                max(bounds[1] for bounds in mesh_bounds),
+                min(bounds[2] for bounds in mesh_bounds),
+                max(bounds[3] for bounds in mesh_bounds),
+                min(bounds[4] for bounds in mesh_bounds),
+                max(bounds[5] for bounds in mesh_bounds),
+            )
+        return None
+
+    def recenter_view(self):
+        """Fit the loaded point cloud or model while preserving view direction."""
+        if not self._vtk_available or getattr(self, "fpv_mode", False):
+            return
+        bounds = self._current_data_bounds()
+        if bounds is None:
+            return
+        self.renderer.ResetCamera(bounds)
+        self.renderer.ResetCameraClippingRange(bounds)
+        self._update_origin_axes_scale()
+        self.vtk_widget.GetRenderWindow().Render()
+
+    def _update_view(self, reset_camera=True, camera_bounds=None):
         if not self._vtk_available:
             return
         # FPV模式下由FPV系统控制相机，跳过默认视角设置
@@ -4882,14 +4951,15 @@ class VTKViewer(QWidget):
             return
         if reset_camera:
             cam = self.renderer.GetActiveCamera()
-            # 用场景中心而非原点
-            bounds = self.renderer.ComputeVisiblePropBounds()
+            # Point-cloud loads provide explicit bounds so the fixed origin grid
+            # cannot pull the camera away from distant data.
+            bounds = camera_bounds or self.renderer.ComputeVisiblePropBounds()
             cx = (bounds[0] + bounds[1]) / 2
             cy = (bounds[2] + bounds[3]) / 2
             cz = (bounds[4] + bounds[5]) / 2
             cam.SetFocalPoint(cx, cy, cz)
             cam.SetViewUp(0, 0, 1)
-            self.renderer.ResetCamera()
+            self.renderer.ResetCamera(bounds)
             cam.Elevation(30)
             cam.Azimuth(-45)
         self._update_origin_axes_scale()
@@ -4918,15 +4988,17 @@ class VTKViewer(QWidget):
 
     def _position_view_buttons(self):
         """保持视角按钮位于 VTK 控件最上层。"""
-        self._view_frame.move(max(0, self.vtk_widget.width() - 260), 8)
+        self._view_frame.move(
+            max(0, self.vtk_widget.width() - self._view_frame.width() - 8), 8
+        )
         self._view_frame.raise_()
     def _set_view(self, name):
 
         if not self._vtk_available or getattr(self, 'fpv_mode', False):
             return
         cam = self.renderer.GetActiveCamera()
-        # 获取场景中心
-        bounds = self.renderer.ComputeVisiblePropBounds()
+        # Focus view presets on loaded data, excluding the fixed origin grid.
+        bounds = self._current_data_bounds() or self.renderer.ComputeVisiblePropBounds()
         cx = (bounds[0] + bounds[1]) / 2
         cy = (bounds[2] + bounds[3]) / 2
         cz = (bounds[4] + bounds[5]) / 2

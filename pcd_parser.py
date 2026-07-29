@@ -1,11 +1,13 @@
 """点云文件解析模块（PCD + PLY）"""
 
-import numpy as np
+import os
 import struct
+
+import numpy as np
 
 
 def parse_pcd(filepath):
-    """解析 ASCII 或 Binary PCD，返回 (N, 3) float64 坐标数组。"""
+    """解析 ASCII 或 Binary PCD，返回 (N, 3) 浮点坐标数组。"""
     header = {}
 
     with open(filepath, 'rb') as f:
@@ -29,32 +31,49 @@ def parse_pcd(filepath):
     fields = header.get('FIELDS', ['x', 'y', 'z'])
     sizes = header.get('SIZE', ['4'] * len(fields))
     types = header.get('TYPE', ['F'] * len(fields))
+    counts = header.get('COUNT', ['1'] * len(fields))
+    if not (len(fields) == len(sizes) == len(types) == len(counts)):
+        raise ValueError("Invalid PCD header: FIELDS/SIZE/TYPE/COUNT length mismatch")
+    counts = [int(count) for count in counts]
+    if any(count < 1 for count in counts):
+        raise ValueError("Invalid PCD header: COUNT values must be positive")
     width = int(header.get('WIDTH', ['0'])[0])
     height = int(header.get('HEIGHT', ['1'])[0])
     num_points = int(header.get('POINTS', [str(width * height)])[0])
     if num_points == 0:
         return np.empty((0, 3), dtype=np.float64)
 
-    xyz_indices = [i for i, field in enumerate(fields) if field.lower() in ('x', 'y', 'z')]
-    if len(xyz_indices) != 3:
+    xyz_field_indices = {
+        field.lower(): index
+        for index, field in enumerate(fields)
+        if field.lower() in ('x', 'y', 'z')
+    }
+    if set(xyz_field_indices) != {'x', 'y', 'z'}:
         raise ValueError("PCD file must contain x, y, and z fields")
+    if any(counts[xyz_field_indices[axis]] != 1 for axis in ('x', 'y', 'z')):
+        raise ValueError("PCD x, y, and z fields must have COUNT 1")
+
+    field_offsets = np.cumsum([0] + counts[:-1])
+    xyz_value_indices = [
+        field_offsets[xyz_field_indices[axis]] for axis in ('x', 'y', 'z')
+    ]
 
     if data_format == 'ascii':
         points = []
-        max_index = max(xyz_indices)
+        max_index = max(xyz_value_indices)
         with open(filepath, 'rb') as f:
             f.seek(data_start)
             for raw_line in f:
                 values = raw_line.decode('ascii', errors='ignore').split()
                 if len(values) > max_index:
-                    points.append([float(values[index]) for index in xyz_indices])
+                    points.append([float(values[index]) for index in xyz_value_indices])
         return np.asarray(points, dtype=np.float64) if points else np.empty((0, 3), dtype=np.float64)
 
     if data_format != 'binary':
         raise ValueError(f"Unsupported PCD DATA mode: {data_format}")
 
     dtype_fields = []
-    for index, (size, value_type) in enumerate(zip(sizes, types)):
+    for index, (size, value_type, count) in enumerate(zip(sizes, types, counts)):
         size = int(size)
         if value_type.upper() == 'F':
             dtype = {4: np.float32, 8: np.float64}.get(size)
@@ -64,14 +83,29 @@ def parse_pcd(filepath):
             dtype = {1: np.int8, 2: np.int16, 4: np.int32, 8: np.int64}.get(size)
         if dtype is None:
             raise ValueError(f"Unsupported PCD field size: {size}")
-        dtype_fields.append((f'f{index}', dtype))
+        if count == 1:
+            dtype_fields.append((f'f{index}', dtype))
+        else:
+            dtype_fields.append((f'f{index}', dtype, (count,)))
 
-    with open(filepath, 'rb') as f:
-        f.seek(data_start)
-        structured = np.frombuffer(f.read(), dtype=np.dtype(dtype_fields), count=num_points)
-    if len(structured) != num_points:
+    point_dtype = np.dtype(dtype_fields)
+    expected_size = data_start + point_dtype.itemsize * num_points
+    if os.path.getsize(filepath) < expected_size:
         raise ValueError("Truncated binary PCD data")
-    return np.column_stack([structured[f'f{index}'] for index in xyz_indices]).astype(np.float64)
+    structured = np.memmap(
+        filepath, dtype=point_dtype, mode="r", offset=data_start, shape=(num_points,)
+    )
+    coordinate_dtype = np.result_type(
+        *[
+            point_dtype.fields[f"f{xyz_field_indices[axis]}"][0]
+            for axis in ('x', 'y', 'z')
+        ]
+    )
+    points = np.empty((num_points, 3), dtype=coordinate_dtype)
+    for output_index, axis in enumerate(('x', 'y', 'z')):
+        field_index = xyz_field_indices[axis]
+        points[:, output_index] = structured[f"f{field_index}"]
+    return points
 
 
 def parse_ply(filepath):

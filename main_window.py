@@ -1251,13 +1251,14 @@ class MainWindow(QMainWindow):
         if sample_size == len(self.points):
             sample = self.points
         else:
-            rng = np.random.default_rng(42)
-            sample = self.points[rng.choice(len(self.points), sample_size, replace=False)]
-        if self._kdtree is None or self._kdtree_points_id != id(self.points):
-            from scipy.spatial import cKDTree
-            self._kdtree = cKDTree(self.points)
-            self._kdtree_points_id = id(self.points)
-        distances, _ = self._kdtree.query(sample, k=2, workers=-1)
+            # Preserve local neighbours by sampling contiguous blocks across the file.
+            block_count = 10
+            block_size = sample_size // block_count
+            starts = np.linspace(0, len(self.points) - block_size, block_count, dtype=np.int64)
+            sample = np.concatenate([self.points[start:start + block_size] for start in starts])
+        from scipy.spatial import cKDTree
+        sample_tree = cKDTree(sample)
+        distances, _ = sample_tree.query(sample, k=2, workers=-1)
         spacing = distances[:, 1]
         spacing = spacing[np.isfinite(spacing)]
         if len(spacing) == 0:
@@ -1375,11 +1376,13 @@ class MainWindow(QMainWindow):
                     self._point_normals = self._point_normals[valid]
 
             n = len(self.points)
+            self._kdtree = None
+            self._kdtree_points_id = None
             self._analyze_point_density()
-            colors = self._apply_color_scheme(self.points, self._point_colors)
             if self._get_render_mode() == 'voxel':
-                self.viewer.add_voxel_grid(self.points, self._voxel_size, colors=colors)
+                self.viewer.add_voxel_grid(self.points, self._voxel_size)
             else:
+                colors = self._apply_color_scheme(self.points, self._point_colors)
                 self.viewer.add_point_cloud(self.points, self._get_render_mode(), self._get_point_size(), colors=colors, use_lighting=(self._color_scheme == "original"))
             self._update_height_legend()
             self._set_point_cloud_view_actions_enabled(True)
@@ -4800,6 +4803,13 @@ class MainWindow(QMainWindow):
         self._kdtree_points_id = pts_id
         return self._kdtree
 
+    def _set_waypoint_color(self, index, color):
+        """Set the color of a single actor or every actor in a composite pin."""
+        marker = self.viewer._waypoint_actors[index]
+        actors = marker if isinstance(marker, (tuple, list)) else (marker,)
+        for actor in actors:
+            actor.GetProperty().SetColor(*color)
+
     def _check_safety_distance(self):
         if not self.waypoints:
             return
@@ -4808,18 +4818,18 @@ class MainWindow(QMainWindow):
 
         for i, j, d in violations:
             if i < len(self.viewer._waypoint_actors):
-                self.viewer._waypoint_actors[i].GetProperty().SetColor(1.0, 0.0, 0.0)
+                self._set_waypoint_color(i, (1.0, 0.0, 0.0))
             if j < len(self.viewer._waypoint_actors):
-                self.viewer._waypoint_actors[j].GetProperty().SetColor(1.0, 0.0, 0.0)
+                self._set_waypoint_color(j, (1.0, 0.0, 0.0))
 
         for idx, dist in collisions:
             if idx >= 0 and idx < len(self.viewer._waypoint_actors):
-                self.viewer._waypoint_actors[idx].GetProperty().SetColor(1.0, 0.0, 1.0)
+                self._set_waypoint_color(idx, (1.0, 0.0, 1.0))
 
         min_z = self._get_min_z()
         for idx, z_val in low_z:
             if idx < len(self.viewer._waypoint_actors):
-                self.viewer._waypoint_actors[idx].GetProperty().SetColor(1.0, 0.5, 0.0)
+                self._set_waypoint_color(idx, (1.0, 0.5, 0.0))
 
         collision_dist = safe_dist * 1.5
         seg_collisions = set(idx for idx, _ in collisions if idx >= 0)
@@ -5181,6 +5191,7 @@ class MainWindow(QMainWindow):
                 "y": round(float(pos[1]), 6),
                 "z": round(float(pos[2]), 6),
                 "devicePartName": f"航点{i+1}",
+                "pos_type":"SLAM_LIDAR",
                 "cameraSource": camera_source,
                 "focalLength": focal_length,
                 "gimbalPitch": round(float(gimbal_pitch), 2),
@@ -5284,6 +5295,7 @@ class MainWindow(QMainWindow):
                 "y": round(float(pos[1]), 6),
                 "z": round(float(pos[2]), 6),
                 "devicePartName": f"航点{i+1}",
+                "pos_type":"SLAM_LIDAR",
                 "cameraSource": camera_source,
                 "focalLength": focal_length,
                 "gimbalPitch": round(float(gimbal_pitch), 2),
