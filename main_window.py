@@ -52,7 +52,7 @@ class WelcomePage(QWidget):
         p.drawText(0, int(h * .14), w, 52, Qt.AlignCenter, "欢迎使用航线设计 App")
         p.setPen(QColor("#9ba9b2"))
         p.setFont(QFont(self._font_family, 17))
-        p.drawText(0, int(h * .21), w, 30, Qt.AlignCenter, "从现场数据到可执行巡检航线")
+        # p.drawText(0, int(h * .21), w, 30, Qt.AlignCenter, "从现场数据到可执行巡检航线")
 
         band_top = int(h * .33)
         band_bottom = int(h * .64)
