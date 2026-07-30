@@ -403,7 +403,7 @@ class MainWindow(QMainWindow):
         self._voxel_menu = self._view_menu.addMenu("体素大小")
         self._voxel_group = QActionGroup(self)
         self._voxel_size = 0.5  # 默认0.5m
-        for val in [0.3, 0.5, 1.0, 2.0]:
+        for val in [0.1, 0.3, 0.5, 1.0]:
             label = f"{val:.1f}m"
             act = QAction(label, self)
             act.setCheckable(True)
@@ -4637,7 +4637,31 @@ class MainWindow(QMainWindow):
         self.lbl_transition_status.setStyleSheet("color: #36d399; font-size: 11px;")
         self._display_route()
 
+    def _orient_route_from_takeoff(self):
+        """Orient the existing route so its nearer endpoint is the takeoff-side start."""
+        if len(self.waypoints) < 2:
+            return
+        try:
+            takeoff = np.array([
+                float(self.edt_current_x.text()),
+                float(self.edt_current_y.text()),
+                float(self.edt_current_z.text()),
+            ])
+        except ValueError:
+            return
+        first_dist = float(np.linalg.norm(np.asarray(self.waypoints[0]["pos"]) - takeoff))
+        last_dist = float(np.linalg.norm(np.asarray(self.waypoints[-1]["pos"]) - takeoff))
+        if last_dist + 1e-9 < first_dist:
+            self.waypoints.reverse()
+            # Reversing changes the first business target, so any old transition is stale.
+            self._transition_path = []
+            self._transition_goal = None
+            self.viewer._transition_path = []
+            self.lbl_transition_status.setText("过渡路径: 航线方向已按起飞点调整，请重新规划")
+            self.lbl_transition_status.setStyleSheet("color: #f0a529; font-size: 11px;")
+
     def _display_route(self):
+        self._orient_route_from_takeoff()
         try:
             current_hover = np.array([
                 float(self.edt_current_x.text()),
@@ -4816,7 +4840,8 @@ class MainWindow(QMainWindow):
         marker = self.viewer._waypoint_actors[index]
         actors = marker if isinstance(marker, (tuple, list)) else (marker,)
         for actor in actors:
-            actor.GetProperty().SetColor(*color)
+            if not getattr(actor, "_waypoint_pin_core", False):
+                actor.GetProperty().SetColor(*color)
 
     def _check_safety_distance(self):
         if not self.waypoints:
@@ -4826,13 +4851,13 @@ class MainWindow(QMainWindow):
 
         for i, j, d in violations:
             if i < len(self.viewer._waypoint_actors):
-                self._set_waypoint_color(i, (1.0, 0.0, 0.0))
+                self._set_waypoint_color(i, (0.85, 0.25, 1.0))
             if j < len(self.viewer._waypoint_actors):
-                self._set_waypoint_color(j, (1.0, 0.0, 0.0))
+                self._set_waypoint_color(j, (0.85, 0.25, 1.0))
 
         for idx, dist in collisions:
             if idx >= 0 and idx < len(self.viewer._waypoint_actors):
-                self._set_waypoint_color(idx, (1.0, 0.0, 1.0))
+                self._set_waypoint_color(idx, (1.0, 0.0, 0.0))
 
         min_z = self._get_min_z()
         for idx, z_val in low_z:

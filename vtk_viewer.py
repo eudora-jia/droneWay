@@ -500,6 +500,9 @@ class VTKViewer(QWidget):
         self._wp_edit_offset = None
         self._wp_edit_actor = None
         self._waypoint_actors = []
+        self._waypoint_marker_actors = []  # 单独航点图钉，用于保持固定屏幕尺寸
+        self._route_end_pin_texture = None
+        self._fixed_marker_actors = []  # (actor, base_radius)
         self._coord_label_actors = []  # (QLabel, world_position)
         self._axes_actors = []  # 坐标轴和网格actor
         self._origin_axes_actors = []
@@ -547,7 +550,7 @@ class VTKViewer(QWidget):
         self.fpv_mode = False
         self._fpv_first_person = True  # True=第一人称, False=第三人称
         self._fpv_pos = np.array([0.0, 0.0, 5.0])  # 无人机位置
-        self._fpv_yaw = 0.0    # 偏航角（度），0=朝+X方向
+        self._fpv_yaw = -90.0  # 固定默认机头朝向世界坐标 -Y
         self._fpv_pitch = 0.0  # 俯仰角（度），0=水平，正=向下看
         self._fpv_speed = 0.5  # 默认飞行速度（米/帧，60fps时约30m/s）
         self._fpv_boost_speed = 2.0  # Shift加速时的速度
@@ -579,6 +582,7 @@ class VTKViewer(QWidget):
     def timerEvent(self, event):
         if getattr(self, '_vtk_available', False) and getattr(self, 'interactor', None):
             self.interactor.ProcessEvents()
+            self._update_waypoint_marker_scale()
             # FPV模式下持续处理按键移动
             if getattr(self, 'fpv_mode', False):
                 self.fpv_tick()
@@ -2718,9 +2722,9 @@ class VTKViewer(QWidget):
     def _enter_fpv_camera(self):
         """进入FPV相机模式"""
         cam = self.renderer.GetActiveCamera()
-        # FPV始终从世界坐标原点出发，初始朝向为+X轴。
+        # FPV始终从世界坐标原点出发，固定初始机头朝向世界坐标 -Y。
         self._fpv_pos = np.zeros(3, dtype=float)
-        self._fpv_yaw = 0.0
+        self._fpv_yaw = -90.0
         self._fpv_pitch = 0.0
 
         cam.SetClippingRange(0.01, 500.0)
@@ -3144,7 +3148,7 @@ class VTKViewer(QWidget):
         prop.SetDiffuse(0.7)
         prop.SetSpecular(0.1)
         prop.SetSpecularPower(10)
-        prop.BackfaceCullingOff()
+        prop.BackfaceCullingOn()
         prop.SetInterpolationToFlat()
 
         self.renderer.AddActor(actor)
@@ -3366,10 +3370,12 @@ class VTKViewer(QWidget):
         bar = vtk.vtkScalarBarActor()
         bar.SetLookupTable(lut)
         bar.SetTitle("高程 (m)")
+        bar.SetTextPositionToPrecedeScalarBar()
         bar.SetNumberOfLabels(3)
-        bar.SetPosition(0.87, 0.20)
-        bar.SetWidth(0.10)
-        bar.SetHeight(0.55)
+        bar.GetPositionCoordinate().SetCoordinateSystemToNormalizedViewport()
+        bar.GetPositionCoordinate().SetValue(0.94, 0.20)
+        bar.GetPosition2Coordinate().SetCoordinateSystemToNormalizedViewport()
+        bar.GetPosition2Coordinate().SetValue(0.05, 0.55)
         bar.SetMaximumWidthInPixels(42)
         bar.SetMaximumHeightInPixels(260)
         bar.GetTitleTextProperty().SetColor(1.0, 1.0, 1.0)
@@ -3561,6 +3567,23 @@ class VTKViewer(QWidget):
             return False
         cos_angle = np.dot(d1, d2) / (n1 * n2)
         return cos_angle < np.cos(np.radians(30))
+    def _get_route_end_pin_texture(self):
+        """Load and cache the transparent route-end pin texture."""
+        if self._route_end_pin_texture is not None:
+            return self._route_end_pin_texture
+        import os
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icons", "route_end_pin.png")
+        if not os.path.exists(path):
+            return None
+        reader = self._vtkPNGReader()
+        reader.SetFileName(path)
+        reader.Update()
+        texture = self._vtkTexture()
+        texture.SetInputConnection(reader.GetOutputPort())
+        texture.InterpolateOn()
+        self._route_end_pin_texture = texture
+        return texture
+
     def add_route(self, waypoints, reset_camera=True, show_segment_distances=None,
                   show_waypoint_indices=None):
         """显示航线和航点"""
@@ -3589,7 +3612,7 @@ class VTKViewer(QWidget):
         self._add_scene_axes()
 
         n = len(waypoints)
-        BATCH_THRESHOLD = 50
+        BATCH_THRESHOLD = float("inf")  # 固定屏幕尺寸要求每个航点独立缩放
 
         # ── 航线路径 ──
         vtk_pts = self._vtkPoints()
@@ -3645,30 +3668,35 @@ class VTKViewer(QWidget):
             self._actors.append(actor)
 
         # 起飞点球体
+        self._fixed_marker_actors = []
         takeoff_sphere = self._vtkSphereSource()
-        takeoff_sphere.SetCenter(origin)
+        takeoff_sphere.SetCenter(0.0, 0.0, 0.0)
         takeoff_sphere.SetRadius(0.2)
         takeoff_sphere.Update()
         tm = self._vtkPolyDataMapper()
         tm.SetInputConnection(takeoff_sphere.GetOutputPort())
         ta = self._vtkActor()
         ta.SetMapper(tm)
+        ta.SetPosition(origin)
         ta.GetProperty().SetColor(0.2, 0.5, 1.0)
         self.renderer.AddActor(ta)
         self._actors.append(ta)
+        self._fixed_marker_actors.append((ta, 0.2))
 
         # 悬停点球体（绿色）
         hover_sphere = self._vtkSphereSource()
-        hover_sphere.SetCenter(takeoff_pt)
+        hover_sphere.SetCenter(0.0, 0.0, 0.0)
         hover_sphere.SetRadius(0.25)
         hover_sphere.Update()
         hm = self._vtkPolyDataMapper()
         hm.SetInputConnection(hover_sphere.GetOutputPort())
         ha = self._vtkActor()
         ha.SetMapper(hm)
+        ha.SetPosition(takeoff_pt)
         ha.GetProperty().SetColor(0.2, 0.9, 0.3)
         self.renderer.AddActor(ha)
         self._actors.append(ha)
+        self._fixed_marker_actors.append((ha, 0.25))
 
         # 起飞方向箭头（起飞点处，按偏航角）
         yaw_rad = np.radians(self._takeoff_yaw)
@@ -3688,6 +3716,7 @@ class VTKViewer(QWidget):
         self._actors.append(arrow_actor)
 
         self._waypoint_actors = []
+        self._waypoint_marker_actors = []
         self._waypoints_ref = waypoints
         if n >= 2:
             avg_d = np.mean([np.linalg.norm(waypoints[i+1]['pos'] - waypoints[i]['pos']) for i in range(n-1)])
@@ -3728,17 +3757,17 @@ class VTKViewer(QWidget):
             sm.SetInputConnection(glyph.GetOutputPort())
             sa = self._vtkActor()
             sa.SetMapper(sm)
-            sa.GetProperty().SetColor(1.0, 0.2, 0.2)
+            sa.GetProperty().SetColor(0.0, 0.8, 1.0)
             sa.GetProperty().SetOpacity(0.9)
             self.renderer.AddActor(sa)
             self._actors.append(sa)
             self._waypoint_actors = [sa] * n
         else:
-            # ── 少量航点：圆头加锥尖的地图图钉，支持单独拖拽编辑 ──
-            for wp in waypoints:
+            # ── 中间航点为圆点，尾点为地标图钉 ──
+            for wp_idx, wp in enumerate(waypoints):
                 pos = wp['pos']
                 cone = self._vtkConeSource()
-                cone.SetCenter(pos[0], pos[1], pos[2] + 0.17)
+                cone.SetCenter(0.0, 0.0, 0.17)
                 cone.SetRadius(0.13)
                 cone.SetHeight(0.34)
                 cone.SetDirection(0.0, 0.0, -1.0)
@@ -3748,9 +3777,11 @@ class VTKViewer(QWidget):
                 cone_mapper.SetInputConnection(cone.GetOutputPort())
                 cone_actor = self._vtkActor()
                 cone_actor.SetMapper(cone_mapper)
+                cone_actor.SetPosition(pos.tolist())
+                cone_actor.SetVisibility(wp_idx == n - 1)
 
                 head = self._vtkSphereSource()
-                head.SetCenter(pos[0], pos[1], pos[2] + 0.29)
+                head.SetCenter(0.0, 0.0, 0.29 if wp_idx == n - 1 else 0.0)
                 head.SetRadius(0.14)
                 head.SetThetaResolution(16)
                 head.SetPhiResolution(12)
@@ -3759,13 +3790,61 @@ class VTKViewer(QWidget):
                 head_mapper.SetInputConnection(head.GetOutputPort())
                 head_actor = self._vtkActor()
                 head_actor.SetMapper(head_mapper)
+                head_actor.SetPosition(pos.tolist())
+
+                core = self._vtkSphereSource()
+                core.SetCenter(0.0, 0.0, 0.435)
+                core.SetRadius(0.055)
+                core.SetThetaResolution(16)
+                core.SetPhiResolution(12)
+                core.Update()
+                core_mapper = self._vtkPolyDataMapper()
+                core_mapper.SetInputConnection(core.GetOutputPort())
+                core_actor = self._vtkActor()
+                core_actor.SetMapper(core_mapper)
+                core_actor.SetPosition(pos.tolist())
+                core_actor.SetVisibility(wp_idx == n - 1)
+                core_actor._waypoint_pin_core = True
+                core_actor.GetProperty().SetColor(1.0, 1.0, 1.0)
+                core_actor.GetProperty().SetOpacity(0.98)
+
+                icon_actor = None
+                if wp_idx == n - 1:
+                    texture = self._get_route_end_pin_texture()
+                    if texture is not None:
+                        cone_actor.SetVisibility(False)
+                        head_actor.SetVisibility(False)
+                        core_actor.SetVisibility(False)
+                        plane = self._vtk.vtkPlaneSource()
+                        plane.SetOrigin(-0.5, -0.5, 0.0)
+                        plane.SetPoint1(0.5, -0.5, 0.0)
+                        plane.SetPoint2(-0.5, 0.5, 0.0)
+                        plane.Update()
+                        icon_mapper = self._vtkPolyDataMapper()
+                        icon_mapper.SetInputConnection(plane.GetOutputPort())
+                        icon_actor = self._vtk.vtkFollower()
+                        icon_actor.SetMapper(icon_mapper)
+                        icon_actor.SetTexture(texture)
+                        icon_actor.SetCamera(self.renderer.GetActiveCamera())
+                        icon_actor.SetPosition(pos.tolist())
+                        icon_actor._waypoint_marker_base_radius = 0.5
+                        icon_actor._waypoint_marker_screen_fraction = 0.014
+                        icon_actor.GetProperty().SetLighting(False)
+                        icon_actor.GetProperty().SetOpacity(0.98)
 
                 for actor in (cone_actor, head_actor):
-                    actor.GetProperty().SetColor(1.0, 0.2, 0.2)
+                    actor.GetProperty().SetColor(0.0, 0.8, 1.0)
                     actor.GetProperty().SetOpacity(0.95)
                     self.renderer.AddActor(actor)
                     self._actors.append(actor)
-                self._waypoint_actors.append((cone_actor, head_actor))
+                self.renderer.AddActor(core_actor)
+                self._actors.append(core_actor)
+                if icon_actor is not None:
+                    self.renderer.AddActor(icon_actor)
+                    self._actors.append(icon_actor)
+                marker = (icon_actor,) if icon_actor is not None else (cone_actor, head_actor, core_actor)
+                self._waypoint_actors.append(marker)
+                self._waypoint_marker_actors.append(marker)
 
             # 标签只在少量航点时显示
             if self.show_waypoint_indices:
@@ -3786,6 +3865,8 @@ class VTKViewer(QWidget):
         self._update_coord_labels()
         if hasattr(self, '_view_frame'):
             self._view_frame.raise_()
+
+        self._update_waypoint_marker_scale()
 
         # ── 相机覆盖区域投影（显示重叠率）──
         has_target = any('target_pos' in wp for wp in waypoints)
@@ -4496,7 +4577,8 @@ class VTKViewer(QWidget):
         if idx < len(self._waypoint_actors):
             marker = self._waypoint_actors[idx]
             for actor in marker if isinstance(marker, tuple) else (marker,):
-                actor.GetProperty().SetColor(1.0, 1.0, 0.0)
+                if not getattr(actor, "_waypoint_pin_core", False):
+                    actor.GetProperty().SetColor(1.0, 1.0, 0.0)
 
     def _update_wp_edit(self, screen_x, screen_y):
         if not self._wp_editing:
@@ -4513,8 +4595,7 @@ class VTKViewer(QWidget):
         if self._wp_edit_idx < len(self._waypoint_actors):
             marker = self._waypoint_actors[self._wp_edit_idx]
             for actor in marker if isinstance(marker, tuple) else (marker,):
-                actor.SetPosition(new_pos[0] - actor.GetCenter()[0],
-                                  new_pos[1] - actor.GetCenter()[1], 0)
+                actor.SetPosition(new_pos[0], new_pos[1], wp["pos"][2])
 
         self.vtk_widget.GetRenderWindow().Render()
 
@@ -4528,7 +4609,8 @@ class VTKViewer(QWidget):
         if idx < len(self._waypoint_actors):
             marker = self._waypoint_actors[idx]
             for actor in marker if isinstance(marker, tuple) else (marker,):
-                actor.GetProperty().SetColor(1.0, 0.2, 0.2)
+                if not getattr(actor, "_waypoint_pin_core", False):
+                    actor.GetProperty().SetColor(0.0, 0.8, 1.0)
 
         self._wp_editing = False
         self._wp_edit_idx = -1
@@ -4839,6 +4921,36 @@ class VTKViewer(QWidget):
                 view_height = 2.0 * distance * half_fov_tan
             desired_radius = max(view_height * 0.005, 1e-6)
             scale = desired_radius / base_radius
+            actor.SetScale(scale, scale, scale)
+
+    def _update_waypoint_marker_scale(self):
+        """Keep waypoint pins at a stable on-screen size as the camera moves."""
+        if not self._waypoint_marker_actors and not self._fixed_marker_actors:
+            return
+        cam = self.renderer.GetActiveCamera()
+        parallel = bool(cam.GetParallelProjection())
+        cam_pos = np.asarray(cam.GetPosition(), dtype=float)
+        half_fov_tan = math.tan(math.radians(cam.GetViewAngle()) / 2.0)
+        for marker in self._waypoint_marker_actors:
+            anchor = np.asarray(marker[0].GetPosition(), dtype=float)
+            if parallel:
+                view_height = 2.0 * cam.GetParallelScale()
+            else:
+                distance = max(float(np.linalg.norm(cam_pos - anchor)), 1e-6)
+                view_height = 2.0 * distance * half_fov_tan
+            base_radius = getattr(marker[0], "_waypoint_marker_base_radius", 0.14)
+            screen_fraction = getattr(marker[0], "_waypoint_marker_screen_fraction", 0.009)
+            scale = max(view_height * screen_fraction / base_radius, 1e-6)
+            for actor in marker:
+                actor.SetScale(scale, scale, scale)
+        for actor, base_radius in self._fixed_marker_actors:
+            if parallel:
+                view_height = 2.0 * cam.GetParallelScale()
+            else:
+                anchor = np.asarray(actor.GetPosition(), dtype=float)
+                distance = max(float(np.linalg.norm(cam_pos - anchor)), 1e-6)
+                view_height = 2.0 * distance * half_fov_tan
+            scale = max(view_height * 0.009 / base_radius, 1e-6)
             actor.SetScale(scale, scale, scale)
 
     def _add_route_overlay_label(self, text, world_pos, font_size=11):
