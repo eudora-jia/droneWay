@@ -146,7 +146,7 @@ class MainWindow(QMainWindow):
             "lbl_span": "跨距(m):", "btn_apply": "应用",
             "grp_safe": "安全设置", "lbl_safe_dist": "安全距离(m):",
             "lbl_takeoff_z": "起飞高度(m):", "lbl_takeoff_yaw": "起飞偏航角(°):",
-            "lbl_safe_point": "安全点(x,y,z):", "lbl_min_z": "最低飞行Z值(m):",
+        "lbl_min_z": "最低飞行Z值(m):",
             "lbl_min_z_hint": "低于此值视为碰撞",
             "lbl_wp_hint": "Ctrl+左键点击航点可拖动编辑位置",
             "lbl_route_type": "航线类型:",
@@ -208,7 +208,7 @@ class MainWindow(QMainWindow):
             "lbl_span": "Span(m):", "btn_apply": "Apply",
             "grp_safe": "Safety", "lbl_safe_dist": "Safe Dist(m):",
             "lbl_takeoff_z": "Takeoff Z(m):", "lbl_takeoff_yaw": "Takeoff Yaw(°):",
-            "lbl_safe_point": "Safe Point(x,y,z):", "lbl_min_z": "Min Z(m):",
+            "lbl_min_z": "Min Z(m):",
             "lbl_min_z_hint": "Below this = collision",
             "lbl_wp_hint": "Ctrl+Click waypoint to drag",
             "lbl_route_type": "Route Type:",
@@ -678,22 +678,11 @@ class MainWindow(QMainWindow):
         tk_row.addStretch()
         pk.addLayout(tk_row)
 
-        safe_row = QHBoxLayout()
-        safe_row.addWidget(QLabel("安全点(x,y,z):"))
-        self.edt_safe_x = QLineEdit("0"); self.edt_safe_x.setMaximumWidth(50)
-        self.edt_safe_y = QLineEdit("0"); self.edt_safe_y.setMaximumWidth(50)
-        self.edt_safe_z = QLineEdit("5.0"); self.edt_safe_z.setMaximumWidth(50)
-        safe_row.addWidget(self.edt_safe_x)
-        safe_row.addWidget(self.edt_safe_y)
-        safe_row.addWidget(self.edt_safe_z)
-        safe_row.addStretch()
-        pk.addLayout(safe_row)
-
         current_row = QHBoxLayout()
-        current_row.addWidget(QLabel("当前位置(x,y,z):"))
+        current_row.addWidget(QLabel("起飞点(x,y,z):"))
         self.edt_current_x = QLineEdit("0"); self.edt_current_x.setMaximumWidth(50)
         self.edt_current_y = QLineEdit("0"); self.edt_current_y.setMaximumWidth(50)
-        self.edt_current_z = QLineEdit("1.2"); self.edt_current_z.setMaximumWidth(50)
+        self.edt_current_z = QLineEdit("0"); self.edt_current_z.setMaximumWidth(50)
         current_row.addWidget(self.edt_current_x)
         current_row.addWidget(self.edt_current_y)
         current_row.addWidget(self.edt_current_z)
@@ -1398,9 +1387,6 @@ class MainWindow(QMainWindow):
                 # 起飞Z 固定 1.2m
                 self.edt_takeoff_z.setText("1.2")
 
-                # 安全点 Z = 点云最高点 + 2m
-                safe_z = float(mx[2]) + 2.0
-                self.edt_safe_z.setText(f"{safe_z:.1f}")
 
                 # 最低飞行Z值 = 点云最低点
                 self.edt_min_z.setText(f"{float(mn[2]):.1f}")
@@ -2166,7 +2152,6 @@ class MainWindow(QMainWindow):
         "安全距离(m):": "Safe Dist(m):",
         "起飞高度(m):": "Takeoff Z(m):",
         "起飞偏航角(°):": "Takeoff Yaw(°):",
-        "安全点(x,y,z):": "Safe Pt(x,y,z):",
         "最低飞行Z值(m):": "Min Z(m):",
         "低于此值视为碰撞": "Below this = collision",
         "航线类型:": "Route Type:",
@@ -4417,6 +4402,7 @@ class MainWindow(QMainWindow):
                 cur_dz = float(self.edt_dz.text())
                 if cur_dz > max_dz:
                     self.edt_dz.setText(f"{max_dz:.1f}")
+                self.edt_dz.setText(f"{max_dz:.1f}")
             except ValueError:
                 self.edt_dz.setText(f"{max_dz:.1f}")
 
@@ -4446,6 +4432,7 @@ class MainWindow(QMainWindow):
                 cur_h = float(self.edt_cyl_h.text())
                 if cur_h > max_h:
                     self.edt_cyl_h.setText(f"{max_h:.1f}")
+                self.edt_cyl_h.setText(f"{max_h:.1f}")
             except ValueError:
                 self.edt_cyl_h.setText(f"{max_h:.1f}")
 
@@ -4520,6 +4507,7 @@ class MainWindow(QMainWindow):
                 cur_dz = float(self.edt_dz.text())
                 if cur_dz > max_dz:
                     self.edt_dz.setText(f"{max_dz:.1f}")
+                self.edt_dz.setText(f"{max_dz:.1f}")
             except ValueError:
                 self.edt_dz.setText(f"{max_dz:.1f}")
 
@@ -4549,6 +4537,7 @@ class MainWindow(QMainWindow):
                 cur_h = float(self.edt_cyl_h.text())
                 if cur_h > max_h:
                     self.edt_cyl_h.setText(f"{max_h:.1f}")
+                self.edt_cyl_h.setText(f"{max_h:.1f}")
             except ValueError:
                 self.edt_cyl_h.setText(f"{max_h:.1f}")
 
@@ -4576,15 +4565,21 @@ class MainWindow(QMainWindow):
         return result
 
     def plan_safe_transition(self):
-        """用点云体素自由空间 A* 规划当前位置到首航点的安全过渡路径。"""
+        """用点云体素自由空间 A* 规划悬停点到首航点的安全过渡路径。"""
         if self.points is None or len(self.points) == 0:
             QMessageBox.warning(self, "无法规划", "请先加载点云。"); return
         if not self.waypoints:
             QMessageBox.warning(self, "无法规划", "请先生成业务航线，再规划安全过渡路径。"); return
         try:
-            start = np.array([float(self.edt_current_x.text()), float(self.edt_current_y.text()), float(self.edt_current_z.text())])
+            takeoff_origin = np.array([
+                float(self.edt_current_x.text()),
+                float(self.edt_current_y.text()),
+                float(self.edt_current_z.text()),
+            ])
+            takeoff_height = float(self.edt_takeoff_z.text())
+            start = takeoff_origin + np.array([0.0, 0.0, takeoff_height])
         except ValueError:
-            QMessageBox.warning(self, "输入错误", "当前位置必须是有效的 X、Y、Z 数值。"); return
+            QMessageBox.warning(self, "输入错误", "起飞点和起飞高度必须是有效数值。"); return
         goal = np.asarray(self.waypoints[0]["pos"], dtype=float)
         tree = self._get_kdtree()
         clearance = max(float(self.viewer._safe_distance), 0.1)
@@ -4604,7 +4599,7 @@ class MainWindow(QMainWindow):
             if index not in occupancy: occupancy[index] = float(tree.query(to_world(index))[0]) >= clearance
             return occupancy[index]
         if not free(start_idx) or not free(goal_idx):
-            QMessageBox.warning(self, "无法规划", "当前位置或首航点位于障碍物安全距离内。"); return
+            QMessageBox.warning(self, "无法规划", "悬停点或首航点位于障碍物安全距离内。"); return
         if self._transition_line_is_safe(start, goal, tree, clearance, voxel * 0.5):
             self._transition_path = [start]
             self._transition_goal = goal.copy()
@@ -4643,7 +4638,20 @@ class MainWindow(QMainWindow):
         self._display_route()
 
     def _display_route(self):
-        if self._transition_path and (not self.waypoints or self._transition_goal is None or not np.allclose(self._transition_goal, self.waypoints[0]["pos"])):
+        try:
+            current_hover = np.array([
+                float(self.edt_current_x.text()),
+                float(self.edt_current_y.text()),
+                float(self.edt_current_z.text()) + float(self.edt_takeoff_z.text()),
+            ])
+        except ValueError:
+            current_hover = None
+        if self._transition_path and (
+            not self.waypoints or self._transition_goal is None
+            or not np.allclose(self._transition_goal, self.waypoints[0]["pos"])
+            or current_hover is None
+            or not np.allclose(self._transition_path[0], current_hover)
+        ):
             self._transition_path = []
             self._transition_goal = None
             self.viewer._transition_path = []
@@ -4655,13 +4663,13 @@ class MainWindow(QMainWindow):
         self.viewer._camera_hfov = self._camera_fov
         self.viewer._camera_vfov = self._vertical_fov()
         try:
-            self.viewer._safe_point = (
-                float(self.edt_safe_x.text()),
-                float(self.edt_safe_y.text()),
-                float(self.edt_safe_z.text()),
-            )
+            self.viewer._takeoff_origin = np.array([
+                float(self.edt_current_x.text()),
+                float(self.edt_current_y.text()),
+                float(self.edt_current_z.text()),
+            ])
         except ValueError:
-            self.viewer._safe_point = (0.0, 0.0, 5.0)
+            self.viewer._takeoff_origin = np.zeros(3, dtype=float)
         self.viewer.add_route(
             self.waypoints,
             reset_camera=False,
@@ -4840,7 +4848,7 @@ class MainWindow(QMainWindow):
         if seg_collisions:
             msgs.append(f"{len(seg_collisions)} 航点碰撞 (<{collision_dist:.1f}m)")
         if safe_collision:
-            msgs.append("安全点路径碰撞")
+            msgs.append("起飞到首航点路径碰撞")
         if low_z:
             msgs.append(f"{len(low_z)} 个低于Z={min_z}m")
         self.lbl_info.setText(" | ".join(msgs))
@@ -4898,16 +4906,13 @@ class MainWindow(QMainWindow):
                     d = np.linalg.norm(positions[i] - positions[j])
                     violations.append((int(min(i, j)), int(max(i, j)), float(d)))
 
-        # 构建完整路径点列表：安全点 + 所有航点
-        try:
-            sx = float(self.edt_safe_x.text())
-            sy = float(self.edt_safe_y.text())
-            sz = float(self.edt_safe_z.text())
-        except ValueError:
-            sx, sy, sz = 0.0, 0.0, 5.0
-        safe_pos = np.array([sx, sy, sz])
+        # 构建完整路径：悬停点（或安全过渡中继点）+ 业务航点。
+        takeoff_origin = getattr(self.viewer, "_takeoff_origin", np.zeros(3))
+        takeoff_z, _ = self._get_takeoff_params()
+        hover_pos = np.asarray(takeoff_origin, dtype=float) + np.array([0.0, 0.0, takeoff_z])
         transition_positions = getattr(self, "_transition_path", [])
-        all_positions = ([np.asarray(p, dtype=float) for p in transition_positions] if transition_positions else [safe_pos]) + [wp['pos'] for wp in self.waypoints]
+        all_positions = ([np.asarray(p, dtype=float) for p in transition_positions]
+                         if transition_positions else [hover_pos]) + [wp['pos'] for wp in self.waypoints]
 
         # ── 线段采样碰撞检测（STL 版 / 点云版）──
         collisions = []
@@ -5033,7 +5038,7 @@ class MainWindow(QMainWindow):
             warnings.append(f"{i+1}-{j+1} 号航点间距 {d:.2f}m < {safe_dist}m")
         for idx, dist in collisions:
             if idx == -1:
-                warnings.append(f"安全点路径碰撞 (距点云 {dist:.2f}m)")
+                warnings.append(f"起飞到首航点路径碰撞 (距点云 {dist:.2f}m)")
             else:
                 warnings.append(f"{idx+1} 号航点碰撞 (距点云 {dist:.2f}m)")
         min_z = self._get_min_z()
@@ -5090,11 +5095,19 @@ class MainWindow(QMainWindow):
             }
 
         poses = []
-        # Pose 0: origin (0,0,0)
+        # Pose 0: configured takeoff point.
+        try:
+            takeoff_origin = np.array([
+                float(self.edt_current_x.text()),
+                float(self.edt_current_y.text()),
+                float(self.edt_current_z.text()),
+            ])
+        except ValueError:
+            takeoff_origin = np.zeros(3, dtype=float)
         poses.append({
             "header": {"stamp": {"sec": 0, "nsec": 0}, "frame_id": "camera_init"},
             "pose": {
-                "position": {"x": 0, "y": 0, "z": 0},
+                "position": {"x": round(float(takeoff_origin[0]), 4), "y": round(float(takeoff_origin[1]), 4), "z": round(float(takeoff_origin[2]), 4)},
                 "orientation": {
                     "x": round(float(takeoff_quat[1]), 6),
                     "y": round(float(takeoff_quat[2]), 6),
@@ -5108,10 +5121,7 @@ class MainWindow(QMainWindow):
         if transition_positions:
             export_points = [np.asarray(point, dtype=float) for point in transition_positions]
         else:
-            try:
-                export_points = [np.array([float(self.edt_safe_x.text()), float(self.edt_safe_y.text()), float(self.edt_safe_z.text())])]
-            except ValueError:
-                export_points = [np.array([0.0, 0.0, 5.0])]
+            export_points = [takeoff_origin + np.array([0.0, 0.0, float(self.edt_takeoff_z.text())])]
         targets = export_points[1:] + [self.waypoints[0]["pos"]]
         for point, target in zip(export_points, targets):
             heading = np.asarray(target, dtype=float) - point

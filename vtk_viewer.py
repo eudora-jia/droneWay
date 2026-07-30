@@ -508,7 +508,7 @@ class VTKViewer(QWidget):
         self._safe_distance = 2.0
         self._takeoff_z = 1.0
         self._takeoff_yaw = 0.0
-        self._safe_point = (0.0, 0.0, 5.0)
+        self._takeoff_origin = np.zeros(3, dtype=float)
         self._transition_path = []
         self.show_segment_distances = False
         self.show_waypoint_indices = False
@@ -3618,20 +3618,18 @@ class VTKViewer(QWidget):
         self.renderer.AddActor(actor)
         self._actors.append(actor)
 
-        # ── 起飞线: origin → takeoff_z → 安全点 → 第一个航点 ──
-        origin = [0.0, 0.0, 0.0]
-        takeoff_pt = [0.0, 0.0, self._takeoff_z]
-        safe_pt = list(self._safe_point)
+        # ── 起飞线: 起飞点 → 悬停点 → 过渡点 → 第一个航点 ──
+        origin = np.asarray(getattr(self, "_takeoff_origin", np.zeros(3)), dtype=float).tolist()
+        takeoff_pt = (np.asarray(origin, dtype=float) + np.array([0.0, 0.0, self._takeoff_z])).tolist()
         first_wp = waypoints[0]['pos'].tolist()
 
         transition_path = getattr(self, "_transition_path", [])
         if transition_path:
-            path_points = [np.asarray(p, dtype=float).tolist() for p in transition_path] + [first_wp]
-            origin = path_points[0]
-            takeoff_pt = origin
-            safe_pt = path_points[-2] if len(path_points) > 1 else origin
+            path_points = [origin, takeoff_pt]
+            path_points += [np.asarray(p, dtype=float).tolist() for p in transition_path[1:]]
+            path_points += [first_wp]
         else:
-            path_points = [origin, takeoff_pt, safe_pt, first_wp]
+            path_points = [origin, takeoff_pt, first_wp]
         for k in range(len(path_points) - 1):
             line = self._vtkLineSource()
             line.SetPoint1(path_points[k])
@@ -3648,7 +3646,7 @@ class VTKViewer(QWidget):
 
         # 起飞点球体
         takeoff_sphere = self._vtkSphereSource()
-        takeoff_sphere.SetCenter(takeoff_pt)
+        takeoff_sphere.SetCenter(origin)
         takeoff_sphere.SetRadius(0.2)
         takeoff_sphere.Update()
         tm = self._vtkPolyDataMapper()
@@ -3659,26 +3657,26 @@ class VTKViewer(QWidget):
         self.renderer.AddActor(ta)
         self._actors.append(ta)
 
-        # 安全点球体（绿色）
-        safe_sphere = self._vtkSphereSource()
-        safe_sphere.SetCenter(safe_pt)
-        safe_sphere.SetRadius(0.25)
-        safe_sphere.Update()
-        sm = self._vtkPolyDataMapper()
-        sm.SetInputConnection(safe_sphere.GetOutputPort())
-        sa = self._vtkActor()
-        sa.SetMapper(sm)
-        sa.GetProperty().SetColor(0.2, 0.9, 0.3)
-        self.renderer.AddActor(sa)
-        self._actors.append(sa)
+        # 悬停点球体（绿色）
+        hover_sphere = self._vtkSphereSource()
+        hover_sphere.SetCenter(takeoff_pt)
+        hover_sphere.SetRadius(0.25)
+        hover_sphere.Update()
+        hm = self._vtkPolyDataMapper()
+        hm.SetInputConnection(hover_sphere.GetOutputPort())
+        ha = self._vtkActor()
+        ha.SetMapper(hm)
+        ha.GetProperty().SetColor(0.2, 0.9, 0.3)
+        self.renderer.AddActor(ha)
+        self._actors.append(ha)
 
-        # 起飞方向箭头（原点处，按偏航角）
+        # 起飞方向箭头（起飞点处，按偏航角）
         yaw_rad = np.radians(self._takeoff_yaw)
         arrow_dir = np.array([np.cos(yaw_rad), np.sin(yaw_rad), 0])
         arrow_len = 2.0
-        arrow_end = np.array(takeoff_pt) + arrow_dir * arrow_len
+        arrow_end = np.asarray(origin) + arrow_dir * arrow_len
         arrow_line = self._vtkLineSource()
-        arrow_line.SetPoint1(takeoff_pt)
+        arrow_line.SetPoint1(origin)
         arrow_line.SetPoint2(arrow_end.tolist())
         arrow_mapper = self._vtkPolyDataMapper()
         arrow_mapper.SetInputConnection(arrow_line.GetOutputPort())
