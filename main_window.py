@@ -4869,7 +4869,7 @@ class MainWindow(QMainWindow):
         safe_collision = any(idx == -1 for idx, _ in collisions)
         msgs = [f"航点: {len(self.waypoints)}"]
         if violations:
-            msgs.append(f"{len(violations)} 对过近 (<{safe_dist}m)")
+            msgs.append(f"{len(violations)} 对重复或几乎重合")
         if seg_collisions:
             msgs.append(f"{len(seg_collisions)} 航点碰撞 (<{collision_dist:.1f}m)")
         if safe_collision:
@@ -4911,7 +4911,7 @@ class MainWindow(QMainWindow):
 
     def _collect_collision_warnings(self):
         """收集碰撞检测数据，返回 (violations, collisions, low_z)
-        violations: [(i, j, dist), ...] 航点间距过近
+        violations: [(i, j, dist), ...] 重复或几乎重合的航点
         collisions: [(idx, dist), ...] 航点距点云过近（含线段采样）
         low_z: [(idx, z_val), ...] 航点低于最低Z值
         """
@@ -4919,13 +4919,14 @@ class MainWindow(QMainWindow):
         collision_dist = safe_dist * 1.5
         sample_step = safe_dist * 0.5
 
-        # ── 航点间距检测（只检查非相邻航点，相邻航点按重叠率设计本就近）──
+        # ── 重复航点检测：业务航线允许正常的拍摄重叠，不能用安全距离误判。 ──
         violations = []
         if len(self.waypoints) >= 3:
             from scipy.spatial import cKDTree
             positions = np.array([wp['pos'] for wp in self.waypoints])
             tree_wp = cKDTree(positions)
-            pairs = tree_wp.query_pairs(safe_dist)
+            duplicate_dist = max(0.05, min(0.20, safe_dist * 0.10))
+            pairs = tree_wp.query_pairs(duplicate_dist)
             for i, j in pairs:
                 if abs(i - j) > 1:  # 跳过相邻航点
                     d = np.linalg.norm(positions[i] - positions[j])

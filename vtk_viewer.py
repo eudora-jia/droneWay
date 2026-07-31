@@ -3384,6 +3384,40 @@ class VTKViewer(QWidget):
         bar.GetLabelTextProperty().SetFontSize(13)
         self.renderer.AddActor2D(bar)
         self._legend_actors.append(bar)
+
+        # Discrete waypoint safety legend, aligned directly above the elevation bar.
+        safety_lut = vtk.vtkLookupTable()
+        safety_lut.SetNumberOfTableValues(4)
+        safety_lut.SetRange(0.0, 3.0)
+        safety_lut.IndexedLookupOn()
+        for index, color, label in [
+            (0, (0.0, 0.8, 1.0), "正常"),
+            (1, (0.85, 0.25, 1.0), "重复航点"),
+            (2, (1.0, 0.5, 0.0), "低于限高"),
+            (3, (1.0, 0.0, 0.0), "碰撞风险"),
+        ]:
+            safety_lut.SetTableValue(index, *color, 1.0)
+            safety_lut.SetAnnotation(float(index), label)
+        safety_lut.Build()
+
+        safety_bar = vtk.vtkScalarBarActor()
+        safety_bar.SetLookupTable(safety_lut)
+        safety_bar.SetTitle("航点状态")
+        safety_bar.SetTextPositionToPrecedeScalarBar()
+        safety_bar.DrawAnnotationsOn()
+        safety_bar.DrawTickLabelsOff()
+        safety_bar.GetPositionCoordinate().SetCoordinateSystemToNormalizedViewport()
+        safety_bar.GetPositionCoordinate().SetValue(0.94, 0.77)
+        safety_bar.GetPosition2Coordinate().SetCoordinateSystemToNormalizedViewport()
+        safety_bar.GetPosition2Coordinate().SetValue(0.05, 0.18)
+        safety_bar.SetMaximumWidthInPixels(42)
+        safety_bar.SetMaximumHeightInPixels(110)
+        safety_bar.GetTitleTextProperty().SetColor(1.0, 1.0, 1.0)
+        safety_bar.GetTitleTextProperty().SetBold(True)
+        safety_bar.GetLabelTextProperty().SetColor(1.0, 1.0, 1.0)
+        safety_bar.GetLabelTextProperty().SetFontSize(12)
+        self.renderer.AddActor2D(safety_bar)
+        self._legend_actors.append(safety_bar)
         self._update_view(reset_camera=False)
 
     @staticmethod
@@ -3679,6 +3713,7 @@ class VTKViewer(QWidget):
         ta.SetMapper(tm)
         ta.SetPosition(origin)
         ta.GetProperty().SetColor(0.2, 0.5, 1.0)
+        ta.GetProperty().SetLighting(False)
         self.renderer.AddActor(ta)
         self._actors.append(ta)
         self._fixed_marker_actors.append((ta, 0.2))
@@ -3694,6 +3729,7 @@ class VTKViewer(QWidget):
         ha.SetMapper(hm)
         ha.SetPosition(takeoff_pt)
         ha.GetProperty().SetColor(0.2, 0.9, 0.3)
+        ha.GetProperty().SetLighting(False)
         self.renderer.AddActor(ha)
         self._actors.append(ha)
         self._fixed_marker_actors.append((ha, 0.25))
@@ -3828,13 +3864,15 @@ class VTKViewer(QWidget):
                         icon_actor.SetCamera(self.renderer.GetActiveCamera())
                         icon_actor.SetPosition(pos.tolist())
                         icon_actor._waypoint_marker_base_radius = 0.5
-                        icon_actor._waypoint_marker_screen_fraction = 0.014
+                        icon_actor._waypoint_marker_screen_fraction = 0.020
                         icon_actor.GetProperty().SetLighting(False)
                         icon_actor.GetProperty().SetOpacity(0.98)
 
                 for actor in (cone_actor, head_actor):
                     actor.GetProperty().SetColor(0.0, 0.8, 1.0)
                     actor.GetProperty().SetOpacity(0.95)
+                    actor.GetProperty().SetAmbient(0.45)
+                    actor.GetProperty().SetDiffuse(0.55)
                     self.renderer.AddActor(actor)
                     self._actors.append(actor)
                 self.renderer.AddActor(core_actor)
