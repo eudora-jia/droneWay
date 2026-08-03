@@ -589,6 +589,7 @@ class MainWindow(QMainWindow):
         self.viewer.polygon_finished.connect(self._on_polygon_finished)
         self.viewer.place_picked.connect(self._on_place_picked)
         self.viewer.anim_finished.connect(self._on_anim_stopped)
+        self.viewer.fpv_exited.connect(self._on_fpv_exited)
         self.viewer.mesh_geometry_ready.connect(self._precompute_stl_triangles)
         self._place_target = None  # "cube" or "cylinder"
         self._polygon_vertices = None
@@ -1193,6 +1194,14 @@ class MainWindow(QMainWindow):
         self._polygon_vertices = positions
         # 存储多边形顶点的表面法线（拾取时的精确三角面法线）
         self._polygon_normals = [np.array(n) for n in normals]
+        # Keep the side from which the region was selected. Side-wall routes must
+        # remain on this side even when the camera moves before route generation.
+        if getattr(self.viewer, "fpv_mode", False):
+            self._polygon_selection_viewpoint = np.asarray(self.viewer._fpv_pos, dtype=float).copy()
+        else:
+            self._polygon_selection_viewpoint = np.asarray(
+                self.viewer.renderer.GetActiveCamera().GetPosition(), dtype=float
+            ).copy()
         self.viewer._clear_polygon()
         self._calc_overlap_spacing()
         self.generate_flat_route()
@@ -1685,11 +1694,18 @@ class MainWindow(QMainWindow):
             # 设置起始位置和打点回调
             self.viewer._fpv_start_pos = self._fpv_start_pos
             self.viewer._fpv_on_mark = self._fpv_mark_waypoint
+            self.viewer.set_fpv_pitch_limits(self._gimbal_pitch_min, self._gimbal_pitch_max)
             self.viewer.toggle_fpv(True)
             self.statusBar().showMessage("FPV模式：WASD移动，QE升降，右键控制视角，左键选点，空格打点，V退出")
         else:
             self.viewer.toggle_fpv(False)
             self.statusBar().showMessage("已退出FPV模式")
+
+    def _on_fpv_exited(self):
+        self._act_fpv.blockSignals(True)
+        self._act_fpv.setChecked(False)
+        self._act_fpv.blockSignals(False)
+        self.statusBar().showMessage("已退出FPV模式")
 
     def _fpv_mark_waypoint(self, target_point, drone_pos, yaw, pitch):
         """FPV模式下打点记录航点"""
@@ -1729,7 +1745,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("── 飞行速度 ──"), 4, 0, 1, 2)
 
         layout.addWidget(QLabel("速度(m/帧):"), 5, 0)
-        edt_speed = QLineEdit(f"{self.viewer._fpv_speed:.1f}")
+        edt_speed = QLineEdit(f"{self.viewer._fpv_speed:.2f}")
         layout.addWidget(edt_speed, 5, 1)
         lbl_hint = QLabel("60fps时实际速度=此值×60")
         lbl_hint.setStyleSheet("color: #666; font-size: 10px;")
@@ -1747,7 +1763,7 @@ class MainWindow(QMainWindow):
                 self.viewer._fpv_speed = float(edt_speed.text())
                 self.statusBar().showMessage(
                     f"无人机位置: ({self._fpv_start_pos[0]:.1f}, {self._fpv_start_pos[1]:.1f}, {self._fpv_start_pos[2]:.1f}) "
-                    f"速度: {self.viewer._fpv_speed:.1f}m/帧"
+                    f"速度: {self.viewer._fpv_speed:.2f}m/帧"
                 )
             except ValueError:
                 pass
@@ -2494,7 +2510,11 @@ class MainWindow(QMainWindow):
             return
 
         safe_dist = self.viewer._safe_distance
-        collision_dist = safe_dist * 1.5
+        # A planar inspection point is intentionally near its target surface.
+        # Keep collision clearance below the requested stand-off, with a small
+        # voxelization margin, rather than applying the global route threshold.
+        voxel_margin = max(0.05, float(getattr(self.viewer, "_voxel_size", 0.0)) * 0.5)
+        collision_dist = min(safe_dist, max(0.10, inspect_dist - voxel_margin))
 
         # 自动计算间距（如果还是默认的"自动"）
         if self.edt_spacing.text() == "自动" or self.edt_wp_spacing.text() == "自动":
@@ -2532,23 +2552,49 @@ class MainWindow(QMainWindow):
                 j = i
             return inside
 
-        # 计算多边形平面法线（叉积，朝向相机）
+        # Fit a plane from every selected vertex. Using only the first three
+        # makes a vertical wall tilt when individual picked points are noisy.
         if len(poly) >= 3:
-            e1 = poly[1] - poly[0]
-            e2 = poly[2] - poly[0]
-            poly_normal = np.cross(e1, e2)
+            centered = poly - poly.mean(axis=0)
+            _, _, vh = np.linalg.svd(centered, full_matrices=False)
+            poly_normal = vh[-1].copy()
             nrm = np.linalg.norm(poly_normal)
+            if nrm <= 1e-10:
+                poly_normal = np.cross(poly[1] - poly[0], poly[2] - poly[0])
+                nrm = np.linalg.norm(poly_normal)
             if nrm > 1e-10:
                 poly_normal /= nrm
             else:
-                poly_normal = np.array([0, 0, 1.0])
+                poly_normal = np.array([0.0, 0.0, 1.0])
         else:
-            poly_normal = np.array([0, 0, 1.0])
-        cam = self.viewer.renderer.GetActiveCamera()
-        cam_pos = np.array(cam.GetPosition(), dtype=float)
+            poly_normal = np.array([0.0, 0.0, 1.0])
         poly_center = poly.mean(axis=0)
-        if np.dot(poly_normal, cam_pos - poly_center) < 0:
-            poly_normal = -poly_normal
+        # Voxel and mesh picks provide a surface normal facing the FPV side.
+        # Prefer that explicit orientation over a camera-position guess.
+        picked_normal_hint = None
+        if self.viewer._voxel_actor is not None or self.viewer._stl_polydata is not None:
+            picked_normals = np.asarray(getattr(self, "_polygon_normals", []), dtype=float)
+            if picked_normals.ndim == 2 and picked_normals.shape[1] == 3:
+                normal_lengths = np.linalg.norm(picked_normals, axis=1)
+                valid_normals = picked_normals[normal_lengths > 1e-6]
+                if len(valid_normals):
+                    picked_normal_hint = valid_normals.mean(axis=0)
+                    hint_length = np.linalg.norm(picked_normal_hint)
+                    if hint_length > 1e-6:
+                        picked_normal_hint /= hint_length
+                    else:
+                        picked_normal_hint = None
+        if picked_normal_hint is not None:
+            if np.dot(poly_normal, picked_normal_hint) < 0:
+                poly_normal = -poly_normal
+        else:
+            side_reference = getattr(self, "_polygon_selection_viewpoint", None)
+            if side_reference is None:
+                side_reference = np.asarray(
+                    self.viewer.renderer.GetActiveCamera().GetPosition(), dtype=float
+                )
+            if np.dot(poly_normal, side_reference - poly_center) < 0:
+                poly_normal = -poly_normal
         print(f"[FlatRoute] poly_normal=({poly_normal[0]:.3f},{poly_normal[1]:.3f},{poly_normal[2]:.3f})")
 
         # 确定扫描主方向（多边形最长边方向投影到多边形平面）
@@ -2629,29 +2675,53 @@ class MainWindow(QMainWindow):
         # 获取KDTree用于碰撞检测
         tree = self._get_kdtree()
 
+        # The fitted plane defines the planned inspection surface. Point clouds and
+        # meshes are used only for collision and line-of-sight constraints; they
+        # must not move the user-defined planar targets or reject the region.
         self.waypoints = []
         warnings = []
         _up = np.array([0.0, 0.0, 1.0])
-        self._check_speed_overlap(speed, wp_spacing, main_dir_3d, warnings)
+        self._check_speed_overlap(
+            speed, wp_spacing, main_dir_3d, warnings, inspect_dist=inspect_dist
+        )
 
         # 判断表面类型
         normal_up_dot = np.dot(poly_normal, _up)
         is_top_surface = normal_up_dot > 0.7
         is_bottom_surface = normal_up_dot < -0.7
 
+        def _heading_to_target(pos_c, target_c, fallback_heading):
+            horizontal_los = np.asarray(target_c, dtype=float) - np.asarray(pos_c, dtype=float)
+            horizontal_los[2] = 0.0
+            horizontal_len = np.linalg.norm(horizontal_los)
+            if horizontal_len > 1e-6:
+                return horizontal_los / horizontal_len
+            return fallback_heading
+
         def _check_flat_candidate(pos_c, _target, _heading, _left):
-            return self._check_wp_candidate(pos_c, _target, tree, collision_dist, _heading, _left)
+            # The aircraft yaw always follows the horizontal camera line of sight,
+            # so the gimbal has zero relative yaw at every waypoint.
+            candidate_heading = _heading_to_target(pos_c, _target, _heading)
+            candidate_left = np.cross(candidate_heading, _up)
+            left_len = np.linalg.norm(candidate_left)
+            if left_len > 1e-6:
+                candidate_left = candidate_left / left_len
+            else:
+                candidate_left = _left
+            return self._check_wp_candidate(
+                pos_c, _target, tree, collision_dist, candidate_heading, candidate_left
+            )
+
+        # 面状航线相邻目标通常共享同一安全偏移，缓存可避免重复搜索。
+        candidate_offset_cache = {}
 
         for i, target in enumerate(region_points):
             normal = poly_normal.copy()
             scan_dir = grid_scan_dirs[i] if i < len(grid_scan_dirs) else main_dir_3d
 
-            # 检查法线方向是否正确（仅点云模式需要，STL几何法线已正确）
-            if tree is not None and self.viewer._stl_polydata is None:
-                candidate_pos = target + normal * inspect_dist
-                dist_to_surface, _ = tree.query(candidate_pos)
-                if dist_to_surface < collision_dist:
-                    normal = -normal
+            # The fitted normal is oriented toward the FPV selection side. Do not
+            # flip it based on a nearby point-cloud sample: that can put a wall
+            # inspection route on the opposite side of the wall.
 
             # 螃蟹飞：heading = cross(航线方向水平分量, [0,0,1])
             route_dir_h = np.array([scan_dir[0], scan_dir[1], 0.0])
@@ -2667,6 +2737,15 @@ class MainWindow(QMainWindow):
             else:
                 heading_h = np.array([1.0, 0.0, 0.0])
 
+            # Ceiling routes keep one camera-facing direction for every serpentine
+            # row. Otherwise alternating rows move the aircraft to opposite sides.
+            if is_bottom_surface:
+                ceiling_route_h = np.array([main_dir_3d[0], main_dir_3d[1], 0.0])
+                ceiling_route_len = np.linalg.norm(ceiling_route_h)
+                if ceiling_route_len > 1e-6:
+                    ceiling_heading_h = np.cross(ceiling_route_h / ceiling_route_len, _up)
+                    heading_h = ceiling_heading_h / np.linalg.norm(ceiling_heading_h)
+
             # Left 向量用于 C5 检查
             left = np.cross(heading_h, _up)
             left_len = np.linalg.norm(left)
@@ -2675,16 +2754,19 @@ class MainWindow(QMainWindow):
 
             # 构建搜索方向（根据表面类型）
             if is_bottom_surface:
-                pitch_max_rad = np.radians(self._gimbal_pitch_max)
-                base_dirs = []
-                for pitch_deg in [45, 35, 25, 50, 15, 10, 55]:
-                    pitch_rad = np.radians(pitch_deg)
-                    h_factor = np.cos(pitch_rad)
-                    drop_factor = -np.sin(pitch_rad)
-                    base_dirs.append(np.array([heading_h[0]*h_factor, heading_h[1]*h_factor, drop_factor]))
-                    base_dirs.append(np.array([-heading_h[0]*h_factor, -heading_h[1]*h_factor, drop_factor]))
-                base_dirs.extend([-_up, _up, heading_h, -heading_h])
+                # Ceiling: fly below the selected surface (normal points inward),
+                # with one consistent horizontal offset for the upward gimbal view.
+                pitch_limit = np.clip(self._gimbal_pitch_max, 5.0, 85.0)
+                min_horizontal_ratio = 1.0 / np.tan(np.radians(pitch_limit))
+                side_ratios = [min_horizontal_ratio, 1.0, 1.5, 2.0, 3.0]
+                base_dirs = [normal]
+                for ratio in side_ratios:
+                    base_dirs.append(normal - heading_h * ratio)
                 search_directions = [d / np.linalg.norm(d) for d in base_dirs if np.linalg.norm(d) > 1e-6]
+                search_directions = [
+                    direction for direction in search_directions
+                    if np.dot(direction, normal) >= -1e-6
+                ]
             elif is_top_surface:
                 base_dirs = [_up]
                 for frac in [0.3, 0.5, 0.7, 1.0, 1.5, 2.0]:
@@ -2705,29 +2787,50 @@ class MainWindow(QMainWindow):
                 base_dirs.extend([heading_h, -heading_h, _up, -_up])
                 search_directions = [d / np.linalg.norm(d) for d in base_dirs if np.linalg.norm(d) > 1e-6]
 
-            # 搜索满足约束的位置
+                # A side wall may only be inspected from the selected side.
+                # Discard directions that would cross its fitted plane.
+                search_directions = [
+                    direction for direction in search_directions
+                    if np.dot(direction, normal) >= -1e-6
+                ]
+
+            # 搜索满足约束的位置；优先复用同一侧已验证的偏移。
+            cache_key = ("ceiling",) if is_bottom_surface else (
+                1 if np.dot(scan_dir, main_dir_3d) >= 0 else -1,
+                1 if np.dot(normal, poly_normal) >= 0 else -1,
+            )
+            cached_offset = candidate_offset_cache.get(cache_key)
             drone_pos = None
-            for offset in np.arange(inspect_dist, inspect_dist + 20.0, 0.5):
-                for move_dir in search_directions:
-                    pos_c = target + move_dir * offset
-                    ok, reason = _check_flat_candidate(pos_c, target, heading_h, left)
-                    if ok:
-                        drone_pos = pos_c
-                        break
-                if drone_pos is not None:
-                    break
-
-            warned = False
+            failure_reason = "no_candidate"
+            if cached_offset is not None:
+                cached_pos = target + cached_offset
+                cached_ok, failure_reason = _check_flat_candidate(cached_pos, target, heading_h, left)
+                if cached_ok:
+                    drone_pos = cached_pos
+                else:
+                    candidate_offset_cache.pop(cache_key, None)
             if drone_pos is None:
-                drone_pos = target + normal * inspect_dist
-                warned = True
-                warnings.append(f"目标{i+1} 无法满足所有约束")
+                # A face-route correction is local. Do not spend minutes probing
+                # distant positions that no longer represent this inspection plane.
+                max_candidate_offset = min(5.0, inspect_dist + 3.0)
+                for offset in np.arange(inspect_dist, max_candidate_offset + 1e-9, 0.5):
+                    for move_dir in search_directions:
+                        pos_c = target + move_dir * offset
+                        ok, reason = _check_flat_candidate(pos_c, target, heading_h, left)
+                        failure_reason = reason
+                        if ok:
+                            drone_pos = pos_c
+                            candidate_offset_cache[cache_key] = pos_c - target
+                            break
+                    if drone_pos is not None:
+                        break
 
-            # 确保 heading 朝向目标（否则云台需要转180°）
-            los_to_target = target - drone_pos
-            final_heading = heading_h.copy()
-            if np.dot(final_heading, los_to_target) < 0:
-                final_heading = -final_heading
+            if drone_pos is None:
+                warnings.append(f"目标{i+1} 已跳过：无法满足所有约束 ({failure_reason})")
+                continue
+
+            # Aircraft yaw follows the target horizontally; gimbal relative yaw is zero.
+            final_heading = _heading_to_target(drone_pos, target, heading_h)
 
             # 云台俯仰角
             gimbal_pitch = self._calc_gimbal_pitch(drone_pos, target, final_heading)
@@ -2745,7 +2848,11 @@ class MainWindow(QMainWindow):
             })
 
         if not self.waypoints:
-            QMessageBox.warning(self, "提示", "多边形区域内无有效航点")
+            failure_details = "\n".join(warnings) if warnings else "未找到满足约束的候选位置"
+            QMessageBox.warning(
+                self, "多边形区域内无有效航点",
+                f"所有目标均被安全约束拒绝：\n\n{failure_details}"
+            )
             return
         print(f"[FlatRoute] main_dir=({main_dir_3d[0]:.3f},{main_dir_3d[1]:.3f},{main_dir_3d[2]:.3f}), spacing={spacing:.2f}, wp_spacing={wp_spacing:.2f}")
         print(f"[FlatRoute] generated {len(self.waypoints)} waypoints")
@@ -3257,7 +3364,7 @@ class MainWindow(QMainWindow):
         # z_ratio=1 纯垂直 → 用vfov；z_ratio=0 纯水平 → 用hfov
         return hfov * (1.0 - z_ratio) + vfov * z_ratio
 
-    def _check_speed_overlap(self, speed, wp_spacing, route_dir, warnings):
+    def _check_speed_overlap(self, speed, wp_spacing, route_dir, warnings, inspect_dist=None):
         """检查飞行速度是否满足最小拍摄间隔下的重叠率要求
         speed: 飞行速度 (m/s)
         wp_spacing: 航点间距 (m)
@@ -3269,8 +3376,8 @@ class MainWindow(QMainWindow):
         interval = self._camera_min_interval
         min_spacing = speed * interval  # 最小拍摄间距
         eff_fov = self._fov_for_direction(route_dir)
-        inspect_dist = 3.0  # 参考距离，用于计算覆盖宽度
-        cover = 2.0 * inspect_dist * math.tan(math.radians(eff_fov / 2.0))
+        reference_dist = inspect_dist if inspect_dist is not None and inspect_dist > 0 else 3.0
+        cover = 2.0 * reference_dist * math.tan(math.radians(eff_fov / 2.0))
         if cover < 0.01:
             return self._side_overlap
         # 实际重叠率 = 1 - 实际间距/覆盖宽度
@@ -4802,7 +4909,13 @@ class MainWindow(QMainWindow):
                 if self._ray_stl_intersect(pos, target):
                     return False, 'los_stl'
             elif tree is not None:
-                if self.viewer.voxel_ray_is_occluded(pos, target):
+                target_tolerance = max(
+                    self.viewer._voxel_size * 2.0,
+                    min(0.5, collision_dist * 0.4),
+                )
+                if self.viewer.voxel_ray_is_occluded(
+                    pos, target, target_tolerance=target_tolerance
+                ):
                     return False, 'los_voxel'
                 if self.viewer._voxel_actor is not None:
                     return True, 'ok'
@@ -4995,6 +5108,12 @@ class MainWindow(QMainWindow):
 
     # ─── 清除航线 ───
     def clear_route(self):
+        # 投影/覆盖层不属于普通航线 actors，清除航线时单独释放。
+        if getattr(self.viewer, "_anim_playing", False):
+            self.viewer.stop_route_animation()
+        else:
+            self.viewer._cleanup_anim()
+        self.viewer._clear_voxel_coverage()
         self.waypoints = []
         self._transition_path = []
         self._transition_goal = None
@@ -5007,6 +5126,8 @@ class MainWindow(QMainWindow):
         self.viewer._clear_line_points()
         self.viewer._clear_inspect_points()
         self.viewer._clear_coord_labels()
+        self.viewer.set_route_xray(False)
+        self.viewer._heading_line_actors = []
         self._inspect_target_points.clear()
         self._inspect_target_normals.clear()
         self.lst_inspect.clear()

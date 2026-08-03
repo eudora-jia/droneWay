@@ -160,6 +160,13 @@ class FoxgloveInteractorStyle(object):
     def _on_right_down(self, obj, event):
         v = self._vtk_viewer
         rwi = self._rwi
+        # FPV 中右键单击确认选点，右键拖动调整 yaw。
+        if v and v.fpv_mode:
+            v._fpv_right_click_start = rwi.GetEventPosition()
+            v._fpv_right_click_moved = False
+            self._mode = None
+            self._prev_pos = None
+            return
         # 选点模式下（含FPV），右键结束绘制
         if v and v.polygon_mode:
             if len(v._poly_points) >= 3:
@@ -196,6 +203,17 @@ class FoxgloveInteractorStyle(object):
         self._prev_pos = rwi.GetEventPosition()
 
     def _on_right_up(self, obj, event):
+        v = self._vtk_viewer
+        if v and v.fpv_mode and v.polygon_mode:
+            if getattr(v, "_fpv_right_click_start", None) is not None and not getattr(v, "_fpv_right_click_moved", False):
+                if len(v._poly_points) >= 3:
+                    pts = [(p.tolist(), n.tolist()) for p, n in zip(v._poly_points, v._poly_normals)]
+                    v.polygon_finished.emit(pts)
+                    v.exit_polygon_mode(clear_markers=False)
+                else:
+                    v.exit_polygon_mode()
+            v._fpv_right_click_start = None
+            v._fpv_right_click_moved = False
         self._mode = None
         self._prev_pos = None
 
@@ -308,6 +326,7 @@ class VTKViewer(QWidget):
     line_point_picked = pyqtSignal(int, object)  # 直线选点实时通知 (index, point)
     anim_finished = pyqtSignal()  # 航线动画播放结束
     mesh_geometry_ready = pyqtSignal()  # OBJ延迟几何和碰撞结构已就绪
+    fpv_exited = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -500,6 +519,8 @@ class VTKViewer(QWidget):
         self._wp_edit_offset = None
         self._wp_edit_actor = None
         self._waypoint_actors = []
+        self._heading_line_actors = []
+        self._route_xray_opacities = {}
         self._waypoint_marker_actors = []  # 单独航点图钉，用于保持固定屏幕尺寸
         self._route_end_pin_texture = None
         self._fixed_marker_actors = []  # (actor, base_radius)
@@ -552,12 +573,16 @@ class VTKViewer(QWidget):
         self._fpv_pos = np.array([0.0, 0.0, 5.0])  # 无人机位置
         self._fpv_yaw = -90.0  # 固定默认机头朝向世界坐标 -Y
         self._fpv_pitch = 0.0  # 俯仰角（度），0=水平，正=向下看
-        self._fpv_speed = 0.5  # 默认飞行速度（米/帧，60fps时约30m/s）
-        self._fpv_boost_speed = 2.0  # Shift加速时的速度
+        self._fpv_pitch_min = -90.0
+        self._fpv_pitch_max = 55.0
+        self._fpv_speed = 0.05  # 默认飞行速度（米/帧，60fps时约3m/s）
+        self._fpv_boost_speed = 0.20  # Shift加速时的速度
         self._fpv_look_speed = 0.3  # 鼠标灵敏度
         self._fpv_keys = set()  # 当前按下的键
         self._fpv_mouse_active = False  # 右键按下时鼠标控制视角
         self._fpv_prev_mouse = None
+        self._fpv_right_click_start = None
+        self._fpv_right_click_moved = False
         self._fpv_drone_actor = None  # 无人机模型actor
         self._fpv_on_mark = None  # 打点回调函数
         self._fpv_fov = 80.0  # FPV相机视场角
@@ -716,6 +741,7 @@ class VTKViewer(QWidget):
         self.fpv_mode = enable
 
         if enable:
+            self.set_route_xray(False)
             self._create_drone_model()
             self._setup_fpv_keyboard()
             self._enter_fpv_camera()
@@ -743,9 +769,40 @@ class VTKViewer(QWidget):
                         setattr(self, attr, None)
             self._remove_drone_model()
             self._exit_fpv_camera()
+            if self._waypoints_ref:
+                self.set_route_xray(True)
+            self.fpv_exited.emit()
 
         if self.vtk_widget.GetRenderWindow():
             self.vtk_widget.GetRenderWindow().Render()
+
+    def set_route_xray(self, enabled):
+        """Make route overlays visible through the current cloud or mesh."""
+        actors = [actor for actor in [self._cloud_actor] if actor is not None]
+        actors.extend(self._get_all_mesh_actors())
+        if enabled:
+            for actor in actors:
+                key = id(actor)
+                prop = actor.GetProperty()
+                if key not in self._route_xray_opacities:
+                    self._route_xray_opacities[key] = (actor, prop.GetOpacity())
+                prop.SetOpacity(min(prop.GetOpacity(), 0.28))
+        else:
+            for actor, opacity in self._route_xray_opacities.values():
+                actor.GetProperty().SetOpacity(opacity)
+            self._route_xray_opacities.clear()
+
+    def set_fpv_pitch_limits(self, pitch_min, pitch_max):
+        """Sync the selected gimbal pitch range to the FPV camera."""
+        # Gimbal pitch uses negative=down; FPV pitch uses positive=down.
+        lo, hi = sorted((-float(pitch_max), -float(pitch_min)))
+        self._fpv_pitch_min = max(-89.0, lo)
+        self._fpv_pitch_max = min(89.0, hi)
+        if self._fpv_pitch_min > self._fpv_pitch_max:
+            self._fpv_pitch_min, self._fpv_pitch_max = -89.0, 89.0
+        self._fpv_pitch = float(np.clip(
+            self._fpv_pitch, self._fpv_pitch_min, self._fpv_pitch_max
+        ))
 
     def _show_fpv_orientation_marker(self, visible):
         """FPV使用固定屏幕尺寸的方向坐标轴，避免世界坐标轴随镜头放大。"""
@@ -2618,6 +2675,8 @@ class VTKViewer(QWidget):
             return
         self._fpv_mouse_active = True
         self._fpv_prev_mouse = obj.GetEventPosition()
+        self._fpv_right_click_start = self._fpv_prev_mouse
+        self._fpv_right_click_moved = False
 
     def _fpv_on_right_up(self, obj, event):
         """FPV右键释放"""
@@ -2625,13 +2684,22 @@ class VTKViewer(QWidget):
         self._fpv_prev_mouse = None
 
     def _fpv_on_mouse_move(self, obj, event):
-        """FPV鼠标移动 - 只控制yaw（机头左右转向）"""
+        """FPV鼠标移动 - 控制 yaw 和 pitch（机头左右及上下转向）"""
         if not self.fpv_mode or not self._fpv_mouse_active:
             return
         pos = obj.GetEventPosition()
+        click_start = getattr(self, "_fpv_right_click_start", None)
+        if click_start is not None and (abs(pos[0] - click_start[0]) >= 5 or abs(pos[1] - click_start[1]) >= 5):
+            self._fpv_right_click_moved = True
         if self._fpv_prev_mouse is not None:
             dx = pos[0] - self._fpv_prev_mouse[0]
+            dy = pos[1] - self._fpv_prev_mouse[1]
             self._fpv_yaw -= dx * self._fpv_look_speed
+            # 鼠标向下拖动表示机头下俯；限制范围避免翻转。
+            self._fpv_pitch = float(np.clip(
+                self._fpv_pitch + dy * self._fpv_look_speed,
+                self._fpv_pitch_min, self._fpv_pitch_max
+            ))
         self._fpv_prev_mouse = pos
         # 根据当前视角模式调用不同的更新方法
         if getattr(self, '_fpv_first_person', True):
@@ -4013,6 +4081,7 @@ class VTKViewer(QWidget):
             self._clear_voxel_coverage()
 
         # ── 机头方向箭头 ──
+        self._heading_line_actors = []
         if self.show_heading:
             headings = self._compute_forward_headings(waypoints)
             for i, wp in enumerate(waypoints):
@@ -4024,17 +4093,19 @@ class VTKViewer(QWidget):
                 if h_len < 1e-10:
                     continue
                 h_horiz /= h_len
-                arrow_len = 1.0
-                arrow_end = pos + h_horiz * arrow_len
                 line = self._vtkLineSource()
-                line.SetPoint1(pos.tolist())
-                line.SetPoint2(arrow_end.tolist())
+                line.SetPoint1(0.0, 0.0, 0.0)
+                line.SetPoint2(h_horiz.tolist())
                 mapper = self._vtkPolyDataMapper()
                 mapper.SetInputConnection(line.GetOutputPort())
                 actor = self._vtkActor()
                 actor.SetMapper(mapper)
                 actor.GetProperty().SetColor(0.0, 0.8, 1.0)
                 actor.GetProperty().SetLineWidth(3)
+                actor.SetPosition(pos.tolist())
+                actor._heading_line_base_length = 1.0
+                actor._heading_line_screen_fraction = 0.018
+                self._heading_line_actors.append(actor)
                 self.renderer.AddActor(actor)
                 self._actors.append(actor)
 
@@ -4058,6 +4129,7 @@ class VTKViewer(QWidget):
                 self.renderer.AddActor(actor)
                 self._actors.append(actor)
 
+        self.set_route_xray(not self.fpv_mode)
         if reset_camera:
             self._update_view()
         else:
@@ -4309,7 +4381,7 @@ class VTKViewer(QWidget):
             t_max[axis] += t_delta[axis]
         return None
 
-    def voxel_ray_is_occluded(self, start, end):
+    def voxel_ray_is_occluded(self, start, end, target_tolerance=None):
         """检测射线是否在到达目标体素前穿过其他实心体素。"""
         if not self._voxel_dict or self._voxel_mn is None or self._voxel_size <= 0:
             return False
@@ -4320,6 +4392,10 @@ class VTKViewer(QWidget):
         length = float(np.linalg.norm(segment))
         if length <= 1e-8:
             return False
+        endpoint_tolerance = (
+            max(0.0, float(target_tolerance)) if target_tolerance is not None
+            else self._voxel_size * 1.1
+        )
 
         grid_start = (start - self._voxel_mn) / self._voxel_size
         grid_end = (end - self._voxel_mn) / self._voxel_size
@@ -4341,7 +4417,7 @@ class VTKViewer(QWidget):
         while t <= 1.0 + 1e-9:
             if tuple(cell) in self._voxel_dict:
                 # 只允许最终命中被选中的目标体素，任何更早的体素都是遮挡。
-                return length * (1.0 - t) > self._voxel_size * 1.1
+                return length * (1.0 - t) > endpoint_tolerance
             axis = int(np.argmin(t_max))
             t = t_max[axis]
             cell[axis] += step[axis]
@@ -4963,7 +5039,8 @@ class VTKViewer(QWidget):
 
     def _update_waypoint_marker_scale(self):
         """Keep waypoint pins at a stable on-screen size as the camera moves."""
-        if not self._waypoint_marker_actors and not self._fixed_marker_actors:
+        if (not self._waypoint_marker_actors and not self._fixed_marker_actors
+                and not self._heading_line_actors):
             return
         cam = self.renderer.GetActiveCamera()
         parallel = bool(cam.GetParallelProjection())
@@ -4989,6 +5066,17 @@ class VTKViewer(QWidget):
                 distance = max(float(np.linalg.norm(cam_pos - anchor)), 1e-6)
                 view_height = 2.0 * distance * half_fov_tan
             scale = max(view_height * 0.009 / base_radius, 1e-6)
+            actor.SetScale(scale, scale, scale)
+        for actor in self._heading_line_actors:
+            if parallel:
+                view_height = 2.0 * cam.GetParallelScale()
+            else:
+                anchor = np.asarray(actor.GetPosition(), dtype=float)
+                distance = max(float(np.linalg.norm(cam_pos - anchor)), 1e-6)
+                view_height = 2.0 * distance * half_fov_tan
+            base_length = getattr(actor, "_heading_line_base_length", 1.0)
+            fraction = getattr(actor, "_heading_line_screen_fraction", 0.018)
+            scale = max(view_height * fraction / base_length, 1e-6)
             actor.SetScale(scale, scale, scale)
 
     def _add_route_overlay_label(self, text, world_pos, font_size=11):
