@@ -484,6 +484,7 @@ class VTKViewer(QWidget):
         self.points_data = None
         self._cloud_tree = None
         self._cloud_actor = None
+        self._height_color_range = None
         self._voxel_actor = None
         self._voxel_size = 0.5
         self._voxel_dict = {}
@@ -3167,8 +3168,11 @@ class VTKViewer(QWidget):
 
         centers = mn + (unique_idx.astype(np.float64) + 0.5) * voxel_size
         voxel_dict = {tuple(index): int(count) for index, count in zip(unique_idx, counts)}
-        z_range = mx[2] - mn[2] if mx[2] > mn[2] else 1.0
-        heights = np.clip((centers[:, 2] - mn[2]) / z_range, 0.0, 1.0)
+        height_range = getattr(self, "_height_color_range", None)
+        if height_range is None:
+            height_range = (float(mn[2]), float(mx[2]))
+        z_min, z_max = height_range
+        heights = np.clip((centers[:, 2] - z_min) / max(z_max - z_min, 1e-9), 0.0, 1.0)
         color_np = np.empty((n_voxels, 3), dtype=np.uint8)
         color_np[:, 0] = np.interp(heights, [0.0, 0.5, 0.75, 1.0], [0, 0, 255, 255]).astype(np.uint8)
         color_np[:, 1] = np.interp(heights, [0.0, 0.25, 0.5, 0.75, 1.0], [0, 255, 255, 0, 0]).astype(np.uint8)

@@ -433,6 +433,10 @@ class MainWindow(QMainWindow):
         self._color_group = QActionGroup(self)
         self._color_acts = {}
         self._color_scheme = "height"  # 默认高度着色
+        self._height_range_mode = "adaptive"
+        self._height_manual_min = None
+        self._height_manual_max = None
+        self._height_range_cache = None
         for name, scheme in [("高度着色", "height"), ("原色", "original"), ("热力图", "thermal"),
                              ("灰度", "grayscale"), ("纯红", "red"), ("纯绿", "green"), ("纯蓝", "blue")]:
             act = QAction(name, self)
@@ -443,6 +447,18 @@ class MainWindow(QMainWindow):
             act.triggered.connect(lambda checked, s=scheme: self._on_color_scheme_changed(s))
             self._color_menu.addAction(act)
             self._color_acts[scheme] = act
+        self._color_menu.addSeparator()
+        self._height_range_menu = self._color_menu.addMenu("高程颜色范围")
+        self._height_range_group = QActionGroup(self)
+        self._height_range_acts = {}
+        for name, mode in [("自适应增强 (2%-98%)", "adaptive"), ("完整范围", "full"), ("手动范围...", "manual")]:
+            act = QAction(name, self)
+            act.setCheckable(True)
+            act.setActionGroup(self._height_range_group)
+            act.setChecked(mode == "adaptive")
+            act.triggered.connect(lambda checked, m=mode: checked and self._on_height_range_mode_changed(m))
+            self._height_range_menu.addAction(act)
+            self._height_range_acts[mode] = act
 
         self._view_menu.addSeparator()
 
@@ -1377,6 +1393,8 @@ class MainWindow(QMainWindow):
             self._kdtree = None
             self._kdtree_points_id = None
             self._analyze_point_density()
+            self._height_range_cache = None
+            self._get_height_color_range()
             if self._get_render_mode() == 'voxel':
                 self.viewer.add_voxel_grid(self.points, self._voxel_size)
             else:
@@ -1525,10 +1543,68 @@ class MainWindow(QMainWindow):
     def _update_height_legend(self):
         """如果当前是高度着色模式，显示高程图例"""
         if self._color_scheme == "height" and self.points is not None and len(self.points) > 0:
-            z_vals = self.points[:, 2]
-            self.viewer.show_height_legend(float(z_vals.min()), float(z_vals.max()))
+            z_min, z_max = self._get_height_color_range()
+            self.viewer.show_height_legend(z_min, z_max)
         else:
             self.viewer._remove_legend()
+
+    def _get_height_color_range(self):
+        if self.points is None or len(self.points) == 0:
+            return 0.0, 1.0
+        key = (id(self.points), self._height_range_mode, self._height_manual_min, self._height_manual_max)
+        if self._height_range_cache and self._height_range_cache[0] == key:
+            return self._height_range_cache[1]
+        z = self.points[:, 2]
+        if self._height_range_mode == "manual" and self._height_manual_min is not None:
+            lo, hi = self._height_manual_min, self._height_manual_max
+        elif self._height_range_mode == "adaptive":
+            step = max(1, int(np.ceil(len(z) / 1000000)))
+            lo, hi = np.percentile(z[::step], [2.0, 98.0])
+        else:
+            lo, hi = float(z.min()), float(z.max())
+        lo, hi = float(lo), float(hi)
+        if hi <= lo:
+            hi = lo + 1.0
+        self._height_range_cache = (key, (lo, hi))
+        self.viewer._height_color_range = (lo, hi)
+        return lo, hi
+
+    def _on_height_range_mode_changed(self, mode):
+        previous = self._height_range_mode
+        if mode == "manual":
+            from PyQt5.QtWidgets import QDialog, QDialogButtonBox, QDoubleSpinBox
+            dlg = QDialog(self)
+            dlg.setWindowTitle("手动高程颜色范围")
+            layout = QGridLayout(dlg)
+            lo, hi = self._get_height_color_range()
+            emin, emax = QDoubleSpinBox(), QDoubleSpinBox()
+            for control in (emin, emax):
+                control.setRange(-10000000.0, 10000000.0)
+                control.setDecimals(3)
+                control.setSuffix(" m")
+            emin.setValue(lo)
+            emax.setValue(hi)
+            layout.addWidget(QLabel("最低高程:"), 0, 0)
+            layout.addWidget(emin, 0, 1)
+            layout.addWidget(QLabel("最高高程:"), 1, 0)
+            layout.addWidget(emax, 1, 1)
+            buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            buttons.accepted.connect(dlg.accept)
+            buttons.rejected.connect(dlg.reject)
+            layout.addWidget(buttons, 2, 0, 1, 2)
+            if dlg.exec_() != QDialog.Accepted:
+                self._height_range_acts[previous].setChecked(True)
+                return
+            if emax.value() <= emin.value():
+                QMessageBox.warning(self, "范围无效", "最高高程必须大于最低高程。")
+                self._height_range_acts[previous].setChecked(True)
+                return
+            self._height_manual_min = emin.value()
+            self._height_manual_max = emax.value()
+        self._height_range_mode = mode
+        self._height_range_cache = None
+        if self.points is not None and self._color_scheme == "height":
+            self._refresh_point_cloud()
 
     def _on_color_scheme_changed(self, scheme):
         self._color_scheme = scheme
@@ -1546,9 +1622,8 @@ class MainWindow(QMainWindow):
 
         if scheme == "height":
             z_vals = points[:, 2]
-            z_min, z_max = z_vals.min(), z_vals.max()
-            z_range = z_max - z_min if z_max > z_min else 1.0
-            t = (z_vals - z_min) / z_range
+            z_min, z_max = self._get_height_color_range()
+            t = np.clip((z_vals - z_min) / (z_max - z_min), 0.0, 1.0)
             r = np.zeros(n, dtype=np.uint8)
             g = np.zeros(n, dtype=np.uint8)
             b = np.zeros(n, dtype=np.uint8)
