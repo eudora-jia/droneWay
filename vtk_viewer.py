@@ -3173,10 +3173,21 @@ class VTKViewer(QWidget):
             height_range = (float(mn[2]), float(mx[2]))
         z_min, z_max = height_range
         heights = np.clip((centers[:, 2] - z_min) / max(z_max - z_min, 1e-9), 0.0, 1.0)
-        color_np = np.empty((n_voxels, 3), dtype=np.uint8)
-        color_np[:, 0] = np.interp(heights, [0.0, 0.5, 0.75, 1.0], [0, 0, 255, 255]).astype(np.uint8)
-        color_np[:, 1] = np.interp(heights, [0.0, 0.25, 0.5, 0.75, 1.0], [0, 255, 255, 0, 0]).astype(np.uint8)
-        color_np[:, 2] = np.interp(heights, [0.0, 0.25, 0.5, 1.0], [255, 255, 0, 0]).astype(np.uint8)
+        # Match the regular point-cloud height palette exactly:
+        # blue -> cyan -> green -> yellow -> red.
+        color_np = np.zeros((n_voxels, 3), dtype=np.uint8)
+        mask = heights < 0.25
+        color_np[mask, 1] = (heights[mask] * 4.0 * 255.0).astype(np.uint8)
+        color_np[mask, 2] = 255
+        mask = (heights >= 0.25) & (heights < 0.5)
+        color_np[mask, 1] = 255
+        color_np[mask, 2] = ((0.5 - heights[mask]) * 4.0 * 255.0).astype(np.uint8)
+        mask = (heights >= 0.5) & (heights < 0.75)
+        color_np[mask, 0] = ((heights[mask] - 0.5) * 4.0 * 255.0).astype(np.uint8)
+        color_np[mask, 1] = 255
+        mask = heights >= 0.75
+        color_np[mask, 0] = 255
+        color_np[mask, 1] = ((1.0 - heights[mask]) * 4.0 * 255.0).astype(np.uint8)
 
         vtk_pts = self._vtkPoints()
         vtk_pts.SetData(self._numpy_to_vtk(centers, deep=True))

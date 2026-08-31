@@ -1553,6 +1553,8 @@ class MainWindow(QMainWindow):
             return 0.0, 1.0
         key = (id(self.points), self._height_range_mode, self._height_manual_min, self._height_manual_max)
         if self._height_range_cache and self._height_range_cache[0] == key:
+            # Keep the viewer synchronized when switching render modes.
+            self.viewer._height_color_range = self._height_range_cache[1]
             return self._height_range_cache[1]
         z = self.points[:, 2]
         if self._height_range_mode == "manual" and self._height_manual_min is not None:
