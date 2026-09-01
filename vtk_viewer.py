@@ -3419,12 +3419,27 @@ class VTKViewer(QWidget):
             self.renderer.AddActor(actor)
             self._anim_coverage_actor = actor
 
+    def _add_2d_prop(self, prop):
+        """Add a 2D prop across VTK renderer API variants."""
+        add = getattr(self.renderer, "AddActor2D", None)
+        if callable(add):
+            add(prop)
+        else:
+            self.renderer.AddViewProp(prop)
+
+    def _remove_2d_prop(self, prop):
+        remove = getattr(self.renderer, "RemoveActor2D", None)
+        if callable(remove):
+            remove(prop)
+        else:
+            self.renderer.RemoveViewProp(prop)
+
     def _remove_legend(self):
         """移除已有的图例"""
         if hasattr(self, '_legend_actors'):
             for a in self._legend_actors:
                 self.renderer.RemoveActor(a)
-                self.renderer.RemoveActor2D(a)
+                self._remove_2d_prop(a)
             self._legend_actors.clear()
     def show_height_legend(self, z_min, z_max):
         """显示连续彩虹高程柱与数值刻度。"""
@@ -3465,7 +3480,7 @@ class VTKViewer(QWidget):
         bar.GetTitleTextProperty().SetBold(True)
         bar.GetLabelTextProperty().SetColor(1.0, 1.0, 1.0)
         bar.GetLabelTextProperty().SetFontSize(13)
-        self.renderer.AddActor2D(bar)
+        self._add_2d_prop(bar)
         self._legend_actors.append(bar)
 
         # Discrete waypoint safety legend, aligned directly above the elevation bar.
@@ -3499,7 +3514,7 @@ class VTKViewer(QWidget):
         safety_bar.GetTitleTextProperty().SetBold(True)
         safety_bar.GetLabelTextProperty().SetColor(1.0, 1.0, 1.0)
         safety_bar.GetLabelTextProperty().SetFontSize(12)
-        self.renderer.AddActor2D(safety_bar)
+        self._add_2d_prop(safety_bar)
         self._legend_actors.append(safety_bar)
         self._update_view(reset_camera=False)
 
