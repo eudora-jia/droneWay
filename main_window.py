@@ -3,6 +3,7 @@
 import json
 import heapq
 import os
+import copy
 import numpy as np
 
 from PyQt5.QtWidgets import (
@@ -308,6 +309,10 @@ class MainWindow(QMainWindow):
         self._point_normals = None
         self._fpv_start_pos = [0.0, 0.0, 0.0]  # 无人机起始位置
         self.waypoints = []
+        self._route_segments = []
+        self._merged_connections = []
+        self._merged_oriented_segments = []
+        self._merged_preview_active = False
         self._kdtree = None
         self._kdtree_points_id = None
         self._density_stats = None
@@ -412,6 +417,13 @@ class MainWindow(QMainWindow):
                 act.setChecked(True)
             act.triggered.connect(lambda checked, v=val: self._on_voxel_size_changed(v))
             self._voxel_menu.addAction(act)
+
+        self._voxel_menu.addSeparator()
+        self._act_filter_isolated_voxels = QAction("过滤孤立体素", self)
+        self._act_filter_isolated_voxels.setCheckable(True)
+        self._act_filter_isolated_voxels.setChecked(True)
+        self._act_filter_isolated_voxels.toggled.connect(self._on_isolated_voxel_filter_changed)
+        self._voxel_menu.addAction(self._act_filter_isolated_voxels)
 
         self._view_menu.addSeparator()
         self._upsample_menu = self._view_menu.addMenu("点云渲染增密")
@@ -673,10 +685,10 @@ class MainWindow(QMainWindow):
         pk = QVBoxLayout(grp_pick)
         sd_row = QHBoxLayout()
         sd_row.addWidget(QLabel("安全距离(m):"))
-        self.edt_safe_dist = QLineEdit("1.0")
+        self.edt_safe_dist = QLineEdit("2.0")
         self.edt_safe_dist.setMaximumWidth(60)
         self.edt_safe_dist.textChanged.connect(self._on_safe_dist_changed)
-        self.viewer._safe_distance = 1.0  # 确保同步
+        self.viewer._safe_distance = 2.0  # 确保同步
         sd_row.addWidget(self.edt_safe_dist)
         sd_row.addStretch()
         pk.addLayout(sd_row)
@@ -756,13 +768,13 @@ class MainWindow(QMainWindow):
         fl.setSpacing(4)
 
         fl.addWidget(QLabel("巡检距离(m):"), 0, 0)
-        self.edt_flat_inspect_dist = QLineEdit("3.0"); fl.addWidget(self.edt_flat_inspect_dist, 0, 1)
+        self.edt_flat_inspect_dist = QLineEdit("2.0"); fl.addWidget(self.edt_flat_inspect_dist, 0, 1)
         fl.addWidget(QLabel("速度(m/s):"), 0, 2)
         self.edt_flat_speed = QLineEdit("1"); fl.addWidget(self.edt_flat_speed, 0, 3)
 
         fl.addWidget(QLabel("扫描方向:"), 1, 0)
         self.cmb_scan_dir = QComboBox()
-        self.cmb_scan_dir.addItems(["沿最长边", "垂直最长边"])
+        self.cmb_scan_dir.addItems(["沿最长边", "沿最短边"])
         fl.addWidget(self.cmb_scan_dir, 1, 1)
         fl.addWidget(QLabel("航点间距:"), 1, 2)
         self.edt_wp_spacing = QLineEdit("自动")
@@ -811,7 +823,7 @@ class MainWindow(QMainWindow):
         cl.addWidget(QLabel("高(Z):"), 2, 0)
         self.edt_dz = QLineEdit("2"); cl.addWidget(self.edt_dz, 2, 1)
         cl.addWidget(QLabel("巡检距离(m):"), 2, 2)
-        self.edt_dist = QLineEdit("1"); cl.addWidget(self.edt_dist, 2, 3)
+        self.edt_dist = QLineEdit("2.0"); cl.addWidget(self.edt_dist, 2, 3)
 
         cl.addWidget(QLabel("水平步距:"), 3, 0)
         self.edt_cstep = QLineEdit("自动")
@@ -873,7 +885,7 @@ class MainWindow(QMainWindow):
         self.edt_cyl_h = QLineEdit("2"); cyl.addWidget(self.edt_cyl_h, 1, 3)
 
         cyl.addWidget(QLabel("巡检距离(m):"), 2, 0)
-        self.edt_cyl_dist = QLineEdit("1"); cyl.addWidget(self.edt_cyl_dist, 2, 1)
+        self.edt_cyl_dist = QLineEdit("2.0"); cyl.addWidget(self.edt_cyl_dist, 2, 1)
         cyl.addWidget(QLabel("水平步距(°):"), 2, 2)
         self.edt_cyl_astep = QLineEdit("自动")
         self.edt_cyl_astep.setReadOnly(True)
@@ -944,7 +956,7 @@ class MainWindow(QMainWindow):
         self.edt_line_z2 = QLineEdit("5"); ll.addWidget(self.edt_line_z2, 2, 3)
 
         ll.addWidget(QLabel("巡检距离(m):"), 3, 0)
-        self.edt_line_inspect_dist = QLineEdit("3.0"); ll.addWidget(self.edt_line_inspect_dist, 3, 1)
+        self.edt_line_inspect_dist = QLineEdit("2.0"); ll.addWidget(self.edt_line_inspect_dist, 3, 1)
         ll.addWidget(QLabel("速度(m/s):"), 3, 2)
         self.edt_line_speed = QLineEdit("1"); ll.addWidget(self.edt_line_speed, 3, 3)
 
@@ -982,7 +994,7 @@ class MainWindow(QMainWindow):
         il.addWidget(self.lst_inspect, 2, 0, 1, 4)
 
         il.addWidget(QLabel("巡检距离(m):"), 3, 0)
-        self.edt_inspect_dist = QLineEdit("3.0")
+        self.edt_inspect_dist = QLineEdit("2.0")
         self.edt_inspect_dist.setMaximumWidth(50)
         il.addWidget(self.edt_inspect_dist, 3, 1)
         il.addWidget(QLabel("速度(m/s):"), 3, 2)
@@ -1039,6 +1051,43 @@ class MainWindow(QMainWindow):
 
         ctrl_layout.addWidget(grp_route)
         self._route_widgets.append(grp_route)
+
+        # -- 多任务段合并 --
+        grp_segments = QGroupBox("任务段合并")
+        segment_layout = QVBoxLayout(grp_segments)
+        self.lst_route_segments = QListWidget()
+        self.lst_route_segments.setMaximumHeight(130)
+        self.lst_route_segments.itemChanged.connect(self._on_route_segment_item_changed)
+        segment_layout.addWidget(self.lst_route_segments)
+
+        segment_row1 = QHBoxLayout()
+        self.btn_save_segment = QPushButton("保存当前段")
+        self.btn_save_segment.setStyleSheet(self._BTN_NORMAL)
+        self.btn_save_segment.clicked.connect(self._save_current_route_segment)
+        self.btn_preview_segments = QPushButton("合并预览")
+        self.btn_preview_segments.setStyleSheet(self._BTN_ACCENT)
+        self.btn_preview_segments.clicked.connect(self._preview_merged_segments)
+        segment_row1.addWidget(self.btn_save_segment)
+        segment_row1.addWidget(self.btn_preview_segments)
+        segment_layout.addLayout(segment_row1)
+
+        segment_row2 = QHBoxLayout()
+        for text, callback in [("上移", lambda: self._move_route_segment(-1)),
+                               ("下移", lambda: self._move_route_segment(1)),
+                               ("反转", self._reverse_route_segment),
+                               ("编辑", self._edit_route_segment),
+                               ("删除", self._delete_route_segment)]:
+            button = QPushButton(text)
+            button.setStyleSheet(self._BTN_NORMAL if text != "删除" else self._BTN_DANGER)
+            button.clicked.connect(callback)
+            segment_row2.addWidget(button)
+        segment_layout.addLayout(segment_row2)
+        self.lbl_segment_status = QLabel("尚未保存任务段")
+        self.lbl_segment_status.setWordWrap(True)
+        self.lbl_segment_status.setStyleSheet("color: #6f8590; font-size: 11px;")
+        segment_layout.addWidget(self.lbl_segment_status)
+        ctrl_layout.addWidget(grp_segments)
+        self._route_widgets.append(grp_segments)
 
         # -- 快捷键提示 --
         lbl_help = QLabel("快捷键: 1=俯视 2=正视 3=侧视 4=透视 5=仰视  Esc=取消多边形")
@@ -1254,6 +1303,9 @@ class MainWindow(QMainWindow):
             self._color_menu,
         ):
             control.setEnabled(enabled)
+        point_size_enabled = enabled and self._get_render_mode() != "voxel"
+        self._size_menu.setEnabled(point_size_enabled)
+        self.sld_point_size.setEnabled(point_size_enabled)
 
     def _analyze_point_density(self):
         """计算规划所需的最近邻点间距统计，限制采样量避免阻塞加载。"""
@@ -1297,38 +1349,49 @@ class MainWindow(QMainWindow):
         if not hasattr(self, 'lbl_density_status'):
             return
         if self.points is None:
-            self.lbl_density_status.setText("点云质量: 未评估")
-            self.lbl_density_detail.setText("加载点云后计算规划密度")
+            self.lbl_density_status.setText(self._ui_text("点云质量: 未评估", "Point Cloud Quality: Not Evaluated"))
+            self.lbl_density_detail.setText(self._ui_text("加载点云后计算规划密度", "Load a point cloud to evaluate planning density"))
             self.lbl_density_status.setStyleSheet("color: #888; font-weight: bold; padding: 4px 0;")
             ready = True
             tooltip = ""
         elif not self._density_stats:
-            self.lbl_density_status.setText("点云质量: 密度不足")
-            self.lbl_density_detail.setText("无法计算有效的最近邻点间距")
+            self.lbl_density_status.setText(self._ui_text("点云质量: 密度不足", "Point Cloud Quality: Insufficient Density"))
+            self.lbl_density_detail.setText(self._ui_text("无法计算有效的最近邻点间距", "Unable to calculate valid nearest-neighbor spacing"))
             self.lbl_density_status.setStyleSheet("color: #ff5a4f; font-weight: bold; padding: 4px 0;")
             ready = False
-            tooltip = "点云密度不足，无法可靠体素化并规划航线"
+            tooltip = self._ui_text(
+                "点云密度不足，无法可靠体素化并规划航线",
+                "Point-cloud density is insufficient for reliable voxelization and route planning",
+            )
         else:
             stats = self._density_stats
             ready = self._point_cloud_density_sufficient()
             recommended_voxel = max(stats['p95'], stats['median'] * 2.0)
             if ready:
-                self.lbl_density_status.setText("点云质量: 可用于航线规划")
+                self.lbl_density_status.setText(self._ui_text("点云质量: 可用于航线规划", "Point Cloud Quality: Ready for Route Planning"))
                 color = "#36d399"
                 tooltip = ""
             else:
-                self.lbl_density_status.setText("点云质量: 密度不足，已禁止规划")
+                self.lbl_density_status.setText(self._ui_text("点云质量: 密度不足，已禁止规划", "Point Cloud Quality: Insufficient; Planning Disabled"))
                 color = "#ff5a4f"
-                tooltip = f"点云密度不足，建议体素大小不小于 {recommended_voxel:.2f}m"
+                tooltip = self._ui_text(
+                    f"点云密度不足，建议体素大小不小于 {recommended_voxel:.2f}m",
+                    f"Point-cloud density is insufficient; use a voxel size of at least {recommended_voxel:.2f}m",
+                )
             self.lbl_density_status.setStyleSheet(
                 f"color: {color}; font-weight: bold; padding: 4px 0;"
             )
-            detail = (
+            detail = self._ui_text(
                 f"体素 {self._voxel_size:.2f}m  |  中位间距 {stats['median']:.3f}m "
-                f"|  P95 {stats['p95']:.3f}m"
+                f"|  P95 {stats['p95']:.3f}m",
+                f"Voxel {self._voxel_size:.2f}m  |  Median spacing {stats['median']:.3f}m "
+                f"|  P95 {stats['p95']:.3f}m",
             )
             if not ready:
-                detail += f"  |  建议体素 >= {recommended_voxel:.2f}m"
+                detail += self._ui_text(
+                    f"  |  建议体素 >= {recommended_voxel:.2f}m",
+                    f"  |  Recommended voxel >= {recommended_voxel:.2f}m",
+                )
             self.lbl_density_detail.setText(detail)
         for control in self._route_planning_controls:
             control.setEnabled(ready)
@@ -1522,8 +1585,9 @@ class MainWindow(QMainWindow):
     # ─── Z值过滤 ───
     def _get_render_mode(self):
         """获取当前渲染模式: 'auto'/'sphere'/'cube'/'pixel'"""
-        text = self.cmb_render_mode.currentText()
-        return {"自动": "auto", "球体": "sphere", "立方体": "cube", "像素": "pixel", "体素栅格": "voxel"}.get(text, "auto")
+        modes = ["auto", "sphere", "cube", "pixel", "voxel"]
+        index = self.cmb_render_mode.currentIndex()
+        return modes[index] if 0 <= index < len(modes) else "auto"
 
     def _get_point_size(self):
         return self.sld_point_size.value() * 0.01
@@ -1576,7 +1640,7 @@ class MainWindow(QMainWindow):
         if mode == "manual":
             from PyQt5.QtWidgets import QDialog, QDialogButtonBox, QDoubleSpinBox
             dlg = QDialog(self)
-            dlg.setWindowTitle("手动高程颜色范围")
+            dlg.setWindowTitle(self._ui_text("手动高程颜色范围", "Manual Height Color Range"))
             layout = QGridLayout(dlg)
             lo, hi = self._get_height_color_range()
             emin, emax = QDoubleSpinBox(), QDoubleSpinBox()
@@ -1586,9 +1650,9 @@ class MainWindow(QMainWindow):
                 control.setSuffix(" m")
             emin.setValue(lo)
             emax.setValue(hi)
-            layout.addWidget(QLabel("最低高程:"), 0, 0)
+            layout.addWidget(QLabel(self._ui_text("最低高程:", "Minimum Elevation:")), 0, 0)
             layout.addWidget(emin, 0, 1)
-            layout.addWidget(QLabel("最高高程:"), 1, 0)
+            layout.addWidget(QLabel(self._ui_text("最高高程:", "Maximum Elevation:")), 1, 0)
             layout.addWidget(emax, 1, 1)
             buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
             buttons.accepted.connect(dlg.accept)
@@ -1598,7 +1662,9 @@ class MainWindow(QMainWindow):
                 self._height_range_acts[previous].setChecked(True)
                 return
             if emax.value() <= emin.value():
-                QMessageBox.warning(self, "范围无效", "最高高程必须大于最低高程。")
+                QMessageBox.warning(self, self._ui_text("范围无效", "Invalid Range"),
+                                    self._ui_text("最高高程必须大于最低高程。",
+                                                  "Maximum elevation must be greater than minimum elevation."))
                 self._height_range_acts[previous].setChecked(True)
                 return
             self._height_manual_min = emin.value()
@@ -1671,6 +1737,9 @@ class MainWindow(QMainWindow):
         return colors if colors is not None else np.tile(np.array([180, 180, 180], dtype=np.uint8), (n, 1))
 
     def _on_render_mode_changed(self, text):
+        voxel_mode = text == "体素栅格"
+        self._size_menu.setEnabled(not voxel_mode and self.points is not None)
+        self.sld_point_size.setEnabled(not voxel_mode)
         self._refresh_point_cloud()
 
     def _on_upsample_changed(self, factor):
@@ -1749,6 +1818,11 @@ class MainWindow(QMainWindow):
     def _on_menu_point_size(self, val):
         """菜单栏点云大小切换"""
         self.sld_point_size.setValue(val)
+
+    def _on_isolated_voxel_filter_changed(self, checked):
+        self.viewer._filter_isolated_voxels = bool(checked)
+        if self._get_render_mode() == "voxel":
+            self._refresh_point_cloud()
 
     def _on_voxel_size_changed(self, val):
         """体素大小切换"""
@@ -2227,6 +2301,10 @@ class MainWindow(QMainWindow):
         self._lang = lang
         self._apply_language()
 
+    def _ui_text(self, zh_text, en_text):
+        """Return UI text for the active language."""
+        return zh_text if self._lang == "zh" else en_text
+
     # 内联 QLabel 的中文→英文映射（用于递归翻译）
     _INLINE_LABELS = {
         "工作模式": "Mode",
@@ -2279,8 +2357,28 @@ class MainWindow(QMainWindow):
         "X:": "X:", "Y:": "Y:", "Z:": "Z:",
         "渲染:": "Render:",
         "大小:": "Size:",
+        "初始偏航角(°):": "Initial Yaw(°):",
+        "起飞点(x,y,z):": "Takeoff Point(x,y,z):",
+        "规划安全过渡": "Plan Safe Transition",
+        "过渡路径: 未规划": "Transition: Not Planned",
+        "扫描方向:": "Scan Direction:",
+        "航点间距:": "Waypoint Spacing:",
+        "选择点": "Select Points",
+        "点击放置（右键确认生成）": "Place (Right-click to generate)",
+        "点云质量: 未评估": "Point Cloud Quality: Not Evaluated",
+        "加载点云后计算规划密度": "Load a point cloud to evaluate planning density",
+        "任务段合并": "Route Segment Merge",
+        "保存当前段": "Save Current Segment",
+        "合并预览": "Merge Preview",
+        "上移": "Move Up", "下移": "Move Down", "反转": "Reverse",
+        "编辑": "Edit", "删除": "Delete",
+        "尚未保存任务段": "No Saved Segments",
+        "显示距离": "Show Distances", "显示序号": "Show Indices",
+        "沿最长边": "Along Longest Edge", "沿最短边": "Along Shortest Edge",
         "快捷键: 1=俯视 2=正视 3=侧视 4=透视 5=仰视  Esc=取消":
             "Keys: 1=Top 2=Front 3=Side 4=Persp 5=Bottom  Esc=Cancel",
+        "快捷键: 1=俯视 2=正视 3=侧视 4=透视 5=仰视  Esc=取消多边形":
+            "Keys: 1=Top 2=Front 3=Side 4=Perspective 5=Bottom  Esc=Cancel Polygon",
     }
 
     def _apply_language(self):
@@ -2299,7 +2397,8 @@ class MainWindow(QMainWindow):
         self._act_clip_toggle.setText(t["act_clip"])
         self._render_menu.setTitle(t["menu_render"])
         # 更新渲染模式子菜单文本
-        render_map = {"自动": "Auto", "球体": "Sphere", "立方体": "Cube", "像素": "Pixel"}
+        render_map = {"自动": "Auto", "球体": "Sphere", "立方体": "Cube", "像素": "Pixel",
+                      "体素栅格": "Voxel Grid"}
         if self._lang == "zh":
             render_map = {v: k for k, v in render_map.items()}
         for old_name, act in self._render_mode_acts.items():
@@ -2325,8 +2424,22 @@ class MainWindow(QMainWindow):
             new_text = color_map.get(old_text, old_text)
             act.setText(new_text)
         self._color_menu.setTitle(t["menu_color"])
+        self._height_range_menu.setTitle("高程颜色范围" if self._lang == "zh" else "Height Color Range")
+        height_range_names = {
+            "adaptive": ("自适应增强 (2%-98%)", "Adaptive Contrast (2%-98%)"),
+            "full": ("完整范围", "Full Range"),
+            "manual": ("手动范围...", "Manual Range..."),
+        }
+        for mode, act in self._height_range_acts.items():
+            act.setText(height_range_names[mode][0 if self._lang == "zh" else 1])
+        self._voxel_menu.setTitle(t["menu_voxel"])
+        self._act_filter_isolated_voxels.setText(
+            "过滤孤立体素" if self._lang == "zh" else "Filter Isolated Voxels"
+        )
         self._lang_menu.setTitle(t["menu_lang"])
         self._settings_menu.setTitle(t["menu_settings"])
+        self._route_menu.setTitle("航线管理" if self._lang == "zh" else "Route Management")
+        self._help_menu.setTitle("帮助" if self._lang == "zh" else "Help")
         self._act_bridge_params.setText(t["act_bridge_params"])
         self._act_camera_params.setText(t["act_camera_params"])
         self._act_range_calc.setText(t["act_range_calc"])
@@ -2356,8 +2469,15 @@ class MainWindow(QMainWindow):
                 "Clear Route": "清除",
                 "Auto Calc": "自动算间距",
                 "Show Heading": "显示机头方向",
+                "Show Gimbal Direction": "显示云台方向",
+                "Route Animation": "航线动画播放",
+                "Pause Animation": "暂停动画",
+                "Stop Animation": "停止动画",
+                "Animation Projection": "动画投影",
+                "Overlap Coverage": "重叠率覆盖",
                 "Waypoints: 0": "航点: 0",
                 "No point cloud loaded": "未加载点云",
+                "No Saved Segments": "尚未保存任务段",
             }
             text_map.update(known)
         else:
@@ -2374,7 +2494,7 @@ class MainWindow(QMainWindow):
                 "清除": "Clear",
                 "自动算间距": "Auto Calc",
                 "显示机头方向": "Show Heading",
-                "显示云台方向": "Show Gimbal",
+                "显示云台方向": "Show Gimbal Direction",
                 "显示距离": "Show Distances",
                 "显示序号": "Show Indices",
                 "航线动画播放": "Route Animation",
@@ -2384,6 +2504,24 @@ class MainWindow(QMainWindow):
                 "未加载点云": "No point cloud loaded",
             }
             text_map.update(known)
+
+        menu_texts = {
+            "加载模型(STL/OBJ)": "Load Model (STL/OBJ)",
+            "加载航线": "Load Route",
+            "航线管理": "Route Management",
+            "显示云台方向": "Show Gimbal Direction",
+            "航线动画播放": "Route Animation",
+            "暂停动画": "Pause Animation",
+            "停止动画": "Stop Animation",
+            "动画投影": "Animation Projection",
+            "重叠率覆盖": "Overlap Coverage",
+            "帮助": "Help", "关于": "About",
+            "FPV无人机视角 (V)": "FPV Drone View (V)",
+            "STL透明度": "STL Opacity", "不透明": "Opaque", "隐藏": "Hidden",
+            "关闭": "Off", "2倍": "2x", "5倍": "5x", "10倍": "10x",
+            "过滤孤立体素": "Filter Isolated Voxels",
+        }
+        text_map.update(menu_texts if self._lang == "en" else {v: k for k, v in menu_texts.items()})
 
         # ─── 递归遍历所有控件，批量替换文本 ───
         def _translate_widgets(widget):
@@ -2404,6 +2542,9 @@ class MainWindow(QMainWindow):
 
         _translate_widgets(self.centralWidget())
         _translate_widgets(self.menuBar())
+        for action in self.findChildren(QAction):
+            if action.text() in text_map:
+                action.setText(text_map[action.text()])
 
         # ComboBox 航线类型（需要特殊处理，因为 items 是列表）
         route_names = [t["route_flat"], t["route_cube"], t["route_cyl"],
@@ -2412,6 +2553,74 @@ class MainWindow(QMainWindow):
         self.cmb_route_type.clear()
         self.cmb_route_type.addItems(route_names)
         self.cmb_route_type.setCurrentIndex(idx)
+
+        combo_translations = (
+            (self.cmb_render_mode,
+             ["自动", "球体", "立方体", "像素", "体素栅格"],
+             ["Auto", "Sphere", "Cube", "Pixel", "Voxel Grid"]),
+            (self.cmb_scan_dir,
+             ["沿最长边", "沿最短边"],
+             ["Along Longest Edge", "Along Shortest Edge"]),
+            (self.cbo_cyl_type,
+             ["螺旋线", "Z字形"],
+             ["Spiral", "Zigzag"]),
+        )
+        for combo, zh_items, en_items in combo_translations:
+            current = combo.currentIndex()
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItems(zh_items if self._lang == "zh" else en_items)
+            combo.setCurrentIndex(max(0, current))
+            combo.blockSignals(False)
+
+        self._update_density_quality()
+        self._update_route_time_label()
+        if self.edt_line_spacing.text() in ("自动", "Auto"):
+            self.edt_line_spacing.setText(self._ui_text("自动", "Auto"))
+
+        dynamic_terms = {
+            "起飞到首航点路径碰撞": "Takeoff-to-first-waypoint path collision",
+            "航线方向已按起飞点调整，请重新规划": "Route direction changed for takeoff; plan again",
+            "首航点已更新，请重新规划": "First waypoint changed; plan again",
+            "对重复或几乎重合": " duplicate or near-overlapping pairs",
+            "航点碰撞": " waypoint collisions",
+            "过渡路径:": "Transition:", "个中继点": "relay waypoints",
+            "航点:": "Waypoints:", "首点:": "First:", "末点:": "Last:",
+            "个低于Z=": " below Z=", "节点": "nodes", "直达": "Direct",
+            "已加载模型:": "Loaded model:", "已加载:": "Loaded:",
+            "正在加载": "Loading", "正在估算法线": "Estimating normals",
+            "法线估算完成": "Normal estimation complete",
+            "已退出FPV模式": "Exited FPV mode",
+        }
+        if self._lang == "zh":
+            dynamic_terms = {value: key for key, value in dynamic_terms.items()}
+        for label in (self.lbl_info, self.lbl_transition_status):
+            translated = label.text()
+            for source, target in dynamic_terms.items():
+                translated = translated.replace(source, target)
+            label.setText(translated)
+        status_text = self.statusBar().currentMessage()
+        for source, target in dynamic_terms.items():
+            status_text = status_text.replace(source, target)
+        self.statusBar().showMessage(status_text)
+
+        self._refresh_route_segment_list()
+        if not self._route_segments:
+            self.lbl_segment_status.setText(
+                "尚未保存任务段" if self._lang == "zh" else "No Saved Segments"
+            )
+        elif self._merged_preview_active:
+            self.lbl_segment_status.setText(
+                f"合并预览已启用：{len(self._route_segments)} 个任务段"
+                if self._lang == "zh" else
+                f"Merged preview active: {len(self._route_segments)} segments"
+            )
+        else:
+            self.lbl_segment_status.setText(
+                f"已保存 {len(self._route_segments)} 个任务段"
+                if self._lang == "zh" else
+                f"{len(self._route_segments)} route segments saved"
+            )
 
         print(f"[Lang] Switched to {self._lang}")
 
@@ -2697,7 +2906,7 @@ class MainWindow(QMainWindow):
         if nrm > 1e-10:
             cross_dir_3d /= nrm
 
-        # 用户选择"垂直最长边"时交换主副方向
+        # 用户选择"沿最短边"时交换主副方向
         if self.cmb_scan_dir.currentIndex() == 1:
             main_dir_3d, cross_dir_3d = cross_dir_3d, main_dir_3d
 
@@ -2756,6 +2965,7 @@ class MainWindow(QMainWindow):
         # meshes are used only for collision and line-of-sight constraints; they
         # must not move the user-defined planar targets or reject the region.
         self.waypoints = []
+        self._merged_preview_active = False
         warnings = []
         _up = np.array([0.0, 0.0, 1.0])
         self._check_speed_overlap(
@@ -2991,7 +3201,7 @@ class MainWindow(QMainWindow):
             self.edt_cyl_h.setText(f"{h:.1f}")
             QMessageBox.information(self, "高度调整", f"圆柱体高度已调整为 {h:.1f}m（受限于区域上方点云）")
 
-        route_type = self.cbo_cyl_type.currentText()
+        route_type = "螺旋线" if self.cbo_cyl_type.currentIndex() == 0 else "Z字形"
         tree = self._get_kdtree()
         collision_dist = self.viewer._safe_distance * 1.5
         up = np.array([0.0, 0.0, 1.0])
@@ -3106,6 +3316,7 @@ class MainWindow(QMainWindow):
             )
             return
 
+        self._merged_preview_active = False
         self.waypoints = generated
         self._display_route()
         print(f"[Cylinder] Generated {len(self.waypoints)} waypoints ({route_type})")
@@ -3196,6 +3407,7 @@ class MainWindow(QMainWindow):
             crab_heading = np.array([1.0, 0.0, 0.0])
 
         self.waypoints = []
+        self._merged_preview_active = False
         warnings = []
         up = np.array([0.0, 0.0, 1.0])
 
@@ -3805,10 +4017,11 @@ class MainWindow(QMainWindow):
             return
 
         safe_dist = self.viewer._safe_distance
-        collision_dist = safe_dist * 1.5
+        collision_dist = safe_dist
         tree = self._get_kdtree()
 
         self.waypoints = []
+        self._merged_preview_active = False
         warnings = []
 
         # 检查速度vs拍摄间隔
@@ -4166,9 +4379,10 @@ class MainWindow(QMainWindow):
             edge_points.append(pts)
 
         self.waypoints = []
+        self._merged_preview_active = False
         tree = self._get_kdtree()
         safe_dist = self.viewer._safe_distance
-        collision_dist = safe_dist * 1.5
+        collision_dist = safe_dist
         warnings = []
 
         # 检查速度vs拍摄间隔（水平方向沿边移动）
@@ -4495,6 +4709,8 @@ class MainWindow(QMainWindow):
         if not self.waypoints:
             QMessageBox.warning(self, "提示", "请先生成航线")
             return
+        if not self._ensure_merged_route_safe():
+            return
         # 同步投影开关
         self.viewer._anim_proj_enabled = self._act_anim_proj.isChecked()
         self.viewer.start_route_animation(self.waypoints, speed=1.0, camera_fov=self._camera_fov)
@@ -4502,7 +4718,7 @@ class MainWindow(QMainWindow):
 
     def _on_anim_started(self):
         """动画开始：禁用其他操作，STL模型移除，OBJ模型半透明"""
-        self._act_anim_play.setText("停止动画")
+        self._act_anim_play.setText(self._ui_text("停止动画", "Stop Animation"))
         self._file_menu.setEnabled(False)
         self._view_menu.setEnabled(False)
         self._settings_menu.setEnabled(False)
@@ -4521,7 +4737,7 @@ class MainWindow(QMainWindow):
 
     def _on_anim_stopped(self):
         """动画结束：恢复操作"""
-        self._act_anim_play.setText("航线动画播放")
+        self._act_anim_play.setText(self._ui_text("航线动画播放", "Route Animation"))
         self._file_menu.setEnabled(True)
         self._view_menu.setEnabled(True)
         self._settings_menu.setEnabled(True)
@@ -4733,6 +4949,157 @@ class MainWindow(QMainWindow):
         """圆柱体区域参数变化时重新计算cz和h"""
         self._update_cyl_cz_and_h()
 
+    def _save_current_route_segment(self):
+        if self._merged_preview_active:
+            QMessageBox.information(self, self._ui_text("提示", "Notice"),
+                                    self._ui_text("当前显示的是合并预览，请先清除或重新生成一条局部航线。",
+                                                  "A merged preview is displayed. Clear it or generate a local route first."))
+            return
+        if not self.waypoints:
+            QMessageBox.information(self, self._ui_text("提示", "Notice"),
+                                    self._ui_text("请先生成一条局部航线。", "Generate a local route first."))
+            return
+        from PyQt5.QtWidgets import QDialog, QDialogButtonBox
+        dlg = QDialog(self)
+        dlg.setWindowTitle(self._ui_text("保存为任务段", "Save as Route Segment"))
+        layout = QGridLayout(dlg)
+        default_name = self._ui_text("任务段", "Segment") + f" {len(self._route_segments) + 1}"
+        name_edit = QLineEdit(default_name)
+        type_combo = QComboBox()
+        part_types_zh = ["梁底", "腹板", "横隔板", "支座", "桥墩", "排水构件", "其他"]
+        part_types_en = ["Girder Soffit", "Web", "Diaphragm", "Bearing", "Pier", "Drainage", "Other"]
+        type_combo.addItems(part_types_zh if self._lang == "zh" else part_types_en)
+        layout.addWidget(QLabel(self._ui_text("部件名称:", "Component Name:")), 0, 0)
+        layout.addWidget(name_edit, 0, 1)
+        layout.addWidget(QLabel(self._ui_text("部件类型:", "Component Type:")), 1, 0)
+        layout.addWidget(type_combo, 1, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons, 2, 0, 1, 2)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        name = name_edit.text().strip() or default_name
+        self._route_segments.append({
+            "name": name,
+            "part_type": part_types_zh[type_combo.currentIndex()],
+            "waypoints": copy.deepcopy(self.waypoints),
+            "enabled": True,
+            "direction_locked": False,
+        })
+        self._merged_preview_active = False
+        self._refresh_route_segment_list(select_row=len(self._route_segments) - 1)
+        self.lbl_segment_status.setText(
+            self._ui_text(f"已保存 {name}，{len(self.waypoints)} 个航点",
+                          f"Saved {name}: {len(self.waypoints)} waypoints")
+        )
+        self.lbl_segment_status.setStyleSheet("color: #36d399; font-size: 11px;")
+
+    def _refresh_route_segment_list(self, select_row=None):
+        self.lst_route_segments.blockSignals(True)
+        self.lst_route_segments.clear()
+        for index, segment in enumerate(self._route_segments):
+            if self._lang == "zh":
+                state = "自动方向" if not segment.get("direction_locked") else "方向锁定"
+                part_type = segment["part_type"]
+                point_suffix = "点"
+            else:
+                state = "Auto Direction" if not segment.get("direction_locked") else "Direction Locked"
+                part_type = {
+                    "梁底": "Girder Soffit", "腹板": "Web", "横隔板": "Diaphragm",
+                    "支座": "Bearing", "桥墩": "Pier", "排水构件": "Drainage", "其他": "Other",
+                }.get(segment["part_type"], segment["part_type"])
+                point_suffix = " waypoints"
+            item = QListWidgetItem(
+                f"{index + 1}. {segment['name']}  [{part_type}]  "
+                f"{len(segment['waypoints'])}{point_suffix}  {state}"
+            )
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if segment.get("enabled", True) else Qt.Unchecked)
+            self.lst_route_segments.addItem(item)
+        self.lst_route_segments.blockSignals(False)
+        if select_row is not None and 0 <= select_row < self.lst_route_segments.count():
+            self.lst_route_segments.setCurrentRow(select_row)
+
+    def _selected_route_segment_index(self):
+        row = self.lst_route_segments.currentRow()
+        return row if 0 <= row < len(self._route_segments) else None
+
+    def _on_route_segment_item_changed(self, item):
+        row = self.lst_route_segments.row(item)
+        if 0 <= row < len(self._route_segments):
+            self._route_segments[row]["enabled"] = item.checkState() == Qt.Checked
+            if self._merged_preview_active:
+                self._preview_merged_segments()
+
+    def _move_route_segment(self, offset):
+        row = self._selected_route_segment_index()
+        if row is None:
+            return
+        target = row + offset
+        if not 0 <= target < len(self._route_segments):
+            return
+        self._route_segments[row], self._route_segments[target] = (
+            self._route_segments[target], self._route_segments[row]
+        )
+        self._refresh_route_segment_list(select_row=target)
+        if self._merged_preview_active:
+            self._preview_merged_segments()
+
+    def _reverse_route_segment(self):
+        row = self._selected_route_segment_index()
+        if row is None:
+            return
+        segment = self._route_segments[row]
+        segment['waypoints'].reverse()
+        segment["direction_locked"] = True
+        self._refresh_route_segment_list(select_row=row)
+        if self._merged_preview_active:
+            self._preview_merged_segments()
+
+    def _edit_route_segment(self):
+        row = self._selected_route_segment_index()
+        if row is None:
+            return
+        from PyQt5.QtWidgets import QDialog, QDialogButtonBox
+        segment = self._route_segments[row]
+        dlg = QDialog(self)
+        dlg.setWindowTitle(self._ui_text("编辑任务段", "Edit Route Segment"))
+        layout = QGridLayout(dlg)
+        name_edit = QLineEdit(segment["name"])
+        type_combo = QComboBox()
+        part_types_zh = ["梁底", "腹板", "横隔板", "支座", "桥墩", "排水构件", "其他"]
+        part_types_en = ["Girder Soffit", "Web", "Diaphragm", "Bearing", "Pier", "Drainage", "Other"]
+        type_combo.addItems(part_types_zh if self._lang == "zh" else part_types_en)
+        if segment["part_type"] in part_types_zh:
+            type_combo.setCurrentIndex(part_types_zh.index(segment["part_type"]))
+        layout.addWidget(QLabel(self._ui_text("部件名称:", "Component Name:")), 0, 0)
+        layout.addWidget(name_edit, 0, 1)
+        layout.addWidget(QLabel(self._ui_text("部件类型:", "Component Type:")), 1, 0)
+        layout.addWidget(type_combo, 1, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons, 2, 0, 1, 2)
+        if dlg.exec_() == QDialog.Accepted:
+            segment["name"] = name_edit.text().strip() or segment["name"]
+            segment["part_type"] = part_types_zh[type_combo.currentIndex()]
+            self._refresh_route_segment_list(select_row=row)
+            if self._merged_preview_active:
+                self._preview_merged_segments()
+
+    def _delete_route_segment(self):
+        row = self._selected_route_segment_index()
+        if row is None:
+            return
+        del self._route_segments[row]
+        self._refresh_route_segment_list(select_row=min(row, len(self._route_segments) - 1))
+        if self._merged_preview_active and self._route_segments:
+            self._preview_merged_segments()
+        elif not self._route_segments:
+            self._merged_preview_active = False
+            self.lbl_segment_status.setText(self._ui_text("尚未保存任务段", "No Saved Segments"))
+
     def _transition_line_is_safe(self, start, end, tree, clearance, step):
         length = float(np.linalg.norm(end - start))
         samples = np.linspace(start, end, max(2, int(length / step) + 1))
@@ -4747,6 +5114,190 @@ class MainWindow(QMainWindow):
             result.append(path[candidate])
             index = candidate
         return result
+
+    def _find_safe_path(self, start, goal):
+        """Return a collision-safe 3D path and a diagnostic reason."""
+        tree = self._get_kdtree()
+        if tree is None:
+            return None, self._ui_text("没有可用的点云或模型碰撞数据", "No point-cloud or model collision data"), 0
+        start = np.asarray(start, dtype=float)
+        goal = np.asarray(goal, dtype=float)
+        clearance = max(float(self.viewer._safe_distance), 0.1)
+        voxel = max(float(self._voxel_size), clearance * 0.5)
+        step = max(voxel * 0.5, 0.1)
+        if self._transition_line_is_safe(start, goal, tree, clearance, step):
+            return [start, goal], self._ui_text("直达", "Direct"), 0
+
+        margin = max(clearance * 3.0, voxel * 4.0)
+        lower = np.minimum(start, goal) - margin
+        upper = np.maximum(start, goal) + margin
+        dims = np.ceil((upper - lower) / voxel).astype(int) + 1
+        if int(np.prod(dims)) > 1500000:
+            return None, self._ui_text("搜索空间过大", "Search space is too large"), 0
+
+        def to_index(pos):
+            return tuple(np.clip(np.rint((pos - lower) / voxel).astype(int), 0, dims - 1))
+
+        def to_world(index):
+            return lower + np.asarray(index, dtype=float) * voxel
+
+        start_idx, goal_idx = to_index(start), to_index(goal)
+        occupancy = {}
+
+        def free(index):
+            if any(value < 0 or value >= dims[axis] for axis, value in enumerate(index)):
+                return False
+            if index not in occupancy:
+                occupancy[index] = float(tree.query(to_world(index))[0]) >= clearance
+            return occupancy[index]
+
+        if not free(start_idx) or not free(goal_idx):
+            return None, self._ui_text("端点位于安全距离内", "Endpoint is inside the safety clearance"), 0
+        offsets = [
+            (dx, dy, dz) for dx in (-1, 0, 1)
+            for dy in (-1, 0, 1) for dz in (-1, 0, 1)
+            if dx or dy or dz
+        ]
+        frontier = [(0.0, 0.0, start_idx)]
+        costs, parents = {start_idx: 0.0}, {}
+        visited, found = 0, False
+        while frontier and visited < 250000:
+            _, current_cost, current = heapq.heappop(frontier)
+            if current_cost != costs.get(current):
+                continue
+            if current == goal_idx:
+                found = True
+                break
+            visited += 1
+            for offset in offsets:
+                neighbor = tuple(current[i] + offset[i] for i in range(3))
+                if not free(neighbor):
+                    continue
+                next_cost = current_cost + float(np.linalg.norm(offset))
+                if next_cost >= costs.get(neighbor, float("inf")):
+                    continue
+                costs[neighbor], parents[neighbor] = next_cost, current
+                priority = next_cost + float(np.linalg.norm(np.subtract(goal_idx, neighbor)))
+                heapq.heappush(frontier, (priority, next_cost, neighbor))
+        if not found:
+            return None, self._ui_text("未找到连通自由空间", "No connected free space found"), visited
+        indices = [goal_idx]
+        while indices[-1] != start_idx:
+            indices.append(parents[indices[-1]])
+        raw = [start] + [to_world(i) for i in reversed(indices[1:-1])] + [goal]
+        path = self._simplify_transition_path(raw, tree, clearance, step)
+        return [np.asarray(p, dtype=float) for p in path], self._ui_text("A*绕行", "A* detour"), visited
+
+
+    def _make_transition_waypoint(self, point, template):
+        waypoint = copy.deepcopy(template)
+        waypoint["pos"] = np.asarray(point, dtype=float)
+        waypoint.pop("target_pos", None)
+        waypoint["capture"] = False
+        waypoint["_is_transition"] = True
+        return waypoint
+
+    def _preview_merged_segments(self):
+        enabled = [s for s in self._route_segments if s.get("enabled", True) and s.get("waypoints")]
+        if not enabled:
+            QMessageBox.information(self, self._ui_text("提示", "Notice"),
+                                    self._ui_text("没有启用的任务段。", "No route segments are enabled."))
+            return
+        try:
+            hover = np.array([
+                float(self.edt_current_x.text()),
+                float(self.edt_current_y.text()),
+                float(self.edt_current_z.text()) + float(self.edt_takeoff_z.text()),
+            ])
+        except ValueError:
+            QMessageBox.warning(self, self._ui_text("输入错误", "Invalid Input"),
+                                self._ui_text("起飞点坐标必须是有效数值。",
+                                              "Takeoff point coordinates must be valid numbers."))
+            return
+
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            oriented, current = [], hover
+            palette = [
+                (0.15, 0.85, 1.0), (0.25, 0.95, 0.45), (1.0, 0.72, 0.15),
+                (0.95, 0.35, 0.65), (0.65, 0.45, 1.0), (1.0, 0.42, 0.20),
+            ]
+            for index, segment in enumerate(enabled):
+                waypoints = copy.deepcopy(segment["waypoints"])
+                if (not segment.get("direction_locked") and len(waypoints) > 1
+                        and np.linalg.norm(waypoints[-1]["pos"] - current)
+                        < np.linalg.norm(waypoints[0]["pos"] - current)):
+                    waypoints.reverse()
+                oriented.append({
+                    "name": segment["name"], "waypoints": waypoints,
+                    "color": palette[index % len(palette)],
+                })
+                current = np.asarray(waypoints[-1]["pos"], dtype=float)
+
+            merged = copy.deepcopy(oriented[0]["waypoints"])
+            connections = []
+            first_path, first_reason, _ = self._find_safe_path(hover, merged[0]["pos"])
+            if first_path is not None:
+                self._transition_path = first_path[:-1]
+                self._transition_goal = np.asarray(merged[0]["pos"], dtype=float)
+            else:
+                self._transition_path = []
+                self._transition_goal = None
+
+            failures = []
+            for index in range(1, len(oriented)):
+                previous = oriented[index - 1]["waypoints"][-1]
+                following = oriented[index]["waypoints"]
+                path, reason, visited = self._find_safe_path(previous["pos"], following[0]["pos"])
+                if path is None:
+                    following[0]["_break_before"] = True
+                    connections.append({
+                        "points": [previous["pos"], following[0]["pos"]],
+                        "safe": False, "label": reason,
+                    })
+                    failures.append(f"{oriented[index - 1]['name']} → {oriented[index]['name']}: {reason}")
+                else:
+                    for point in path[1:-1]:
+                        merged.append(self._make_transition_waypoint(point, previous))
+                    connections.append({
+                        "points": path, "safe": True,
+                        "label": self._ui_text(
+                            f"{reason}, {max(0, len(path) - 2)}个中继点",
+                            f"{reason}, {max(0, len(path) - 2)} relay waypoints",
+                        ),
+                    })
+                merged.extend(copy.deepcopy(following))
+
+            self.waypoints = merged
+            self._merged_connections = connections
+            self._merged_oriented_segments = oriented
+            self._merged_preview_active = True
+            self.viewer._transition_path = self._transition_path
+            self._display_route()
+            total = sum(len(s["waypoints"]) for s in oriented)
+            safe_count = sum(1 for c in connections if c["safe"])
+            if failures or first_path is None:
+                details = failures[:3]
+                if first_path is None:
+                    details.insert(0, self._ui_text(
+                        f"起飞悬停点 → 首段: {first_reason}",
+                        f"Takeoff hover → first segment: {first_reason}",
+                    ))
+                summary = self._ui_text(
+                    f"预览: {len(oriented)}段/{total}业务航点，安全连接 {safe_count}/{len(connections)}\n",
+                    f"Preview: {len(oriented)} segments/{total} route waypoints, "
+                    f"safe connections {safe_count}/{len(connections)}\n",
+                )
+                self.lbl_segment_status.setText(summary + "\n".join(details))
+                self.lbl_segment_status.setStyleSheet("color: #ff5a4f; font-size: 11px;")
+            else:
+                self.lbl_segment_status.setText(self._ui_text(
+                    f"预览: {len(oriented)}段/{total}业务航点，段间连接全部安全",
+                    f"Preview: {len(oriented)} segments/{total} route waypoints; all connections are safe",
+                ))
+                self.lbl_segment_status.setStyleSheet("color: #36d399; font-size: 11px;")
+        finally:
+            QApplication.restoreOverrideCursor()
 
     def plan_safe_transition(self):
         """用点云体素自由空间 A* 规划悬停点到首航点的安全过渡路径。"""
@@ -4788,7 +5339,7 @@ class MainWindow(QMainWindow):
             self._transition_path = [start]
             self._transition_goal = goal.copy()
             self.viewer._transition_path = self._transition_path
-            self.lbl_transition_status.setText("过渡路径: 直达 (0 个中继点)")
+            self.lbl_transition_status.setText(self._ui_text("过渡路径: 直达 (0 个中继点)", "Transition: Direct (0 relay waypoints)"))
             self.lbl_transition_status.setStyleSheet("color: #36d399; font-size: 11px;")
             self._display_route(); return
         offsets = [(dx, dy, dz) for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1) if (dx or dy or dz)]
@@ -4817,12 +5368,17 @@ class MainWindow(QMainWindow):
         self._transition_goal = goal.copy()
         self.viewer._transition_path = self._transition_path
         count = max(0, len(self._transition_path) - 1)
-        self.lbl_transition_status.setText(f"过渡路径: {count} 个中继点 | {visited} 节点")
+        self.lbl_transition_status.setText(self._ui_text(
+            f"过渡路径: {count} 个中继点 | {visited} 节点",
+            f"Transition: {count} relay waypoints | {visited} nodes",
+        ))
         self.lbl_transition_status.setStyleSheet("color: #36d399; font-size: 11px;")
         self._display_route()
 
     def _orient_route_from_takeoff(self):
         """Orient the existing route so its nearer endpoint is the takeoff-side start."""
+        if self._merged_preview_active:
+            return
         if len(self.waypoints) < 2:
             return
         try:
@@ -4841,7 +5397,10 @@ class MainWindow(QMainWindow):
             self._transition_path = []
             self._transition_goal = None
             self.viewer._transition_path = []
-            self.lbl_transition_status.setText("过渡路径: 航线方向已按起飞点调整，请重新规划")
+            self.lbl_transition_status.setText(self._ui_text(
+                "过渡路径: 航线方向已按起飞点调整，请重新规划",
+                "Transition: Route direction changed for takeoff; plan again",
+            ))
             self.lbl_transition_status.setStyleSheet("color: #f0a529; font-size: 11px;")
 
     def _display_route(self):
@@ -4863,7 +5422,10 @@ class MainWindow(QMainWindow):
             self._transition_path = []
             self._transition_goal = None
             self.viewer._transition_path = []
-            self.lbl_transition_status.setText("过渡路径: 首航点已更新，请重新规划")
+            self.lbl_transition_status.setText(self._ui_text(
+                "过渡路径: 首航点已更新，请重新规划",
+                "Transition: First waypoint changed; plan again",
+            ))
             self.lbl_transition_status.setStyleSheet("color: #f0a529; font-size: 11px;")
         takeoff_z, takeoff_yaw = self._get_takeoff_params()
         self.viewer._takeoff_z = takeoff_z
@@ -4884,14 +5446,24 @@ class MainWindow(QMainWindow):
             show_segment_distances=self.chk_show_distances.isChecked(),
             show_waypoint_indices=self.chk_show_indices.isChecked(),
         )
+        if self._merged_preview_active and self._merged_oriented_segments:
+            self.viewer.add_task_route_overlays(
+                self._merged_oriented_segments, self._merged_connections
+            )
         n = len(self.waypoints)
-        info = f"航点: {n}"
+        info = self._ui_text(f"航点: {n}", f"Waypoints: {n}")
         if n >= 1:
             p0 = self.waypoints[0]['pos']
-            info += f"  |  首点: ({p0[0]:.1f}, {p0[1]:.1f}, {p0[2]:.1f})"
+            info += self._ui_text(
+                f"  |  首点: ({p0[0]:.1f}, {p0[1]:.1f}, {p0[2]:.1f})",
+                f"  |  First: ({p0[0]:.1f}, {p0[1]:.1f}, {p0[2]:.1f})",
+            )
         if n >= 2:
             pn = self.waypoints[-1]['pos']
-            info += f"  |  末点: ({pn[0]:.1f}, {pn[1]:.1f}, {pn[2]:.1f})"
+            info += self._ui_text(
+                f"  |  末点: ({pn[0]:.1f}, {pn[1]:.1f}, {pn[2]:.1f})",
+                f"  |  Last: ({pn[0]:.1f}, {pn[1]:.1f}, {pn[2]:.1f})",
+            )
         self.lbl_info.setText(info)
         self._update_route_time_label()
         self._check_safety_distance()
@@ -5054,18 +5626,30 @@ class MainWindow(QMainWindow):
             if idx < len(self.viewer._waypoint_actors):
                 self._set_waypoint_color(idx, (1.0, 0.5, 0.0))
 
-        collision_dist = safe_dist * 1.5
+        collision_dist = safe_dist
         seg_collisions = set(idx for idx, _ in collisions if idx >= 0)
         safe_collision = any(idx == -1 for idx, _ in collisions)
-        msgs = [f"航点: {len(self.waypoints)}"]
+        msgs = [self._ui_text(
+            f"航点: {len(self.waypoints)}", f"Waypoints: {len(self.waypoints)}"
+        )]
         if violations:
-            msgs.append(f"{len(violations)} 对重复或几乎重合")
+            msgs.append(self._ui_text(
+                f"{len(violations)} 对重复或几乎重合",
+                f"{len(violations)} duplicate or near-overlapping pairs",
+            ))
         if seg_collisions:
-            msgs.append(f"{len(seg_collisions)} 航点碰撞 (<{collision_dist:.1f}m)")
+            msgs.append(self._ui_text(
+                f"{len(seg_collisions)} 航点碰撞 (<{collision_dist:.1f}m)",
+                f"{len(seg_collisions)} waypoint collisions (<{collision_dist:.1f}m)",
+            ))
         if safe_collision:
-            msgs.append("起飞到首航点路径碰撞")
+            msgs.append(self._ui_text(
+                "起飞到首航点路径碰撞", "Takeoff-to-first-waypoint path collision"
+            ))
         if low_z:
-            msgs.append(f"{len(low_z)} 个低于Z={min_z}m")
+            msgs.append(self._ui_text(
+                f"{len(low_z)} 个低于Z={min_z}m", f"{len(low_z)} below Z={min_z}m"
+            ))
         self.lbl_info.setText(" | ".join(msgs))
         self._update_route_time_label()
         self.viewer.vtk_widget.GetRenderWindow().Render()
@@ -5093,11 +5677,17 @@ class MainWindow(QMainWindow):
         total_time += 5.0  # 起飞悬停
         total_time += 5.0  # 降落悬停
         if total_time < 60:
-            self.lbl_route_time.setText(f"预计飞行时间: {total_time:.0f} 秒")
+            self.lbl_route_time.setText(self._ui_text(
+                f"预计飞行时间: {total_time:.0f} 秒",
+                f"Estimated Flight Time: {total_time:.0f} s",
+            ))
         else:
             m = int(total_time // 60)
             s = int(total_time % 60)
-            self.lbl_route_time.setText(f"预计飞行时间: {m}分{s}秒")
+            self.lbl_route_time.setText(self._ui_text(
+                f"预计飞行时间: {m}分{s}秒",
+                f"Estimated Flight Time: {m}m {s}s",
+            ))
 
     def _collect_collision_warnings(self):
         """收集碰撞检测数据，返回 (violations, collisions, low_z)
@@ -5106,7 +5696,7 @@ class MainWindow(QMainWindow):
         low_z: [(idx, z_val), ...] 航点低于最低Z值
         """
         safe_dist = self.viewer._safe_distance
-        collision_dist = safe_dist * 1.5
+        collision_dist = safe_dist
         sample_step = safe_dist * 0.5
 
         # ── 重复航点检测：业务航线允许正常的拍摄重叠，不能用安全距离误判。 ──
@@ -5192,11 +5782,14 @@ class MainWindow(QMainWindow):
             self.viewer._cleanup_anim()
         self.viewer._clear_voxel_coverage()
         self.waypoints = []
+        self._merged_preview_active = False
+        self._merged_oriented_segments = []
+        self._merged_connections = []
         self._transition_path = []
         self._transition_goal = None
         self.viewer._transition_path = []
         if hasattr(self, "lbl_transition_status"):
-            self.lbl_transition_status.setText("过渡路径: 未规划")
+            self.lbl_transition_status.setText(self._ui_text("过渡路径: 未规划", "Transition: Not Planned"))
             self.lbl_transition_status.setStyleSheet("color: #6f8590; font-size: 11px;")
         self.viewer._clear_polygon()
         self.viewer._clear_place_preview()
@@ -5216,7 +5809,7 @@ class MainWindow(QMainWindow):
         for edt in [self.edt_line_x1, self.edt_line_y1, self.edt_line_z1,
                      self.edt_line_x2, self.edt_line_y2, self.edt_line_z2]:
             edt.setText("0")
-        self.edt_line_spacing.setText("自动")
+        self.edt_line_spacing.setText(self._ui_text("自动", "Auto"))
 
         ren = self.viewer.renderer
         cloud = self.viewer._cloud_actor
@@ -5235,13 +5828,29 @@ class MainWindow(QMainWindow):
         # 恢复坐标轴和网格
         self.viewer._add_scene_axes()
         self.viewer.vtk_widget.GetRenderWindow().Render()
-        self.lbl_info.setText("航点: 0")
+        self.lbl_info.setText(self._ui_text("航点: 0", "Waypoints: 0"))
         self._update_route_time_label()
+
+    def _ensure_merged_route_safe(self):
+        if not self._merged_preview_active:
+            return True
+        takeoff_safe = bool(self._transition_path and self._transition_goal is not None)
+        connections_safe = all(c.get("safe", False) for c in self._merged_connections)
+        if takeoff_safe and connections_safe:
+            return True
+        QMessageBox.warning(
+            self, "禁止导出",
+            "合并预览中仍有红色不安全连接，或起飞点到首段的安全路径失败。\n"
+            "请调整任务段顺序、反转任务段或修改安全距离后重新预览。"
+        )
+        return False
 
     # ─── 保存航线（nav_msgs/Path 格式）───
     def save_route(self):
         if not self.waypoints:
             QMessageBox.information(self, "提示", "没有航线可保存")
+            return
+        if not self._ensure_merged_route_safe():
             return
 
         from datetime import datetime
@@ -5292,6 +5901,8 @@ class MainWindow(QMainWindow):
     def _build_route_json(self):
         """构建航线JSON数据（供保存和复制共用）"""
         if not self.waypoints:
+            return None
+        if not self._ensure_merged_route_safe():
             return None
 
         _, takeoff_yaw = self._get_takeoff_params()
@@ -5384,6 +5995,8 @@ class MainWindow(QMainWindow):
         if not self.waypoints:
             QMessageBox.information(self, "提示", "没有航线可复制")
             return
+        if not self._ensure_merged_route_safe():
+            return
 
         from datetime import datetime
         ts = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
@@ -5410,7 +6023,7 @@ class MainWindow(QMainWindow):
             gimbal_pitch = wp.get('gimbal_pitch', -90.0)
             speed = wp.get('speed', 1.0)
             action = wp.get('action', 'fly')
-            shoot = True  # 默认拍摄
+            shoot = bool(wp.get("capture", True))  # 过渡点仅飞行，不拍摄
 
             q = wp['quat']
             yaw = np.degrees(np.arctan2(
@@ -5474,6 +6087,8 @@ class MainWindow(QMainWindow):
         if not self.waypoints:
             QMessageBox.information(self, "提示", "没有航线可导出")
             return
+        if not self._ensure_merged_route_safe():
+            return
 
         from datetime import datetime
         ts = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
@@ -5511,7 +6126,7 @@ class MainWindow(QMainWindow):
             gimbal_pitch = wp.get('gimbal_pitch', -90.0)
             speed = wp.get('speed', 1.0)
             action = wp.get('action', 'fly')
-            shoot = True  # 默认拍摄
+            shoot = bool(wp.get("capture", True))  # 过渡点仅飞行，不拍摄
 
             # 从 quat 计算 yaw 角度
             q = wp['quat']
@@ -5594,6 +6209,7 @@ class MainWindow(QMainWindow):
                 data = json.load(f)
 
             self.waypoints = []
+            self._merged_preview_active = False
 
             # nav_msgs/Path 格式
             if 'poses' in data:

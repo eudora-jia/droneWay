@@ -204,14 +204,38 @@ class FoxgloveInteractorStyle(object):
 
     def _on_right_up(self, obj, event):
         v = self._vtk_viewer
-        if v and v.fpv_mode and v.polygon_mode:
-            if getattr(v, "_fpv_right_click_start", None) is not None and not getattr(v, "_fpv_right_click_moved", False):
+        if v and v.fpv_mode:
+            clicked = (
+                getattr(v, "_fpv_right_click_start", None) is not None
+                and not getattr(v, "_fpv_right_click_moved", False)
+            )
+            if clicked and v.polygon_mode:
                 if len(v._poly_points) >= 3:
                     pts = [(p.tolist(), n.tolist()) for p, n in zip(v._poly_points, v._poly_normals)]
                     v.polygon_finished.emit(pts)
                     v.exit_polygon_mode(clear_markers=False)
                 else:
                     v.exit_polygon_mode()
+            elif clicked and v.place_mode:
+                if v._place_preview_pos is not None:
+                    v.place_picked.emit(v._place_preview_pos)
+                    v.exit_place_mode(clear_marker=False)
+                else:
+                    v.exit_place_mode()
+            elif clicked and v.inspect_mode:
+                if v._inspect_points:
+                    pts = [(p.tolist(), n.tolist()) for p, n in v._inspect_points]
+                    v.inspect_points_confirmed.emit(pts)
+                    v.exit_inspect_mode(clear_markers=False)
+                else:
+                    v.exit_inspect_mode()
+            elif clicked and v.line_mode:
+                if len(v._line_points) == 2:
+                    pts = [(p.tolist(), n.tolist()) for p, n in v._line_points]
+                    v.line_points_confirmed.emit(pts)
+                    v.exit_line_mode(clear_markers=False)
+                else:
+                    v.exit_line_mode()
             v._fpv_right_click_start = None
             v._fpv_right_click_moved = False
         self._mode = None
@@ -487,6 +511,7 @@ class VTKViewer(QWidget):
         self._height_color_range = None
         self._voxel_actor = None
         self._voxel_size = 0.5
+        self._filter_isolated_voxels = True
         self._voxel_dict = {}
         self._voxel_mn = None
         self._voxel_indices = None
@@ -3159,6 +3184,25 @@ class VTKViewer(QWidget):
         unique_idx = np.column_stack(
             np.unravel_index(unique_keys, tuple(dims))
         ).astype(np.int64, copy=False)
+        if self._filter_isolated_voxels and len(unique_idx):
+            # Keep sparse surfaces, but remove disconnected one-point voxels.
+            has_neighbor = np.zeros(len(unique_keys), dtype=bool)
+            strides = np.array([dims[1] * dims[2], dims[2], 1], dtype=np.int64)
+            for axis in range(3):
+                for direction in (-1, 1):
+                    valid_neighbor = (unique_idx[:, axis] + direction >= 0) & (unique_idx[:, axis] + direction < dims[axis])
+                    candidate_keys = unique_keys + direction * strides[axis]
+                    positions = np.searchsorted(unique_keys, candidate_keys)
+                    found = valid_neighbor & (positions < len(unique_keys))
+                    found_ids = np.flatnonzero(found)
+                    if len(found_ids):
+                        found[found_ids] &= unique_keys[positions[found_ids]] == candidate_keys[found_ids]
+                    has_neighbor |= found
+            keep = (counts > 1) | has_neighbor
+            removed = int(np.count_nonzero(np.logical_not(keep)))
+            if removed:
+                unique_keys, counts, unique_idx = unique_keys[keep], counts[keep], unique_idx[keep]
+                print(f"[VoxelGrid] filtered {removed} isolated singleton voxels")
         n_voxels = len(unique_idx)
         print(f"[VoxelGrid] size={voxel_size}m, {n_voxels} voxels from {len(points)} points")
         print(f"[VoxelGrid] bounds: x=[{mn[0]:.1f},{mx[0]:.1f}] y=[{mn[1]:.1f},{mx[1]:.1f}] z=[{mn[2]:.1f},{mx[2]:.1f}]")
@@ -3716,6 +3760,64 @@ class VTKViewer(QWidget):
         self._route_end_pin_texture = texture
         return texture
 
+    def add_task_route_overlays(self, segments, connections):
+        """Overlay task colors and safe or failed inter-segment connections."""
+        def add_polyline(points, color, width, dashed=False):
+            points = [np.asarray(p, dtype=float) for p in points]
+            if len(points) < 2:
+                return
+            vtk_points = self._vtkPoints()
+            cells = self._vtkCellArray()
+            if dashed:
+                dash, gap = 0.35, 0.20
+                for start, end in zip(points[:-1], points[1:]):
+                    vector = end - start
+                    length = float(np.linalg.norm(vector))
+                    if length < 1e-9:
+                        continue
+                    direction = vector / length
+                    distance = 0.0
+                    while distance < length:
+                        dash_end = min(distance + dash, length)
+                        first_id = vtk_points.InsertNextPoint((start + direction * distance).tolist())
+                        second_id = vtk_points.InsertNextPoint((start + direction * dash_end).tolist())
+                        line = self._vtk.vtkLine()
+                        line.GetPointIds().SetId(0, first_id)
+                        line.GetPointIds().SetId(1, second_id)
+                        cells.InsertNextCell(line)
+                        distance += dash + gap
+            else:
+                ids = [vtk_points.InsertNextPoint(point.tolist()) for point in points]
+                for first_id, second_id in zip(ids[:-1], ids[1:]):
+                    line = self._vtk.vtkLine()
+                    line.GetPointIds().SetId(0, first_id)
+                    line.GetPointIds().SetId(1, second_id)
+                    cells.InsertNextCell(line)
+            polydata = self._vtkPolyData()
+            polydata.SetPoints(vtk_points)
+            polydata.SetLines(cells)
+            mapper = self._vtkPolyDataMapper()
+            mapper.SetInputData(polydata)
+            actor = self._vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(*color)
+            actor.GetProperty().SetLineWidth(width)
+            actor.GetProperty().SetOpacity(1.0)
+            actor.GetProperty().LightingOff()
+            self.renderer.AddActor(actor)
+            self._actors.append(actor)
+
+        for segment in segments:
+            add_polyline(
+                [wp["pos"] for wp in segment["waypoints"]],
+                segment["color"], 4.0, dashed=False
+            )
+        for connection in connections:
+            color = (0.0, 0.95, 1.0) if connection["safe"] else (1.0, 0.1, 0.1)
+            add_polyline(connection["points"], color, 3.0, dashed=True)
+        if self.vtk_widget.GetRenderWindow():
+            self.vtk_widget.GetRenderWindow().Render()
+
     def add_route(self, waypoints, reset_camera=True, show_segment_distances=None,
                   show_waypoint_indices=None):
         """显示航线和航点"""
@@ -3751,13 +3853,14 @@ class VTKViewer(QWidget):
         for wp in waypoints:
             vtk_pts.InsertNextPoint(wp['pos'].tolist())
 
-        polyline = self._vtkPolyLine()
-        polyline.GetPointIds().SetNumberOfIds(n)
-        for i in range(n):
-            polyline.GetPointIds().SetId(i, i)
-
         cells = self._vtkCellArray()
-        cells.InsertNextCell(polyline)
+        for i in range(1, n):
+            if waypoints[i].get("_break_before", False):
+                continue
+            line_cell = self._vtk.vtkLine()
+            line_cell.GetPointIds().SetId(0, i - 1)
+            line_cell.GetPointIds().SetId(1, i)
+            cells.InsertNextCell(line_cell)
 
         polydata = self._vtkPolyData()
         polydata.SetPoints(vtk_pts)
