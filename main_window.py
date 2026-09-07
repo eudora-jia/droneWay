@@ -934,7 +934,7 @@ class MainWindow(QMainWindow):
         btn_apply_cyl.clicked.connect(self._apply_cyl_params)
         cyl.addWidget(btn_apply_cyl, 6, 0, 1, 4)
 
-        self.btn_cyl_place = QPushButton("点击放置（右键确认生成）")
+        self.btn_cyl_place = QPushButton("点击柱面拾取中心（右键确认生成）")
         self.btn_cyl_place.setStyleSheet(self._BTN_ACCENT)
         self.btn_cyl_place.clicked.connect(lambda: self._start_place_mode("cylinder"))
         cyl.addWidget(self.btn_cyl_place, 7, 0, 1, 4)
@@ -1291,11 +1291,66 @@ class MainWindow(QMainWindow):
             self.edt_cz.setText(f"{pos[2]:.1f}")
             self.generate_cube_route()
         elif self._place_target == "cylinder":
-            self.edt_cyl_cx.setText(f"{pos[0]:.1f}")
-            self.edt_cyl_cy.setText(f"{pos[1]:.1f}")
+            center_xy = self._estimate_cylinder_center_from_pick(pos)
+            self.edt_cyl_cx.setText(f"{center_xy[0]:.1f}")
+            self.edt_cyl_cy.setText(f"{center_xy[1]:.1f}")
             self.edt_cyl_cz.setText(f"{pos[2]:.1f}")
             self.generate_cylinder_route()
         self._place_target = None
+
+    def _estimate_cylinder_center_from_pick(self, pos):
+        """Estimate a vertical cylinder axis from a picked surface point.
+
+        A local horizontal slice is fit to a circle so clicking the pillar wall
+        does not incorrectly use the wall point as the cylinder center.
+        """
+        pos = np.asarray(pos, dtype=float)
+        fallback = pos[:2].copy()
+        try:
+            diameter = float(self.edt_cyl_diam.text())
+        except (AttributeError, ValueError):
+            return fallback
+        if self.points is None or len(self.points) < 8 or diameter <= 0:
+            return fallback
+
+        # Keep the slice local to the picked height and pillar; this avoids
+        # fitting bridge decks or nearby structures into the cylinder.
+        voxel = max(float(self._voxel_size), 0.1)
+        z_band = max(0.35, voxel * 2.0)
+        radius = diameter * 0.5
+        search_radius = max(diameter * 1.5, 1.5)
+        delta = self.points[:, :2] - pos[:2]
+        mask = (np.abs(self.points[:, 2] - pos[2]) <= z_band)
+        mask &= np.einsum("ij,ij->i", delta, delta) <= search_radius ** 2
+        xy = self.points[mask, :2]
+        if len(xy) < 8:
+            return fallback
+
+        # Algebraic least-squares circle fit: x^2+y^2 = 2*cx*x+2*cy*y+c.
+        A = np.column_stack((2.0 * xy[:, 0], 2.0 * xy[:, 1], np.ones(len(xy))))
+        b = np.einsum("ij,ij->i", xy, xy)
+        try:
+            solution, _, rank, _ = np.linalg.lstsq(A, b, rcond=None)
+        except np.linalg.LinAlgError:
+            return fallback
+        if rank < 3:
+            return fallback
+        center = solution[:2]
+        fitted_radius = float(np.sqrt(max(0.0, solution[2] + np.dot(center, center))))
+        shift = float(np.linalg.norm(center - fallback))
+        # Reject unstable fits caused by a partial/noisy slice.
+        if not (radius * 0.35 <= fitted_radius <= radius * 2.0):
+            return fallback
+        if shift > max(radius * 2.0, 2.0):
+            return fallback
+
+        distances = np.linalg.norm(xy - center, axis=1)
+        residual = np.median(np.abs(distances - fitted_radius))
+        if residual > max(voxel * 2.0, radius * 0.35):
+            return fallback
+        print(f"[CylinderPick] surface=({pos[0]:.2f},{pos[1]:.2f},{pos[2]:.2f}) "
+              f"center=({center[0]:.2f},{center[1]:.2f}) r={fitted_radius:.2f}")
+        return center
 
     def _set_point_cloud_view_actions_enabled(self, enabled):
         """切换展示菜单中仅适用于点云的数据处理操作。"""
@@ -2373,6 +2428,7 @@ class MainWindow(QMainWindow):
         "航点间距:": "Waypoint Spacing:",
         "选择点": "Select Points",
         "点击放置（右键确认生成）": "Place (Right-click to generate)",
+        "点击柱面拾取中心（右键确认生成）": "Pick Cylinder Surface (Right-click to generate)",
         "点云质量: 未评估": "Point Cloud Quality: Not Evaluated",
         "加载点云后计算规划密度": "Load a point cloud to evaluate planning density",
         "任务段合并": "Route Segment Merge",
