@@ -787,16 +787,21 @@ class MainWindow(QMainWindow):
         self.edt_spacing.setReadOnly(True)
         self.edt_spacing.setStyleSheet("QLineEdit { background: #333; color: #888; border: 1px solid #444; }")
         fl.addWidget(self.edt_spacing, 2, 1)
+        fl.addWidget(QLabel("机头方向:"), 2, 2)
+        self.cmb_flat_heading = QComboBox()
+        self.cmb_flat_heading.addItems(["垂直扫描方向", "平行扫描方向"])
+        self.cmb_flat_heading.setCurrentIndex(0)
+        fl.addWidget(self.cmb_flat_heading, 2, 3)
 
         btn_calc_overlap = QPushButton("自动算间距")
         btn_calc_overlap.setStyleSheet(self._BTN_NORMAL)
         btn_calc_overlap.clicked.connect(self._calc_overlap_spacing)
-        fl.addWidget(btn_calc_overlap, 2, 2, 1, 2)
+        fl.addWidget(btn_calc_overlap, 3, 0, 1, 2)
 
         btn_apply_flat = QPushButton("应用")
         btn_apply_flat.setStyleSheet(self._BTN_NORMAL)
         btn_apply_flat.clicked.connect(self._apply_flat_params)
-        fl.addWidget(btn_apply_flat, 3, 0, 1, 4)
+        fl.addWidget(btn_apply_flat, 3, 2, 1, 2)
 
         self.btn_poly_select = QPushButton("选择顶点（右键确认）")
         self.btn_poly_select.setStyleSheet(self._BTN_ACCENT)
@@ -2362,6 +2367,9 @@ class MainWindow(QMainWindow):
         "规划安全过渡": "Plan Safe Transition",
         "过渡路径: 未规划": "Transition: Not Planned",
         "扫描方向:": "Scan Direction:",
+        "机头方向:": "Heading Direction:",
+        "垂直扫描方向": "Perpendicular to Scan",
+        "平行扫描方向": "Parallel to Scan",
         "航点间距:": "Waypoint Spacing:",
         "选择点": "Select Points",
         "点击放置（右键确认生成）": "Place (Right-click to generate)",
@@ -2561,6 +2569,9 @@ class MainWindow(QMainWindow):
             (self.cmb_scan_dir,
              ["沿最长边", "沿最短边"],
              ["Along Longest Edge", "Along Shortest Edge"]),
+            (self.cmb_flat_heading,
+             ["垂直扫描方向", "平行扫描方向"],
+             ["Perpendicular to Scan", "Parallel to Scan"]),
             (self.cbo_cyl_type,
              ["螺旋线", "Z字形"],
              ["Spiral", "Zigzag"]),
@@ -2978,16 +2989,20 @@ class MainWindow(QMainWindow):
         is_bottom_surface = normal_up_dot < -0.7
 
         def _heading_to_target(pos_c, target_c, fallback_heading):
+            # Keep the selected heading axis while choosing the sign that faces the target.
             horizontal_los = np.asarray(target_c, dtype=float) - np.asarray(pos_c, dtype=float)
             horizontal_los[2] = 0.0
-            horizontal_len = np.linalg.norm(horizontal_los)
-            if horizontal_len > 1e-6:
-                return horizontal_los / horizontal_len
-            return fallback_heading
+            fallback = np.asarray(fallback_heading, dtype=float)
+            fallback[2] = 0.0
+            fallback_len = np.linalg.norm(fallback)
+            if fallback_len <= 1e-6:
+                return fallback_heading
+            fallback /= fallback_len
+            return fallback if np.dot(horizontal_los, fallback) >= 0.0 else -fallback
 
         def _check_flat_candidate(pos_c, _target, _heading, _left):
-            # The aircraft yaw always follows the horizontal camera line of sight,
-            # so the gimbal has zero relative yaw at every waypoint.
+            # Keep yaw=0 by aligning the selected heading axis toward the target;
+            # the candidate check rejects positions outside that forward/up plane.
             candidate_heading = _heading_to_target(pos_c, _target, _heading)
             candidate_left = np.cross(candidate_heading, _up)
             left_len = np.linalg.norm(candidate_left)
@@ -3010,14 +3025,15 @@ class MainWindow(QMainWindow):
             # flip it based on a nearby point-cloud sample: that can put a wall
             # inspection route on the opposite side of the wall.
 
-            # 螃蟹飞：heading = cross(航线方向水平分量, [0,0,1])
+            # Select the aircraft heading axis: perpendicular (legacy default) or parallel to scan.
             route_dir_h = np.array([scan_dir[0], scan_dir[1], 0.0])
             rdh_len = np.linalg.norm(route_dir_h)
             if rdh_len > 1e-6:
                 route_dir_h = route_dir_h / rdh_len
             else:
                 route_dir_h = np.array([1.0, 0.0, 0.0])
-            heading_h = np.cross(route_dir_h, _up)
+            heading_h = (route_dir_h if self.cmb_flat_heading.currentIndex() == 1
+                         else np.cross(route_dir_h, _up))
             hn = np.linalg.norm(heading_h)
             if hn > 1e-6:
                 heading_h = heading_h / hn
@@ -3030,7 +3046,9 @@ class MainWindow(QMainWindow):
                 ceiling_route_h = np.array([main_dir_3d[0], main_dir_3d[1], 0.0])
                 ceiling_route_len = np.linalg.norm(ceiling_route_h)
                 if ceiling_route_len > 1e-6:
-                    ceiling_heading_h = np.cross(ceiling_route_h / ceiling_route_len, _up)
+                    ceiling_route_h /= ceiling_route_len
+                    ceiling_heading_h = (ceiling_route_h if self.cmb_flat_heading.currentIndex() == 1
+                                         else np.cross(ceiling_route_h, _up))
                     heading_h = ceiling_heading_h / np.linalg.norm(ceiling_heading_h)
 
             # Left 向量用于 C5 检查
