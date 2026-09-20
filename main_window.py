@@ -4569,7 +4569,7 @@ class MainWindow(QMainWindow):
                     if pi == (len(pts) - 1 if not reverse else 0) and ei != (3 if not reverse else 0):
                         continue
                     pos_2d, heading = pts[pi]
-                    pos = np.array([pos_2d[0], pos_2d[1], z])
+                    surface_target = np.array([pos_2d[0], pos_2d[1], z])
                     cube_center = np.array([cx, cy, z])
 
                     outward = np.array([pos_2d[0] - cx, pos_2d[1] - cy, 0.0])
@@ -4578,6 +4578,7 @@ class MainWindow(QMainWindow):
                         outward = outward / out_norm
                     else:
                         outward = np.array([1.0, 0.0, 0.0])
+                    pos = surface_target + outward * dist
 
                     # 综合约束检查：碰撞 + 云台角度 + 视线不穿模。
                     # 累计 10 个失败点后停止昂贵搜索，后续直接使用名义位置。
@@ -4585,14 +4586,14 @@ class MainWindow(QMainWindow):
                     if nominal_only_mode:
                         need_search = False
                     elif tree is not None:
-                        dist, _ = tree.query(pos)
-                        if dist < collision_dist:
+                        obs_dist, _ = tree.query(pos)
+                        if obs_dist < collision_dist:
                             need_search = True
-                    pitch = self._calc_gimbal_pitch(pos, cube_center)
+                    pitch = self._calc_gimbal_pitch(pos, surface_target)
                     if not nominal_only_mode and not (self._gimbal_pitch_min <= pitch <= self._gimbal_pitch_max):
                         need_search = True
                     if not nominal_only_mode and not need_search and tree is not None:
-                        seg = cube_center - pos
+                        seg = surface_target - pos
                         seg_len = np.linalg.norm(seg)
                         if seg_len > 1.0:
                             for tt in np.linspace(0.05, 0.95, max(5, int(seg_len / 0.5))):
@@ -4601,6 +4602,14 @@ class MainWindow(QMainWindow):
                                 if d < 0.3:
                                     need_search = True
                                     break
+
+                    if need_search and constraint_failures >= 5:
+                        constraint_failures += 1
+                        nominal_only_mode = True
+                        if not nominal_only_notice_added:
+                            warnings.append("已累计超过5个航点无法满足约束，已停止后续安全搜索，先展示全部碰撞点和非碰撞点")
+                            nominal_only_notice_added = True
+                        need_search = False
 
                     if need_search:
                         constraint_failures += 1
@@ -4626,27 +4635,27 @@ class MainWindow(QMainWindow):
                                         max_off = 15.0
 
                         safe_pos, warned = self._find_safe_position(
-                            cube_center, outward, tree, collision_dist, 0.0, max_offset=max_off)
+                            surface_target, outward, tree, collision_dist, dist, max_offset=max_off)
                         if safe_pos is not None:
                             pos = safe_pos
                         if warned:
                             warnings.append(f"边{ei+1}层{layer} 无法满足所有约束")
-                        if constraint_failures >= 10:
+                        if constraint_failures > 5:
                             nominal_only_mode = True
                             if not nominal_only_notice_added:
-                                warnings.append("已累计10个航点无法满足约束，后续航点直接按名义位置生成")
+                                warnings.append("已累计超过5个航点无法满足约束，已停止后续安全搜索，先展示全部碰撞点和非碰撞点")
                                 nominal_only_notice_added = True
 
                     # 重新计算heading（pos可能已调整）
-                    to_cx = cx - pos[0]
-                    to_cy = cy - pos[1]
+                    to_cx = surface_target[0] - pos[0]
+                    to_cy = surface_target[1] - pos[1]
                     to_c_len = np.sqrt(to_cx * to_cx + to_cy * to_cy)
                     if to_c_len > 1e-10:
                         heading = np.array([to_cx / to_c_len, to_cy / to_c_len, 0.0])
 
                     target = pos + heading
                     quat = look_at_quaternion(target, pos)
-                    gimbal_pitch = self._calc_gimbal_pitch(pos, cube_center)
+                    gimbal_pitch = self._calc_gimbal_pitch(pos, surface_target)
                     gimbal_pitch = np.clip(gimbal_pitch, self._gimbal_pitch_min, self._gimbal_pitch_max)
                     self.waypoints.append({
                         'pos': pos,
@@ -4654,7 +4663,7 @@ class MainWindow(QMainWindow):
                         'speed': speed,
                         'action': 'scan',
                         'gimbal_pitch': gimbal_pitch,
-                        'target_pos': cube_center.copy()
+                        'target_pos': surface_target.copy()
                     })
 
         self._display_route()
@@ -4961,7 +4970,7 @@ class MainWindow(QMainWindow):
         try:
             cx = float(self.edt_cx.text())
             cy = float(self.edt_cy.text())
-            takeoff_z = float(self.edt_takeoff_z.text())
+            cz = float(self.edt_cz.text())
             dx = float(self.edt_dx.text())
             dy = float(self.edt_dy.text())
         except ValueError:
@@ -4971,16 +4980,13 @@ class MainWindow(QMainWindow):
             (cx - half_x, cy - half_y), (cx + half_x, cy - half_y),
             (cx + half_x, cy + half_y), (cx - half_x, cy + half_y),
         ]
-        cz = self._compute_default_cz(corners, takeoff_z)
-        self.edt_cz.setText(f"{cz:.1f}")
-        max_z = self._compute_max_z_for_area(corners)
+        max_z = self._compute_max_z_for_area(corners, ref_z=cz)
         if max_z is not None:
             max_dz = max(1.0, max_z - cz)
             try:
                 cur_dz = float(self.edt_dz.text())
                 if cur_dz > max_dz:
                     self.edt_dz.setText(f"{max_dz:.1f}")
-                self.edt_dz.setText(f"{max_dz:.1f}")
             except ValueError:
                 self.edt_dz.setText(f"{max_dz:.1f}")
 
@@ -5060,13 +5066,13 @@ class MainWindow(QMainWindow):
         self._update_cyl_cz_and_h()
 
     def _update_cube_cz_and_dz(self):
-        """重新计算立方体的 cz 和 dz 上限"""
+        """Update cube dz limit without overwriting manually entered cz."""
         if self.points is None or len(self.points) == 0:
             return
         try:
             cx = float(self.edt_cx.text())
             cy = float(self.edt_cy.text())
-            takeoff_z = float(self.edt_takeoff_z.text())
+            cz = float(self.edt_cz.text())
             dx = float(self.edt_dx.text())
             dy = float(self.edt_dy.text())
         except ValueError:
@@ -5076,16 +5082,13 @@ class MainWindow(QMainWindow):
             (cx - half_x, cy - half_y), (cx + half_x, cy - half_y),
             (cx + half_x, cy + half_y), (cx - half_x, cy + half_y),
         ]
-        cz = self._compute_default_cz(corners, takeoff_z)
-        self.edt_cz.setText(f"{cz:.1f}")
-        max_z = self._compute_max_z_for_area(corners)
+        max_z = self._compute_max_z_for_area(corners, ref_z=cz)
         if max_z is not None:
             max_dz = max(1.0, max_z - cz)
             try:
                 cur_dz = float(self.edt_dz.text())
                 if cur_dz > max_dz:
                     self.edt_dz.setText(f"{max_dz:.1f}")
-                self.edt_dz.setText(f"{max_dz:.1f}")
             except ValueError:
                 self.edt_dz.setText(f"{max_dz:.1f}")
 
