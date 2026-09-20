@@ -1090,9 +1090,9 @@ class MainWindow(QMainWindow):
         segment_layout.addLayout(segment_row1)
 
         segment_row_preview = QHBoxLayout()
-        self.btn_save_merged_route = QPushButton("保存合并航线")
+        self.btn_save_merged_route = QPushButton("保存合并maicro航线")
         self.btn_save_merged_route.setStyleSheet(self._BTN_ACCENT)
-        self.btn_save_merged_route.clicked.connect(self.save_route)
+        self.btn_save_merged_route.clicked.connect(self.export_maicro_route)
         self.btn_save_merged_route.setEnabled(False)
         segment_row_preview.addWidget(self.btn_save_merged_route)
         segment_row_preview.addWidget(self.btn_cancel_preview)
@@ -2482,7 +2482,7 @@ class MainWindow(QMainWindow):
         "保存当前段": "Save Current Segment",
         "合并预览": "Merge Preview",
         "取消预览": "Cancel Preview",
-        "保存合并航线": "Save Merged Route",
+        "保存合并maicro航线": "Save Merged Maicro Route",
         "上移": "Move Up", "下移": "Move Down", "反转": "Reverse",
         "编辑": "Edit", "删除": "Delete",
         "尚未保存任务段": "No Saved Segments",
@@ -3053,11 +3053,11 @@ class MainWindow(QMainWindow):
                 scan_dir = main_dir_3d
             for u in row_u:
                 u_mid = 0.5 * (u_min + u_max)
-                curved_v = v + 0.5 * curvature * (u - u_mid) ** 2
-                curve_tangent = main_dir_3d + curvature * (u - u_mid) * cross_dir_3d
+                z_offset = 0.5 * curvature * (u - u_mid) ** 2
+                curve_tangent = main_dir_3d
                 curve_tangent /= max(np.linalg.norm(curve_tangent), 1e-12)
                 point_scan_dir = -curve_tangent if row_idx % 2 == 1 else curve_tangent
-                pt_2d = np.array([u, curved_v])
+                pt_2d = np.array([u, v])
                 # 判断是否在多边形内
                 inside = False
                 j = len(poly_2d) - 1
@@ -3070,7 +3070,9 @@ class MainWindow(QMainWindow):
                     j = i
                 if inside:
                     # 2D → 3D：在多边形平面上
-                    target_3d = poly_center + u * main_dir_3d + curved_v * cross_dir_3d
+                    target_3d = poly_center + u * main_dir_3d + v * cross_dir_3d
+                    target_3d = target_3d.copy()
+                    target_3d[2] += z_offset
                     grid_targets.append(target_3d)
                     grid_scan_dirs.append(point_scan_dir)
             v += spacing
