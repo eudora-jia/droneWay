@@ -1310,7 +1310,12 @@ class MainWindow(QMainWindow):
         if self._place_target == "cube":
             self.edt_cx.setText(f"{pos[0]:.1f}")
             self.edt_cy.setText(f"{pos[1]:.1f}")
-            self.edt_cz.setText(f"{pos[2]:.1f}")
+            # 使用最低飞行Z值作为cz
+            try:
+                min_z = float(self.edt_min_z.text())
+            except ValueError:
+                min_z = pos[2]
+            self.edt_cz.setText(f"{min_z:.1f}")
             self.generate_cube_route()
         elif self._place_target == "cylinder":
             center_xy = self._estimate_cylinder_center_from_pick(pos)
@@ -5469,7 +5474,7 @@ class MainWindow(QMainWindow):
         self.lbl_segment_status.setStyleSheet("color: #6f8590; font-size: 11px;")
 
     def plan_safe_transition(self):
-        """用点云体素自由空间 A* 规划悬停点到首航点的安全过渡路径。"""
+        """规划悬停点到首航点的安全过渡路径。先用简单中继点快速尝试，失败再回退A*。"""
         if self.points is None or len(self.points) == 0:
             QMessageBox.warning(self, "无法规划", "请先加载点云。"); return
         if not self.waypoints:
@@ -5486,14 +5491,67 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "输入错误", "起飞点和起飞高度必须是有效数值。"); return
         goal = np.asarray(self.waypoints[0]["pos"], dtype=float)
         tree = self._get_kdtree()
+        if tree is None:
+            QMessageBox.warning(self, "无法规划", "没有可用的点云碰撞数据。"); return
         clearance = max(float(self.viewer._safe_distance), 0.1)
+        step = max(clearance * 0.5, 0.1)
+
+        # ── 阶段1：简单中继点快速尝试 ──
+        # 1a) 直达
+        if self._transition_line_is_safe(start, goal, tree, clearance, step):
+            self._transition_path = [start]
+            self._transition_goal = goal.copy()
+            self.viewer._transition_path = self._transition_path
+            self.lbl_transition_status.setText(self._ui_text("过渡路径: 直达 (0 个中继点)", "Transition: Direct (0 relay waypoints)"))
+            self.lbl_transition_status.setStyleSheet("color: #36d399; font-size: 11px;")
+            self._display_route(); return
+
+        # 1b) 尝试1~2个中继点，z从1.2m开始，上下0.5m步进搜索
+        default_z = 1.2
+        z_candidates = [default_z]
+        for dz in np.arange(0.5, 5.0, 0.5):
+            z_candidates.extend([default_z + dz, default_z - dz])
+
+        xy_mid = (start[:2] + goal[:2]) / 2.0
+        xy_third = (start[:2] * 2 + goal[:2]) / 3.0
+        xy_two_third = (start[:2] + goal[:2] * 2) / 3.0
+
+        for z in z_candidates:
+            if z < 0.2:
+                continue
+            # 尝试1个中继点（中点）
+            mid = np.array([xy_mid[0], xy_mid[1], z])
+            if (self._transition_line_is_safe(start, mid, tree, clearance, step)
+                    and self._transition_line_is_safe(mid, goal, tree, clearance, step)):
+                self._transition_path = [start, mid]
+                self._transition_goal = goal.copy()
+                self.viewer._transition_path = self._transition_path
+                self.lbl_transition_status.setText(self._ui_text(
+                    "过渡路径: 1 个中继点", "Transition: 1 relay waypoint"))
+                self.lbl_transition_status.setStyleSheet("color: #36d399; font-size: 11px;")
+                self._display_route(); return
+            # 尝试2个中继点（1/3和2/3处）
+            p1 = np.array([xy_third[0], xy_third[1], z])
+            p2 = np.array([xy_two_third[0], xy_two_third[1], z])
+            if (self._transition_line_is_safe(start, p1, tree, clearance, step)
+                    and self._transition_line_is_safe(p1, p2, tree, clearance, step)
+                    and self._transition_line_is_safe(p2, goal, tree, clearance, step)):
+                self._transition_path = [start, p1, p2]
+                self._transition_goal = goal.copy()
+                self.viewer._transition_path = self._transition_path
+                self.lbl_transition_status.setText(self._ui_text(
+                    "过渡路径: 2 个中继点", "Transition: 2 relay waypoints"))
+                self.lbl_transition_status.setStyleSheet("color: #36d399; font-size: 11px;")
+                self._display_route(); return
+
+        # ── 阶段2：A*回退 ──
         voxel = max(float(self._voxel_size), clearance * 0.5)
         margin = max(clearance * 3.0, voxel * 4.0)
         lower = np.minimum(np.minimum(start, goal) - margin, self.points.min(axis=0) - clearance)
         upper = np.maximum(np.maximum(start, goal) + margin, self.points.max(axis=0) + clearance)
         dims = np.ceil((upper - lower) / voxel).astype(int) + 1
         if int(np.prod(dims)) > 1500000:
-            QMessageBox.warning(self, "规划范围过大", "体素搜索空间过大。请增大体素大小或缩小规划范围。"); return
+            QMessageBox.warning(self, "规划范围过大", "简单中继点无法避开障碍，A*搜索空间过大。"); return
         def to_index(pos): return tuple(np.clip(np.rint((pos - lower) / voxel).astype(int), 0, dims - 1))
         def to_world(index): return lower + np.asarray(index, dtype=float) * voxel
         start_idx, goal_idx = to_index(start), to_index(goal)
@@ -5504,13 +5562,6 @@ class MainWindow(QMainWindow):
             return occupancy[index]
         if not free(start_idx) or not free(goal_idx):
             QMessageBox.warning(self, "无法规划", "悬停点或首航点位于障碍物安全距离内。"); return
-        if self._transition_line_is_safe(start, goal, tree, clearance, voxel * 0.5):
-            self._transition_path = [start]
-            self._transition_goal = goal.copy()
-            self.viewer._transition_path = self._transition_path
-            self.lbl_transition_status.setText(self._ui_text("过渡路径: 直达 (0 个中继点)", "Transition: Direct (0 relay waypoints)"))
-            self.lbl_transition_status.setStyleSheet("color: #36d399; font-size: 11px;")
-            self._display_route(); return
         offsets = [(dx, dy, dz) for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1) if (dx or dy or dz)]
         frontier, costs, parents = [(0.0, 0.0, start_idx)], {start_idx: 0.0}, {}
         found, visited = False, 0
@@ -5538,8 +5589,8 @@ class MainWindow(QMainWindow):
         self.viewer._transition_path = self._transition_path
         count = max(0, len(self._transition_path) - 1)
         self.lbl_transition_status.setText(self._ui_text(
-            f"过渡路径: {count} 个中继点 | {visited} 节点",
-            f"Transition: {count} relay waypoints | {visited} nodes",
+            f"过渡路径: {count} 个中继点 (A*) | {visited} 节点",
+            f"Transition: {count} relay waypoints (A*) | {visited} nodes",
         ))
         self.lbl_transition_status.setStyleSheet("color: #36d399; font-size: 11px;")
         self._display_route()
@@ -5980,7 +6031,6 @@ class MainWindow(QMainWindow):
         self.viewer._clear_line_points()
         self.viewer._clear_inspect_points()
         self.viewer._clear_coord_labels()
-        self.viewer.set_route_xray(False)
         self.viewer._heading_line_actors = []
         self._inspect_target_points.clear()
         self._inspect_target_normals.clear()

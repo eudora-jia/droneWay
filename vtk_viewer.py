@@ -767,7 +767,6 @@ class VTKViewer(QWidget):
         self.fpv_mode = enable
 
         if enable:
-            self.set_route_xray(False)
             self._create_drone_model()
             self._setup_fpv_keyboard()
             self._enter_fpv_camera()
@@ -795,8 +794,6 @@ class VTKViewer(QWidget):
                         setattr(self, attr, None)
             self._remove_drone_model()
             self._exit_fpv_camera()
-            if self._waypoints_ref:
-                self.set_route_xray(True)
             self.fpv_exited.emit()
 
         if self.vtk_widget.GetRenderWindow():
@@ -4262,7 +4259,6 @@ class VTKViewer(QWidget):
                 self.renderer.AddActor(actor)
                 self._actors.append(actor)
 
-        self.set_route_xray(not self.fpv_mode)
         if reset_camera:
             self._update_view()
         else:
