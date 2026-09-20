@@ -12,7 +12,8 @@ from PyQt5.QtWidgets import (
     QGroupBox, QLabel, QLineEdit, QPushButton, QComboBox,
     QFileDialog, QMessageBox, QButtonGroup, QSlider,
     QProgressBar, QCheckBox, QGridLayout, QScrollArea, QTabWidget,
-    QListWidget, QListWidgetItem, QAction, QActionGroup, QStackedWidget
+    QListWidget, QListWidgetItem, QAction, QActionGroup, QStackedWidget,
+    QDialog, QDialogButtonBox, QPlainTextEdit
 )
 from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation
 from PyQt5.QtGui import QFont, QPainter, QColor, QPen, QPixmap
@@ -313,6 +314,9 @@ class MainWindow(QMainWindow):
         self._merged_connections = []
         self._merged_oriented_segments = []
         self._merged_preview_active = False
+        self._pre_merge_waypoints = None
+        self._pre_merge_transition_path = None
+        self._pre_merge_transition_goal = None
         self._kdtree = None
         self._kdtree_points_id = None
         self._density_stats = None
@@ -793,20 +797,25 @@ class MainWindow(QMainWindow):
         self.cmb_flat_heading.setCurrentIndex(0)
         fl.addWidget(self.cmb_flat_heading, 2, 3)
 
+        fl.addWidget(QLabel("曲率(1/m):"), 3, 0)
+        self.edt_flat_curvature = QLineEdit("0.0")
+        self.edt_flat_curvature.setToolTip("0为直线扫描，正负值控制弯曲方向")
+        fl.addWidget(self.edt_flat_curvature, 3, 1)
+
         btn_calc_overlap = QPushButton("自动算间距")
         btn_calc_overlap.setStyleSheet(self._BTN_NORMAL)
         btn_calc_overlap.clicked.connect(self._calc_overlap_spacing)
-        fl.addWidget(btn_calc_overlap, 3, 0, 1, 2)
+        fl.addWidget(btn_calc_overlap, 4, 0, 1, 2)
 
         btn_apply_flat = QPushButton("应用")
         btn_apply_flat.setStyleSheet(self._BTN_NORMAL)
         btn_apply_flat.clicked.connect(self._apply_flat_params)
-        fl.addWidget(btn_apply_flat, 3, 2, 1, 2)
+        fl.addWidget(btn_apply_flat, 4, 2, 1, 2)
 
         self.btn_poly_select = QPushButton("选择顶点（右键确认）")
         self.btn_poly_select.setStyleSheet(self._BTN_ACCENT)
         self.btn_poly_select.clicked.connect(self._start_polygon_select)
-        fl.addWidget(self.btn_poly_select, 4, 0, 1, 4)
+        fl.addWidget(self.btn_poly_select, 5, 0, 1, 4)
 
         self._route_stack.addWidget(tab_flat)
 
@@ -1072,9 +1081,22 @@ class MainWindow(QMainWindow):
         self.btn_preview_segments = QPushButton("合并预览")
         self.btn_preview_segments.setStyleSheet(self._BTN_ACCENT)
         self.btn_preview_segments.clicked.connect(self._preview_merged_segments)
+        self.btn_cancel_preview = QPushButton("取消预览")
+        self.btn_cancel_preview.setStyleSheet(self._BTN_NORMAL)
+        self.btn_cancel_preview.clicked.connect(self._cancel_merged_preview)
+        self.btn_cancel_preview.setEnabled(False)
         segment_row1.addWidget(self.btn_save_segment)
         segment_row1.addWidget(self.btn_preview_segments)
         segment_layout.addLayout(segment_row1)
+
+        segment_row_preview = QHBoxLayout()
+        self.btn_save_merged_route = QPushButton("保存合并航线")
+        self.btn_save_merged_route.setStyleSheet(self._BTN_ACCENT)
+        self.btn_save_merged_route.clicked.connect(self.save_route)
+        self.btn_save_merged_route.setEnabled(False)
+        segment_row_preview.addWidget(self.btn_save_merged_route)
+        segment_row_preview.addWidget(self.btn_cancel_preview)
+        segment_layout.addLayout(segment_row_preview)
 
         segment_row2 = QHBoxLayout()
         for text, callback in [("上移", lambda: self._move_route_segment(-1)),
@@ -2365,6 +2387,30 @@ class MainWindow(QMainWindow):
         """Return UI text for the active language."""
         return zh_text if self._lang == "zh" else en_text
 
+    def _show_warning_details(self, title, summary, details):
+        """Show route warnings in a bounded dialog with scrollable details."""
+        if isinstance(details, str):
+            details = [details]
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.setModal(True)
+        dialog.resize(720, 460)
+        layout = QVBoxLayout(dialog)
+        summary_label = QLabel(summary)
+        summary_label.setWordWrap(True)
+        summary_label.setStyleSheet("color: #f0a529; font-weight: bold; padding: 2px 0;")
+        layout.addWidget(summary_label)
+        detail_box = QPlainTextEdit()
+        detail_box.setReadOnly(True)
+        detail_box.setPlainText("\n".join(str(item) for item in details))
+        detail_box.setLineWrapMode(QPlainTextEdit.NoWrap)
+        detail_box.setMinimumHeight(240)
+        layout.addWidget(detail_box, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok)
+        buttons.accepted.connect(dialog.accept)
+        layout.addWidget(buttons)
+        dialog.exec_()
+
     # 内联 QLabel 的中文→英文映射（用于递归翻译）
     _INLINE_LABELS = {
         "工作模式": "Mode",
@@ -2422,6 +2468,7 @@ class MainWindow(QMainWindow):
         "规划安全过渡": "Plan Safe Transition",
         "过渡路径: 未规划": "Transition: Not Planned",
         "扫描方向:": "Scan Direction:",
+        "曲率(1/m):": "Curvature (1/m):",
         "机头方向:": "Heading Direction:",
         "垂直扫描方向": "Perpendicular to Scan",
         "平行扫描方向": "Parallel to Scan",
@@ -2434,6 +2481,8 @@ class MainWindow(QMainWindow):
         "任务段合并": "Route Segment Merge",
         "保存当前段": "Save Current Segment",
         "合并预览": "Merge Preview",
+        "取消预览": "Cancel Preview",
+        "保存合并航线": "Save Merged Route",
         "上移": "Move Up", "下移": "Move Down", "反转": "Reverse",
         "编辑": "Edit", "删除": "Delete",
         "尚未保存任务段": "No Saved Segments",
@@ -2854,12 +2903,16 @@ class MainWindow(QMainWindow):
         try:
             inspect_dist = float(self.edt_flat_inspect_dist.text())
             speed = float(self.edt_flat_speed.text())
+            curvature = float(self.edt_flat_curvature.text())
         except ValueError:
             QMessageBox.warning(self, "输入错误", "请输入有效数字")
             return
 
         if inspect_dist <= 0:
             QMessageBox.warning(self, "输入错误", "巡检距离必须为正数")
+            return
+        if not np.isfinite(curvature) or abs(curvature) > 2.0:
+            QMessageBox.warning(self, "输入错误", "曲率必须在 -2.0 到 2.0 1/m 之间")
             return
 
         safe_dist = self.viewer._safe_distance
@@ -2999,7 +3052,12 @@ class MainWindow(QMainWindow):
             else:
                 scan_dir = main_dir_3d
             for u in row_u:
-                pt_2d = np.array([u, v])
+                u_mid = 0.5 * (u_min + u_max)
+                curved_v = v + 0.5 * curvature * (u - u_mid) ** 2
+                curve_tangent = main_dir_3d + curvature * (u - u_mid) * cross_dir_3d
+                curve_tangent /= max(np.linalg.norm(curve_tangent), 1e-12)
+                point_scan_dir = -curve_tangent if row_idx % 2 == 1 else curve_tangent
+                pt_2d = np.array([u, curved_v])
                 # 判断是否在多边形内
                 inside = False
                 j = len(poly_2d) - 1
@@ -3012,9 +3070,9 @@ class MainWindow(QMainWindow):
                     j = i
                 if inside:
                     # 2D → 3D：在多边形平面上
-                    target_3d = poly_center + u * main_dir_3d + v * cross_dir_3d
+                    target_3d = poly_center + u * main_dir_3d + curved_v * cross_dir_3d
                     grid_targets.append(target_3d)
-                    grid_scan_dirs.append(scan_dir)
+                    grid_scan_dirs.append(point_scan_dir)
             v += spacing
             row_idx += 1
 
@@ -5289,6 +5347,13 @@ class MainWindow(QMainWindow):
                                               "Takeoff point coordinates must be valid numbers."))
             return
 
+        if not self._merged_preview_active:
+            self._pre_merge_waypoints = copy.deepcopy(self.waypoints)
+            self._pre_merge_transition_path = copy.deepcopy(self._transition_path)
+            self._pre_merge_transition_goal = (
+                None if self._transition_goal is None else np.asarray(self._transition_goal, dtype=float).copy()
+            )
+
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             oriented, current = [], hover
@@ -5346,6 +5411,8 @@ class MainWindow(QMainWindow):
             self._merged_connections = connections
             self._merged_oriented_segments = oriented
             self._merged_preview_active = True
+            self.btn_cancel_preview.setEnabled(True)
+            self.btn_save_merged_route.setEnabled(True)
             self.viewer._transition_path = self._transition_path
             self._display_route()
             total = sum(len(s["waypoints"]) for s in oriented)
@@ -5372,6 +5439,32 @@ class MainWindow(QMainWindow):
                 self.lbl_segment_status.setStyleSheet("color: #36d399; font-size: 11px;")
         finally:
             QApplication.restoreOverrideCursor()
+
+    def _cancel_merged_preview(self):
+        """Restore the local route that was visible before merge preview."""
+        if not self._merged_preview_active:
+            return
+        self.waypoints = copy.deepcopy(self._pre_merge_waypoints or [])
+        self._transition_path = copy.deepcopy(self._pre_merge_transition_path or [])
+        self._transition_goal = (
+            None if self._pre_merge_transition_goal is None
+            else np.asarray(self._pre_merge_transition_goal, dtype=float).copy()
+        )
+        self._merged_preview_active = False
+        self._merged_oriented_segments = []
+        self._merged_connections = []
+        self._pre_merge_waypoints = None
+        self._pre_merge_transition_path = None
+        self._pre_merge_transition_goal = None
+        self.viewer._transition_path = self._transition_path
+        self.btn_cancel_preview.setEnabled(False)
+        self.btn_save_merged_route.setEnabled(False)
+        self._display_route()
+        self.lbl_segment_status.setText(self._ui_text(
+            "已取消合并预览，已恢复预览前的局部航线",
+            "Merge preview cancelled; restored the previous local route"
+        ))
+        self.lbl_segment_status.setStyleSheet("color: #6f8590; font-size: 11px;")
 
     def plan_safe_transition(self):
         """用点云体素自由空间 A* 规划悬停点到首航点的安全过渡路径。"""
@@ -5478,6 +5571,14 @@ class MainWindow(QMainWindow):
             self.lbl_transition_status.setStyleSheet("color: #f0a529; font-size: 11px;")
 
     def _display_route(self):
+        if not self._merged_preview_active and self._pre_merge_waypoints is not None:
+            self._pre_merge_waypoints = None
+            self._pre_merge_transition_path = None
+            self._pre_merge_transition_goal = None
+            if hasattr(self, "btn_cancel_preview"):
+                self.btn_cancel_preview.setEnabled(False)
+            if hasattr(self, "btn_save_merged_route"):
+                self.btn_save_merged_route.setEnabled(False)
         self._orient_route_from_takeoff()
         try:
             current_hover = np.array([
@@ -5860,6 +5961,13 @@ class MainWindow(QMainWindow):
         self._merged_oriented_segments = []
         self._merged_connections = []
         self._transition_path = []
+        self._pre_merge_waypoints = None
+        self._pre_merge_transition_path = None
+        self._pre_merge_transition_goal = None
+        if hasattr(self, "btn_cancel_preview"):
+            self.btn_cancel_preview.setEnabled(False)
+        if hasattr(self, "btn_save_merged_route"):
+            self.btn_save_merged_route.setEnabled(False)
         self._transition_goal = None
         self.viewer._transition_path = []
         if hasattr(self, "lbl_transition_status"):
