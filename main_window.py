@@ -624,6 +624,7 @@ class MainWindow(QMainWindow):
         self.viewer.fpv_exited.connect(self._on_fpv_exited)
         self.viewer.mesh_geometry_ready.connect(self._precompute_stl_triangles)
         self._place_target = None  # "cube" or "cylinder"
+        self._last_route_type_index = 0
         self._polygon_vertices = None
 
         # ─── 右侧控制面板 ───
@@ -1139,17 +1140,12 @@ class MainWindow(QMainWindow):
         self.chk_show_distances.toggled.connect(self._display_route)
         self.chk_show_indices.toggled.connect(self._display_route)
 
-        # 立方体区域参数变化时重新计算
-        self.edt_cx.textChanged.connect(lambda: self._on_cube_area_changed())
-        self.edt_cy.textChanged.connect(lambda: self._on_cube_area_changed())
-        self.edt_dx.textChanged.connect(lambda: self._on_cube_area_changed())
-        self.edt_dy.textChanged.connect(lambda: self._on_cube_area_changed())
-
+        # 立方体区域参数不在输入过程中自动扫描点云；点击“应用”时统一计算。
         # 圆柱体区域参数变化时重新计算
-        self.edt_cyl_cx.textChanged.connect(lambda: self._on_cyl_area_changed())
-        self.edt_cyl_cy.textChanged.connect(lambda: self._on_cyl_area_changed())
-        self.edt_cyl_diam.textChanged.connect(lambda: self._on_cyl_area_changed())
-        self.edt_cyl_dist.textChanged.connect(lambda: self._on_cyl_area_changed())
+        self.edt_cyl_cx.editingFinished.connect(self._on_cyl_area_changed)
+        self.edt_cyl_cy.editingFinished.connect(self._on_cyl_area_changed)
+        self.edt_cyl_diam.editingFinished.connect(self._on_cyl_area_changed)
+        self.edt_cyl_dist.editingFinished.connect(self._on_cyl_area_changed)
 
     def _on_pillar_type_changed(self, idx):
         if idx == 1:
@@ -1257,8 +1253,28 @@ class MainWindow(QMainWindow):
             QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
         """)
 
+    def _ensure_non_fpv_for_solid_route(self, route_name):
+        if not getattr(self.viewer, "fpv_mode", False):
+            return True
+        QMessageBox.information(
+            self, self._ui_text("提示", "Notice"),
+            self._ui_text(f"{route_name}仅支持非FPV模式规划，请先退出FPV视角。",
+                          f"{route_name} planning is only available outside FPV mode. Exit FPV view first.")
+        )
+        return False
+
     def _on_route_type_changed(self, index):
         """航线类型切换时清理上一种类型的选择状态"""
+        if index in (1, 2) and not self._ensure_non_fpv_for_solid_route(self.cmb_route_type.itemText(index)):
+            fallback = getattr(self, "_last_route_type_index", 0)
+            if fallback in (1, 2):
+                fallback = 0
+            self.cmb_route_type.blockSignals(True)
+            self.cmb_route_type.setCurrentIndex(fallback)
+            self.cmb_route_type.blockSignals(False)
+            self._route_stack.setCurrentIndex(fallback)
+            return
+        self._last_route_type_index = index
         self._route_stack.setCurrentIndex(index)
         # 清理多边形选择状态
         if hasattr(self, '_polygon_vertices') and self._polygon_vertices:
@@ -1301,6 +1317,10 @@ class MainWindow(QMainWindow):
 
     # ─── 点击放置模式 ──────────────────────────────────────
     def _start_place_mode(self, target):
+        if target in ("cube", "cylinder"):
+            route_name = self._ui_text("立方体航线", "Cube Route") if target == "cube" else self._ui_text("圆柱体航线", "Cylinder Route")
+            if not self._ensure_non_fpv_for_solid_route(route_name):
+                return
         if not self._ensure_route_planning_density():
             return
         self._place_target = target
@@ -4162,6 +4182,9 @@ class MainWindow(QMainWindow):
         self.waypoints = []
         self._merged_preview_active = False
         warnings = []
+        constraint_failures = 0
+        nominal_only_mode = False
+        nominal_only_notice_added = False
 
         # 检查速度vs拍摄间隔
         if len(self._inspect_target_points) >= 2:
@@ -4426,6 +4449,8 @@ class MainWindow(QMainWindow):
 
     # ─── 生成立方体航线 ───
     def generate_cube_route(self):
+        if not self._ensure_non_fpv_for_solid_route(self._ui_text("立方体航线", "Cube Route")):
+            return
         if not self._ensure_route_planning_density():
             return
         # 自动计算步距（如果还是默认的"自动"）
@@ -4523,6 +4548,9 @@ class MainWindow(QMainWindow):
         safe_dist = self.viewer._safe_distance
         collision_dist = safe_dist
         warnings = []
+        constraint_failures = 0
+        nominal_only_mode = False
+        nominal_only_notice_added = False
 
         # 检查速度vs拍摄间隔（水平方向沿边移动）
         self._check_speed_overlap(speed, cstep, np.array([1.0, 0.0, 0.0]), warnings)
@@ -4551,16 +4579,19 @@ class MainWindow(QMainWindow):
                     else:
                         outward = np.array([1.0, 0.0, 0.0])
 
-                    # 综合约束检查：碰撞 + 云台角度 + 视线不穿模
+                    # 综合约束检查：碰撞 + 云台角度 + 视线不穿模。
+                    # 累计 10 个失败点后停止昂贵搜索，后续直接使用名义位置。
                     need_search = False
-                    if tree is not None:
+                    if nominal_only_mode:
+                        need_search = False
+                    elif tree is not None:
                         dist, _ = tree.query(pos)
                         if dist < collision_dist:
                             need_search = True
                     pitch = self._calc_gimbal_pitch(pos, cube_center)
-                    if not (self._gimbal_pitch_min <= pitch <= self._gimbal_pitch_max):
+                    if not nominal_only_mode and not (self._gimbal_pitch_min <= pitch <= self._gimbal_pitch_max):
                         need_search = True
-                    if not need_search and tree is not None:
+                    if not nominal_only_mode and not need_search and tree is not None:
                         seg = cube_center - pos
                         seg_len = np.linalg.norm(seg)
                         if seg_len > 1.0:
@@ -4572,6 +4603,7 @@ class MainWindow(QMainWindow):
                                     break
 
                     if need_search:
+                        constraint_failures += 1
                         # 拐角检测：检查附近点是否分布在多个方向
                         max_off = 10.0
                         if tree is not None:
@@ -4599,6 +4631,11 @@ class MainWindow(QMainWindow):
                             pos = safe_pos
                         if warned:
                             warnings.append(f"边{ei+1}层{layer} 无法满足所有约束")
+                        if constraint_failures >= 10:
+                            nominal_only_mode = True
+                            if not nominal_only_notice_added:
+                                warnings.append("已累计10个航点无法满足约束，后续航点直接按名义位置生成")
+                                nominal_only_notice_added = True
 
                     # 重新计算heading（pos可能已调整）
                     to_cx = cx - pos[0]
@@ -4820,6 +4857,8 @@ class MainWindow(QMainWindow):
 
     def _apply_cube_params(self):
         """应用立方体航线参数并重新生成航线"""
+        # 仅在用户明确应用时更新高度边界，避免输入长宽时反复扫描大点云。
+        self._update_cube_cz_and_dz()
         if self.waypoints:
             self.generate_cube_route()
         else:
