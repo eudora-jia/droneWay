@@ -575,6 +575,7 @@ class VTKViewer(QWidget):
         self._poly_line_actor = None
         self._poly_surface_actor = None
         self._poly_click_start = None
+        self._coverage_plane = None  # 面状航线覆盖投影平面 {'origin','normal'}
 
         # ─── 巡检选点模式 ───
         self.inspect_mode = False
@@ -828,21 +829,51 @@ class VTKViewer(QWidget):
         ))
 
     def _show_fpv_orientation_marker(self, visible):
-        """FPV使用固定屏幕尺寸的方向坐标轴，避免世界坐标轴随镜头放大。"""
+        """FPV使用固定屏幕尺寸的方向坐标轴，避免世界坐标轴随镜头放大。
+
+        用独立的角落渲染器而不是 vtkOrientationMarkerWidget：VTK 9.6 下
+        InteractiveOff() 仍允许左键把整个坐标轴框拖走（实测 viewport 被拖移）。
+        """
         if self._fpv_orientation_marker is None:
             axes = self._vtkAxesActor()
             axes.SetTotalLength(1.0, 1.0, 1.0)
-            marker = self._vtkOrientationMarkerWidget()
-            marker.SetOrientationMarker(axes)
-            marker.SetInteractor(self.interactor)
-            marker.SetCurrentRenderer(self.renderer)
-            marker.SetViewport(0.0, 0.0, 0.16, 0.16)
-            marker.InteractiveOff()
-            self._fpv_orientation_marker = marker
+            corner = self._vtkRenderer()
+            corner.SetLayer(1)
+            corner.SetViewport(0.0, 0.0, 0.16, 0.16)
+            corner.SetInteractive(0)
+            corner.AddActor(axes)
+            cam = corner.GetActiveCamera()
+            cam.ParallelProjectionOn()
+            cam.SetParallelScale(1.7)
+            rw = self.vtk_widget.GetRenderWindow()
+            if rw.GetNumberOfLayers() < 2:
+                rw.SetNumberOfLayers(2)
+            rw.AddRenderer(corner)
+            self._fpv_orientation_marker = corner
 
-        self._fpv_orientation_marker.SetEnabled(1 if visible else 0)
-        if visible and self.vtk_widget.GetRenderWindow():
-            self.vtk_widget.GetRenderWindow().Render()
+        self._fpv_orientation_marker.SetDraw(1 if visible else 0)
+        if visible:
+            self._sync_fpv_orientation_marker()
+            if self.vtk_widget.GetRenderWindow():
+                self.vtk_widget.GetRenderWindow().Render()
+
+    def _sync_fpv_orientation_marker(self):
+        """让角落坐标轴与主相机保持同一朝向。"""
+        corner = self._fpv_orientation_marker
+        if corner is None or not corner.GetDraw():
+            return
+        main = self.renderer.GetActiveCamera()
+        pos = np.asarray(main.GetPosition(), dtype=float)
+        focal = np.asarray(main.GetFocalPoint(), dtype=float)
+        direction = pos - focal
+        length = np.linalg.norm(direction)
+        if length < 1e-9:
+            return
+        direction = direction / length
+        cam = corner.GetActiveCamera()
+        cam.SetFocalPoint(0.0, 0.0, 0.0)
+        cam.SetPosition(*(direction * 4.0).tolist())
+        cam.SetViewUp(*main.GetViewUp())
 
     def _create_drone_model(self):
         """加载STL无人机模型"""
@@ -2864,6 +2895,7 @@ class VTKViewer(QWidget):
         self._update_pick_marker_scale()
 
         self._update_drone_model()
+        self._sync_fpv_orientation_marker()
         if render and self.vtk_widget.GetRenderWindow():
             self.vtk_widget.GetRenderWindow().Render()
 
@@ -2891,6 +2923,7 @@ class VTKViewer(QWidget):
         self._update_pick_marker_scale()
 
         self._update_drone_model()
+        self._sync_fpv_orientation_marker()
         if render and self.vtk_widget.GetRenderWindow():
             self.vtk_widget.GetRenderWindow().Render()
 
@@ -3446,6 +3479,122 @@ class VTKViewer(QWidget):
             self.renderer.AddActor(actor)
             self._voxel_coverage_actor = actor
             print(f"[Coverage] {len(covered)} visible voxel faces covered by route")
+
+    def _add_planar_coverage_overlay(self, waypoints, plane):
+        """面状航线：把相机覆盖框画在用户选定的平面上。
+
+        旧的覆盖层把每个 footprint 贴到点云/STL 表面，平面上看是散落的碎块；
+        这里沿视锥四角射线与平面求交，得到同一平面上的规整覆盖框。
+        """
+        origin = np.asarray(plane['origin'], dtype=float)
+        normal = np.asarray(plane['normal'], dtype=float)
+        n_len = np.linalg.norm(normal)
+        if n_len < 1e-9:
+            return
+        normal = normal / n_len
+        hfov_rad = math.radians(self._camera_hfov)
+        vfov_rad = math.radians(self._camera_vfov)
+        tan_h = math.tan(hfov_rad / 2.0)
+        tan_v = math.tan(vfov_rad / 2.0)
+        quads = []
+        for i, wp in enumerate(waypoints):
+            if 'target_pos' not in wp:
+                continue
+            pos = np.asarray(wp['pos'], dtype=float)
+            tgt = np.asarray(wp['target_pos'], dtype=float)
+            los = tgt - pos
+            dist = np.linalg.norm(los)
+            if dist < 0.5:
+                continue
+            forward = los / dist
+            right = np.cross(forward, np.array([0.0, 0.0, 1.0]))
+            r_len = np.linalg.norm(right)
+            if r_len < 1e-6:
+                right = np.array([1.0, 0.0, 0.0])
+            else:
+                right = right / r_len
+            up = np.cross(right, forward)
+            # 视锥四角射线与平面求交，得到照片在平面上的真实 footprint
+            corner_dirs = [
+                forward + right * tan_h + up * tan_v,
+                forward + right * tan_h - up * tan_v,
+                forward - right * tan_h - up * tan_v,
+                forward - right * tan_h + up * tan_v,
+            ]
+            hits = []
+            for direction in corner_dirs:
+                denom = float(np.dot(direction, normal))
+                if abs(denom) < 1e-6:
+                    hits = []
+                    break
+                t = float(np.dot(origin - pos, normal)) / denom
+                if t <= 0.0 or t > dist * 8.0:
+                    hits = []
+                    break
+                hits.append(pos + direction * t)
+            if len(hits) == 4:
+                quads.append(hits)
+        if not quads:
+            return
+        # 抬离平面一点，避免与贴面的点云/网格 z-fighting
+        side = 1.0 if np.dot(np.asarray(waypoints[0]['pos'], dtype=float) - origin, normal) >= 0 else -1.0
+        bounds = self._current_data_bounds()
+        diag = float(np.linalg.norm(np.asarray(bounds[1::2]) - np.asarray(bounds[0::2]))) if bounds else 10.0
+        lift = normal * (side * max(0.02, diag * 0.002))
+
+        quad_pts = self._vtkPoints()
+        quad_tc = self._vtkFloatArray()
+        quad_tc.SetNumberOfComponents(2)
+        quad_tc.SetName("TextureCoordinates")
+        quad_cells = self._vtkCellArray()
+        edge_pts = self._vtkPoints()
+        edge_cells = self._vtkCellArray()
+        tex_coords = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+        for quad in quads:
+            base = quad_pts.GetNumberOfPoints()
+            polygon = self._vtkPolygon()
+            polygon.GetPointIds().SetNumberOfIds(4)
+            line = self._vtkPolyLine()
+            line.GetPointIds().SetNumberOfIds(5)
+            for k, corner in enumerate(quad):
+                lifted = (corner + lift).tolist()
+                quad_pts.InsertNextPoint(lifted)
+                quad_tc.InsertNextTuple2(tex_coords[k][0], tex_coords[k][1])
+                polygon.GetPointIds().SetId(k, base + k)
+                edge_pts.InsertNextPoint(lifted)
+                line.GetPointIds().SetId(k, base + k)
+            line.GetPointIds().SetId(4, base)
+            quad_cells.InsertNextCell(polygon)
+            edge_cells.InsertNextCell(line)
+
+        quad_poly = self._vtkPolyData()
+        quad_poly.SetPoints(quad_pts)
+        quad_poly.SetPolys(quad_cells)
+        quad_poly.GetPointData().SetTCoords(quad_tc)
+        mapper = self._vtkPolyDataMapper()
+        mapper.SetInputData(quad_poly)
+        actor = self._vtkActor()
+        actor.SetMapper(mapper)
+        actor.SetTexture(self._get_grid_texture())
+        actor.GetProperty().SetOpacity(0.30)
+        actor.GetProperty().SetLighting(False)
+        self.renderer.AddActor(actor)
+        self._actors.append(actor)
+
+        edge_poly = self._vtkPolyData()
+        edge_poly.SetPoints(edge_pts)
+        edge_poly.SetLines(edge_cells)
+        edge_mapper = self._vtkPolyDataMapper()
+        edge_mapper.SetInputData(edge_poly)
+        edge_actor = self._vtkActor()
+        edge_actor.SetMapper(edge_mapper)
+        edge_actor.GetProperty().SetColor(0.0, 0.8, 1.0)
+        edge_actor.GetProperty().SetLineWidth(1.5)
+        edge_actor.GetProperty().SetOpacity(0.7)
+        edge_actor.GetProperty().SetLighting(False)
+        self.renderer.AddActor(edge_actor)
+        self._actors.append(edge_actor)
+        print(f"[Coverage] {len(quads)} footprints projected onto planning plane")
 
     def _update_voxel_animation_coverage(self, wp):
         """动画期间仅高亮当前云台可见体素面。"""
@@ -4107,7 +4256,12 @@ class VTKViewer(QWidget):
         # ── 相机覆盖区域投影（显示重叠率）──
         has_target = any('target_pos' in wp for wp in waypoints)
         has_surface_coverage = any(wp.get('surface_coverage', False) for wp in waypoints)
-        if has_target and getattr(self, '_coverage_enabled', True) and self._voxel_actor is None and not has_surface_coverage:
+        coverage_plane = getattr(self, '_coverage_plane', None)
+        coverage_on = (has_target and getattr(self, '_coverage_enabled', True)
+                       and not has_surface_coverage)
+        if coverage_on and coverage_plane is not None:
+            self._add_planar_coverage_overlay(waypoints, coverage_plane)
+        elif coverage_on and self._voxel_actor is None:
             hfov_rad = math.radians(self._camera_hfov)
             vfov_rad = math.radians(self._camera_vfov)
             headings = self._compute_forward_headings(waypoints)
@@ -4205,7 +4359,7 @@ class VTKViewer(QWidget):
                 self.renderer.AddActor(edge_actor)
                 self._actors.append(edge_actor)
 
-        if has_target and getattr(self, '_coverage_enabled', True) and self._voxel_actor is not None:
+        if coverage_on and coverage_plane is None and self._voxel_actor is not None:
             self._update_voxel_route_coverage(waypoints)
         elif self._voxel_actor is not None:
             self._clear_voxel_coverage()

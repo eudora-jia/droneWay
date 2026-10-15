@@ -2412,10 +2412,22 @@ class MainWindow(QMainWindow):
         """Return UI text for the active language."""
         return zh_text if self._lang == "zh" else en_text
 
-    def _show_warning_details(self, title, summary, details):
-        """Show route warnings in a bounded dialog with scrollable details."""
+    _WARNING_DETAIL_LIMIT = 300
+
+    def _show_warning_details(self, title, summary, details, confirm=False):
+        """Show route warnings in a bounded dialog with scrollable details.
+
+        Long warning lists used to be pasted straight into QMessageBox, whose
+        height grows with the text until the buttons fall off the screen.
+        confirm=True shows 是/否 and returns whether the user accepted.
+        """
         if isinstance(details, str):
             details = [details]
+        items = [str(item) for item in details]
+        hidden = len(items) - self._WARNING_DETAIL_LIMIT
+        if hidden > 0:
+            items = items[:self._WARNING_DETAIL_LIMIT]
+            items.append(f"...其余 {hidden} 条未显示")
         dialog = QDialog(self)
         dialog.setWindowTitle(title)
         dialog.setModal(True)
@@ -2427,14 +2439,19 @@ class MainWindow(QMainWindow):
         layout.addWidget(summary_label)
         detail_box = QPlainTextEdit()
         detail_box.setReadOnly(True)
-        detail_box.setPlainText("\n".join(str(item) for item in details))
+        detail_box.setPlainText("\n".join(items))
         detail_box.setLineWrapMode(QPlainTextEdit.NoWrap)
         detail_box.setMinimumHeight(240)
         layout.addWidget(detail_box, 1)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok)
+        if confirm:
+            buttons = QDialogButtonBox(QDialogButtonBox.Yes | QDialogButtonBox.No)
+            buttons.button(QDialogButtonBox.No).setDefault(True)
+        else:
+            buttons = QDialogButtonBox(QDialogButtonBox.Ok)
         buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
-        dialog.exec_()
+        return dialog.exec_() == QDialog.Accepted
 
     # 内联 QLabel 的中文→英文映射（用于递归翻译）
     _INLINE_LABELS = {
@@ -3294,10 +3311,11 @@ class MainWindow(QMainWindow):
             })
 
         if not self.waypoints:
-            failure_details = "\n".join(warnings) if warnings else "未找到满足约束的候选位置"
-            QMessageBox.warning(
-                self, "多边形区域内无有效航点",
-                f"所有目标均被安全约束拒绝：\n\n{failure_details}"
+            failure_details = warnings if warnings else ["未找到满足约束的候选位置"]
+            self._show_warning_details(
+                "多边形区域内无有效航点",
+                f"所有目标均被安全约束拒绝（共 {len(warnings)} 条）",
+                failure_details,
             )
             return
         print(f"[FlatRoute] main_dir=({main_dir_3d[0]:.3f},{main_dir_3d[1]:.3f},{main_dir_3d[2]:.3f}), spacing={spacing:.2f}, wp_spacing={wp_spacing:.2f}")
@@ -3306,16 +3324,25 @@ class MainWindow(QMainWindow):
             t = wp.get('target_pos', wp['pos'])
             print(f"  wp{i}: pos=({wp['pos'][0]:.1f},{wp['pos'][1]:.1f},{wp['pos'][2]:.1f}) target=({t[0]:.1f},{t[1]:.1f},{t[2]:.1f})")
 
+        # 覆盖层贴在用户绘制的平面上，而不是散落在点云表面
+        self.viewer._coverage_plane = {
+            'origin': poly_center.copy(),
+            'normal': poly_normal.copy(),
+        }
         self._display_route()
 
         if warnings:
-            QMessageBox.warning(self, "约束警告",
-                f"生成 {len(self.waypoints)} 个航点\n\n" + "\n".join(warnings))
+            self._show_warning_details(
+                "约束警告",
+                f"生成 {len(self.waypoints)} 个航点，{len(warnings)} 条约束未完全满足",
+                warnings,
+            )
 
     # ─── 生成圆柱体航线 ───
     def generate_cylinder_route(self):
         if not self._ensure_route_planning_density():
             return
+        self.viewer._coverage_plane = None
         import math
         try:
             cx = float(self.edt_cyl_cx.text())
@@ -3468,10 +3495,10 @@ class MainWindow(QMainWindow):
 
         if warnings and len(generated) != ((total_pts + 1) if route_type == "螺旋线" else num_cols * (num_intervals + 1)):
             self.clear_route()
-            QMessageBox.warning(
-                self, "圆柱航线生成失败",
-                "存在无法满足碰撞、云台或视线约束的航点，已拒绝生成整条航线。\n\n" +
-                "\n".join(warnings[:10])
+            self._show_warning_details(
+                "圆柱航线生成失败",
+                "存在无法满足碰撞、云台或视线约束的航点，已拒绝生成整条航线。",
+                warnings,
             )
             return
 
@@ -3480,12 +3507,17 @@ class MainWindow(QMainWindow):
         self._display_route()
         print(f"[Cylinder] Generated {len(self.waypoints)} waypoints ({route_type})")
         if warnings:
-            QMessageBox.warning(self, "约束警告", f"生成 {len(self.waypoints)} 个航点\n\n" + "\n".join(warnings[:10]))
+            self._show_warning_details(
+                "约束警告",
+                f"生成 {len(self.waypoints)} 个航点，{len(warnings)} 条约束未完全满足",
+                warnings,
+            )
 
     # ─── 生成直线航线 ───
     def generate_line_route(self):
         if not self._ensure_route_planning_density():
             return
+        self.viewer._coverage_plane = None
         import math
         try:
             x1 = float(self.edt_line_x1.text())
@@ -3528,7 +3560,11 @@ class MainWindow(QMainWindow):
         warnings_line = []
         self._check_speed_overlap(speed, spacing, route_dir, warnings_line)
         if warnings_line:
-            QMessageBox.warning(self, "拍摄间隔警告", "\n".join(warnings_line))
+            self._show_warning_details(
+                "拍摄间隔警告",
+                f"{len(warnings_line)} 条拍摄间隔不满足要求",
+                warnings_line,
+            )
 
         # === 确定偏移方向：优先用拾取时存储的法线 ===
         mid_point = (p1 + p2) / 2.0
@@ -3710,8 +3746,11 @@ class MainWindow(QMainWindow):
         self._display_route()
         print(f"[Line] Generated {len(self.waypoints)} waypoints, spacing={spacing:.2f}m, inspect_dist={inspect_dist}m")
         if warnings:
-            QMessageBox.warning(self, "约束警告",
-                f"生成 {len(self.waypoints)} 个航点\n\n" + "\n".join(warnings[:10]))
+            self._show_warning_details(
+                "约束警告",
+                f"生成 {len(self.waypoints)} 个航点，{len(warnings)} 条约束未完全满足",
+                warnings,
+            )
 
     # ─── 巡检点功能 ─────────────────────────────────────────
     def _start_inspect_mode(self):
@@ -4161,6 +4200,7 @@ class MainWindow(QMainWindow):
         if not self._ensure_route_planning_density():
             return
         """从巡检目标点自动生成无人机航线（带碰撞检测）"""
+        self.viewer._coverage_plane = None
         if not self._inspect_target_points:
             QMessageBox.warning(self, "提示", "请先选择巡检点位")
             return
@@ -4443,8 +4483,11 @@ class MainWindow(QMainWindow):
         self._display_route()
 
         if warnings:
-            QMessageBox.warning(self, "碰撞警告",
-                f"生成 {len(self.waypoints)} 个航点\n\n" + "\n".join(warnings))
+            self._show_warning_details(
+                "碰撞警告",
+                f"生成 {len(self.waypoints)} 个航点，{len(warnings)} 条碰撞告警",
+                warnings,
+            )
         print(f"[Inspect] Generated {len(self.waypoints)} waypoints from {len(self._inspect_target_points)} targets")
 
     # ─── 生成立方体航线 ───
@@ -4453,6 +4496,7 @@ class MainWindow(QMainWindow):
             return
         if not self._ensure_route_planning_density():
             return
+        self.viewer._coverage_plane = None
         # 自动计算步距（如果还是默认的"自动"）
         if self.edt_cstep.text() == "自动" or self.edt_vstep.text() == "自动":
             self._calc_cube_spacing()
@@ -4669,8 +4713,11 @@ class MainWindow(QMainWindow):
         self._display_route()
 
         if warnings:
-            QMessageBox.warning(self, "约束警告",
-                f"生成 {len(self.waypoints)} 个航点\n\n" + "\n".join(warnings[:10]))
+            self._show_warning_details(
+                "约束警告",
+                f"生成 {len(self.waypoints)} 个航点，{len(warnings)} 条约束未完全满足",
+                warnings,
+            )
 
     def _apply_bridge_params(self):
         try:
@@ -6051,6 +6098,7 @@ class MainWindow(QMainWindow):
         else:
             self.viewer._cleanup_anim()
         self.viewer._clear_voxel_coverage()
+        self.viewer._coverage_plane = None
         self.waypoints = []
         self._merged_preview_active = False
         self._merged_oriented_segments = []
@@ -6154,13 +6202,13 @@ class MainWindow(QMainWindow):
         for idx, z_val in low_z:
             warnings.append(f"{idx+1} 号航点Z={z_val:.1f}m < {min_z}m")
         if warnings:
-            msg = f"检测到 {len(warnings)} 个问题:\n\n" + "\n".join(warnings[:10])
-            if len(warnings) > 10:
-                msg += f"\n...等共 {len(warnings)} 个"
-            msg += "\n\n是否仍要保存？"
-            reply = QMessageBox.warning(self, "碰撞警告", msg,
-                                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if reply == QMessageBox.No:
+            proceed = self._show_warning_details(
+                "碰撞警告",
+                f"检测到 {len(warnings)} 个问题，是否仍要保存？",
+                warnings,
+                confirm=True,
+            )
+            if not proceed:
                 return
 
         data = self._build_route_json()
@@ -6486,6 +6534,7 @@ class MainWindow(QMainWindow):
 
             self.waypoints = []
             self._merged_preview_active = False
+            self.viewer._coverage_plane = None
 
             # nav_msgs/Path 格式
             if 'poses' in data:
