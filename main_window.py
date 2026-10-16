@@ -159,7 +159,7 @@ class MainWindow(QMainWindow):
             "lbl_wp_spacing": "航点距离:", "lbl_speed": "速度(m/s):",
             "lbl_camera": "相机型号:", "lbl_fov": "水平FOV(°):",
             "lbl_fwd_overlap": "航向重叠(%):", "lbl_side_overlap": "旁向重叠(%):",
-            "btn_calc_overlap": "自动算间距", "lbl_curvature": "曲度:",
+            "lbl_curvature": "曲度:",
             "btn_pick_area": "选择顶点（右键确认）",
             "lbl_center": "底面中心(x,y,z):", "lbl_len_x": "长(X):",
             "lbl_wid_y": "宽(Y):", "lbl_height_z2": "高(Z):",
@@ -221,7 +221,7 @@ class MainWindow(QMainWindow):
             "lbl_wp_spacing": "WP Spacing:", "lbl_speed": "Speed(m/s):",
             "lbl_camera": "Camera:", "lbl_fov": "H-FOV(°):",
             "lbl_fwd_overlap": "Fwd Overlap(%):", "lbl_side_overlap": "Side Overlap(%):",
-            "btn_calc_overlap": "Auto Calc", "lbl_curvature": "Curvature:",
+            "lbl_curvature": "Curvature:",
             "btn_pick_area": "Place (Right-click to confirm)",
             "lbl_center": "Center(x,y,z):", "lbl_len_x": "Len(X):",
             "lbl_wid_y": "Wid(Y):", "lbl_height_z2": "H(Z):",
@@ -726,7 +726,7 @@ class MainWindow(QMainWindow):
         transition_row = QHBoxLayout()
         self.btn_plan_transition = QPushButton("规划安全过渡")
         self.btn_plan_transition.setStyleSheet(self._BTN_ACCENT)
-        self.btn_plan_transition.clicked.connect(self.plan_safe_transition)
+        self.btn_plan_transition.clicked.connect(self._plan_safe_transition)
         self.lbl_transition_status = QLabel("过渡路径: 未规划")
         self.lbl_transition_status.setStyleSheet("color: #6f8590; font-size: 11px;")
         transition_row.addWidget(self.btn_plan_transition)
@@ -742,11 +742,6 @@ class MainWindow(QMainWindow):
         minz_row.addWidget(QLabel("低于此值视为碰撞"))
         minz_row.addStretch()
         pk.addLayout(minz_row)
-
-        btn_apply_safety = QPushButton("应用")
-        btn_apply_safety.setStyleSheet(self._BTN_NORMAL)
-        btn_apply_safety.clicked.connect(self._apply_safety_settings)
-        pk.addWidget(btn_apply_safety)
 
         lbl_wp_hint = QLabel("Ctrl+左键点击航点可拖动编辑位置")
         lbl_wp_hint.setStyleSheet("color: #666; font-size: 10px;")
@@ -803,15 +798,10 @@ class MainWindow(QMainWindow):
         self.edt_flat_curvature.setToolTip("0为直线扫描，正负值控制弯曲方向")
         fl.addWidget(self.edt_flat_curvature, 3, 1)
 
-        btn_calc_overlap = QPushButton("自动算间距")
-        btn_calc_overlap.setStyleSheet(self._BTN_NORMAL)
-        btn_calc_overlap.clicked.connect(self._calc_overlap_spacing)
-        fl.addWidget(btn_calc_overlap, 4, 0, 1, 2)
-
         btn_apply_flat = QPushButton("应用")
         btn_apply_flat.setStyleSheet(self._BTN_NORMAL)
         btn_apply_flat.clicked.connect(self._apply_flat_params)
-        fl.addWidget(btn_apply_flat, 4, 2, 1, 2)
+        fl.addWidget(btn_apply_flat, 4, 0, 1, 4)
 
         self.btn_poly_select = QPushButton("选择顶点（右键确认）")
         self.btn_poly_select.setStyleSheet(self._BTN_ACCENT)
@@ -852,12 +842,7 @@ class MainWindow(QMainWindow):
         cl.addWidget(self.edt_vstep, 3, 3)
 
         cl.addWidget(QLabel("速度:"), 4, 0)
-        self.edt_cspeed = QLineEdit("1"); cl.addWidget(self.edt_cspeed, 4, 1)
-
-        btn_cube_calc = QPushButton("自动算间距")
-        btn_cube_calc.setStyleSheet(self._BTN_NORMAL)
-        btn_cube_calc.clicked.connect(self._calc_cube_spacing)
-        cl.addWidget(btn_cube_calc, 4, 2, 1, 2)
+        self.edt_cspeed = QLineEdit("1"); cl.addWidget(self.edt_cspeed, 4, 1, 1, 3)
 
         cl.addWidget(QLabel("起始角度(°):"), 5, 0)
         self.sld_cube_start_angle = NoWheelSlider(Qt.Horizontal)
@@ -915,15 +900,10 @@ class MainWindow(QMainWindow):
         cyl.addWidget(QLabel("速度:"), 3, 2)
         self.edt_cyl_speed = QLineEdit("1"); cyl.addWidget(self.edt_cyl_speed, 3, 3)
 
-        btn_cyl_calc = QPushButton("自动算间距")
-        btn_cyl_calc.setStyleSheet(self._BTN_NORMAL)
-        btn_cyl_calc.clicked.connect(self._calc_cyl_spacing)
-        cyl.addWidget(btn_cyl_calc, 4, 0, 1, 2)
-
-        cyl.addWidget(QLabel("路径:"), 4, 2)
+        cyl.addWidget(QLabel("路径:"), 4, 0)
         self.cbo_cyl_type = QComboBox()
         self.cbo_cyl_type.addItems(["螺旋线", "Z字形"])
-        cyl.addWidget(self.cbo_cyl_type, 4, 3)
+        cyl.addWidget(self.cbo_cyl_type, 4, 1, 1, 3)
 
         cyl.addWidget(QLabel("起始角度(°):"), 5, 0)
         self.sld_cyl_start_angle = NoWheelSlider(Qt.Horizontal)
@@ -1311,7 +1291,6 @@ class MainWindow(QMainWindow):
                 self.viewer.renderer.GetActiveCamera().GetPosition(), dtype=float
             ).copy()
         self.viewer._clear_polygon()
-        self._calc_overlap_spacing()
         self.generate_flat_route()
         print(f"[Polygon] {len(pts)} vertices, bbox=[{mn[0]:.1f},{mx[0]:.1f}]x[{mn[1]:.1f},{mx[1]:.1f}]")
 
@@ -2622,7 +2601,6 @@ class MainWindow(QMainWindow):
                 "Clear": "清除",
                 "Generate Inspect Route": "生成点状航线",
                 "Clear Route": "清除",
-                "Auto Calc": "自动算间距",
                 "Show Heading": "显示机头方向",
                 "Show Gimbal Direction": "显示云台方向",
                 "Route Animation": "航线动画播放",
@@ -2647,7 +2625,6 @@ class MainWindow(QMainWindow):
                 "清除": "Clear",
                 "生成点状航线": "Generate Inspect Route",
                 "清除": "Clear",
-                "自动算间距": "Auto Calc",
                 "显示机头方向": "Show Heading",
                 "显示云台方向": "Show Gimbal Direction",
                 "显示距离": "Show Distances",
@@ -2964,9 +2941,9 @@ class MainWindow(QMainWindow):
         voxel_margin = max(0.05, float(getattr(self.viewer, "_voxel_size", 0.0)) * 0.5)
         collision_dist = min(safe_dist, max(0.10, inspect_dist - voxel_margin))
 
-        # 自动计算间距（如果还是默认的"自动"）
-        if self.edt_spacing.text() == "自动" or self.edt_wp_spacing.text() == "自动":
-            self._calc_overlap_spacing()
+        # 间距字段只读，是相机/重叠率/巡检距离的派生值，每次生成都重新计算
+        # （原"自动算间距"按钮已并入"应用"）
+        self._calc_overlap_spacing()
         try:
             spacing = float(self.edt_spacing.text())
             wp_spacing = float(self.edt_wp_spacing.text())
@@ -4497,9 +4474,9 @@ class MainWindow(QMainWindow):
         if not self._ensure_route_planning_density():
             return
         self.viewer._coverage_plane = None
-        # 自动计算步距（如果还是默认的"自动"）
-        if self.edt_cstep.text() == "自动" or self.edt_vstep.text() == "自动":
-            self._calc_cube_spacing()
+        # 步距字段只读，是相机/重叠率/巡检距离的派生值，每次生成都重新计算
+        # （原"自动算间距"按钮已并入"应用"）
+        self._calc_cube_spacing()
         try:
             cx = float(self.edt_cx.text())
             cy = float(self.edt_cy.text())
@@ -5561,6 +5538,11 @@ class MainWindow(QMainWindow):
             "Merge preview cancelled; restored the previous local route"
         ))
         self.lbl_segment_status.setStyleSheet("color: #6f8590; font-size: 11px;")
+
+    def _plan_safe_transition(self):
+        """应用安全设置后规划安全过渡（原安全组"应用"按钮已并入此按钮）。"""
+        self._apply_safety_settings()
+        self.plan_safe_transition()
 
     def plan_safe_transition(self):
         """规划悬停点到首航点的安全过渡路径。先用简单中继点快速尝试，失败再回退A*。"""
