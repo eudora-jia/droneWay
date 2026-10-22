@@ -310,6 +310,7 @@ class MainWindow(QMainWindow):
         self._point_normals = None
         self._fpv_start_pos = [0.0, 0.0, 0.0]  # 无人机起始位置
         self.waypoints = []
+        self._route_dirty = False  # 内存航线存在不可复现的未保存修改（拖拽编辑/过渡规划等）
         self._route_segments = []
         self._merged_connections = []
         self._merged_oriented_segments = []
@@ -1116,7 +1117,7 @@ class MainWindow(QMainWindow):
         # -- 信号连接 --
         self.cmb_render_mode.currentTextChanged.connect(self._on_render_mode_changed)
         self.sld_point_size.valueChanged.connect(self._on_point_size_changed)
-        self.btn_clear.clicked.connect(self.clear_route)
+        self.btn_clear.clicked.connect(self._clear_route_confirmed)
         self.chk_show_distances.toggled.connect(self._display_route)
         self.chk_show_indices.toggled.connect(self._display_route)
 
@@ -2919,6 +2920,8 @@ class MainWindow(QMainWindow):
     def generate_flat_route(self):
         if not self._ensure_route_planning_density():
             return
+        if not self._confirm_replace_current_route("重新生成航线"):
+            return
         try:
             inspect_dist = float(self.edt_flat_inspect_dist.text())
             speed = float(self.edt_flat_speed.text())
@@ -3307,6 +3310,7 @@ class MainWindow(QMainWindow):
             'normal': poly_normal.copy(),
         }
         self._display_route()
+        self._route_dirty = False
 
         if warnings:
             self._show_warning_details(
@@ -3320,6 +3324,8 @@ class MainWindow(QMainWindow):
         if not self._ensure_route_planning_density():
             return
         self.viewer._coverage_plane = None
+        if not self._confirm_replace_current_route("重新生成航线"):
+            return
         import math
         try:
             cx = float(self.edt_cyl_cx.text())
@@ -3482,6 +3488,7 @@ class MainWindow(QMainWindow):
         self._merged_preview_active = False
         self.waypoints = generated
         self._display_route()
+        self._route_dirty = False
         print(f"[Cylinder] Generated {len(self.waypoints)} waypoints ({route_type})")
         if warnings:
             self._show_warning_details(
@@ -3495,6 +3502,8 @@ class MainWindow(QMainWindow):
         if not self._ensure_route_planning_density():
             return
         self.viewer._coverage_plane = None
+        if not self._confirm_replace_current_route("重新生成航线"):
+            return
         import math
         try:
             x1 = float(self.edt_line_x1.text())
@@ -3721,6 +3730,7 @@ class MainWindow(QMainWindow):
             })
 
         self._display_route()
+        self._route_dirty = False
         print(f"[Line] Generated {len(self.waypoints)} waypoints, spacing={spacing:.2f}m, inspect_dist={inspect_dist}m")
         if warnings:
             self._show_warning_details(
@@ -4178,6 +4188,8 @@ class MainWindow(QMainWindow):
             return
         """从巡检目标点自动生成无人机航线（带碰撞检测）"""
         self.viewer._coverage_plane = None
+        if not self._confirm_replace_current_route("重新生成航线"):
+            return
         if not self._inspect_target_points:
             QMessageBox.warning(self, "提示", "请先选择巡检点位")
             return
@@ -4458,6 +4470,7 @@ class MainWindow(QMainWindow):
             })
 
         self._display_route()
+        self._route_dirty = False
 
         if warnings:
             self._show_warning_details(
@@ -4474,6 +4487,8 @@ class MainWindow(QMainWindow):
         if not self._ensure_route_planning_density():
             return
         self.viewer._coverage_plane = None
+        if not self._confirm_replace_current_route("重新生成航线"):
+            return
         # 步距字段只读，是相机/重叠率/巡检距离的派生值，每次生成都重新计算
         # （原"自动算间距"按钮已并入"应用"）
         self._calc_cube_spacing()
@@ -4688,6 +4703,7 @@ class MainWindow(QMainWindow):
                     })
 
         self._display_route()
+        self._route_dirty = False
 
         if warnings:
             self._show_warning_details(
@@ -5543,6 +5559,8 @@ class MainWindow(QMainWindow):
         """应用安全设置后规划安全过渡（原安全组"应用"按钮已并入此按钮）。"""
         self._apply_safety_settings()
         self.plan_safe_transition()
+        if self._transition_path:
+            self._route_dirty = True
 
     def plan_safe_transition(self):
         """规划悬停点到首航点的安全过渡路径。先用简单中继点快速尝试，失败再回退A*。"""
@@ -5814,6 +5832,7 @@ class MainWindow(QMainWindow):
 
     def _on_waypoint_edited(self, idx, new_pos, new_quat):
         if idx < len(self.waypoints):
+            self._route_dirty = True
             self.waypoints[idx]['pos'] = new_pos
             if new_quat is not None:
                 self.waypoints[idx]['quat'] = new_quat
@@ -6072,6 +6091,31 @@ class MainWindow(QMainWindow):
 
         return violations, collisions, low_z
 
+    def _confirm_replace_current_route(self, action_text):
+        """当前航线存在不可复现的未保存修改时，先询问是否保存再覆盖/清除。
+
+        生成的航线可用相同参数再点「应用」复现，未修改的导入航线可从原文件重新导入，
+        因此只在内存中存在不可复现修改（拖拽编辑、安全过渡规划等）时拦截。
+        返回 True 表示允许继续。
+        """
+        if not self.waypoints or not self._route_dirty:
+            return True
+        reply = QMessageBox.warning(
+            self, "未保存航线",
+            f"当前航线有未保存的修改，是否先保存再{action_text}？",
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel, QMessageBox.Cancel)
+        if reply == QMessageBox.Cancel:
+            return False
+        if reply == QMessageBox.Yes:
+            return self.save_route()
+        return True
+
+    def _clear_route_confirmed(self):
+        """UI 清除入口：有未保存修改时先询问（内部 clear_route 调用不走这里）。"""
+        if not self._confirm_replace_current_route("清除航线"):
+            return
+        self.clear_route()
+
     # ─── 清除航线 ───
     def clear_route(self):
         # 投影/覆盖层不属于普通航线 actors，清除航线时单独释放。
@@ -6153,11 +6197,12 @@ class MainWindow(QMainWindow):
 
     # ─── 保存航线（nav_msgs/Path 格式）───
     def save_route(self):
+        """保存航线；返回是否真正写盘（供覆盖前确认复用）。"""
         if not self.waypoints:
             QMessageBox.information(self, "提示", "没有航线可保存")
-            return
+            return False
         if not self._ensure_merged_route_safe():
-            return
+            return False
 
         from datetime import datetime
         ts = datetime.now().strftime("%y%m%d%H%M")
@@ -6167,7 +6212,7 @@ class MainWindow(QMainWindow):
             self, "保存航线", default_name, "JSON 文件 (*.json)"
         )
         if not path:
-            return
+            return False
 
         # 碰撞检测警告（不影响保存）
         safe_dist = self.viewer._safe_distance
@@ -6191,18 +6236,21 @@ class MainWindow(QMainWindow):
                 confirm=True,
             )
             if not proceed:
-                return
+                return False
 
         data = self._build_route_json()
         if data is None:
-            return
+            return False
 
         try:
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
+            self._route_dirty = False
             QMessageBox.information(self, "已保存", f"航线已保存到:\n{path}")
+            return True
         except Exception as e:
             QMessageBox.critical(self, "错误", f"保存失败:\n{str(e)}")
+            return False
 
     def _build_route_json(self):
         """构建航线JSON数据（供保存和复制共用）"""
@@ -6497,12 +6545,13 @@ class MainWindow(QMainWindow):
         try:
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump(maicro_data, f, indent=2, ensure_ascii=False)
+            self._route_dirty = False
             QMessageBox.information(self, "已导出",
                 f"maicro航线已导出到:\n{path}\n\n航点数: {len(way_point_list)}")
         except Exception as e:
             QMessageBox.critical(self, "错误", f"导出失败:\n{str(e)}")
 
-    # ─── 加载航线（兼容 nav_msgs/Path 和旧格式）───
+    # ─── 加载航线（兼容 nav_msgs/Path、maicro 和旧格式）───
     def load_route(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "加载航线", "", "JSON 文件 (*.json)"
@@ -6513,6 +6562,9 @@ class MainWindow(QMainWindow):
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
+
+            if not self._confirm_replace_current_route("导入航线"):
+                return
 
             self.waypoints = []
             self._merged_preview_active = False
@@ -6560,6 +6612,22 @@ class MainWindow(QMainWindow):
                         'speed': wp.get('speed', 2.0),
                         'action': wp.get('action', 'fly')
                     })
+            # maicro 格式（见 export_maicro_route；aimTarget 不含水平方向，目标点无法还原）
+            elif 'wayPointList' in data:
+                for wpd in data.get('wayPointList', []):
+                    yaw = np.radians(float(wpd.get('yaw', wpd.get('head', 0.0))))
+                    self.waypoints.append({
+                        'pos': np.array([
+                            float(wpd.get('x', 0.0)),
+                            float(wpd.get('y', 0.0)),
+                            float(wpd.get('z', wpd.get('alt', 0.0))),
+                        ], dtype=np.float64),
+                        'quat': np.array([np.cos(yaw / 2.0), 0.0, 0.0, np.sin(yaw / 2.0)], dtype=np.float64),
+                        'speed': float(wpd.get('speed', 2.0)),
+                        'action': 'fly',
+                        'gimbal_pitch': float(wpd.get('gimbalPitch', -90.0)),
+                        'capture': bool(wpd.get('shoot', True)),
+                    })
 
             bridge = data.get('bridge', {})
             if bridge:
@@ -6572,6 +6640,7 @@ class MainWindow(QMainWindow):
                 self._bridge_span_val = str(bridge.get('span_m', '30'))
 
             self._display_route()
+            self._route_dirty = False
             QMessageBox.information(self, "已加载", f"已加载 {len(self.waypoints)} 个航点")
         except Exception as e:
             QMessageBox.critical(self, "错误", f"加载失败:\n{str(e)}")
